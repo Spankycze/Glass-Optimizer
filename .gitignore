@@ -55,6 +55,7 @@ reference-npi/
 .context-refresh/
 .tool-profile/
 .smart-route.json
+.smart-learning/
 
 # Generated local workflow state
 .fast-state.json

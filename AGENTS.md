@@ -7,7 +7,7 @@
 - complete-task must record final behavior, validation evidence, released/installed version and any remaining next action.
 - Distinguish current SOURCE version, last TESTED version, RELEASED version and INSTALLED version. Automatic version bumps are not tested builds.
 - Verify resume evidence exists. Never promote old status.json OK entries to current validation.
-- Use smart-context.ps1 as the default task router: diff-first, dynamic budget and auto-escalation. Fall back to context-plan.ps1/context-pack.ps1 only when explicitly needed.
+- Use smart-context.ps1 as the default task router: diff-first, dynamic budget, failed-attempt dedup, adaptive route blacklist and auto-escalation. After each meaningful task outcome, call smart-feedback.ps1 success/fail so per-task budgets learn from real results. Fall back to context-plan.ps1/context-pack.ps1 only when explicitly needed.
 - Read atlas-map.md as a tiny repository map/fallback; regenerate after structural changes. Keep PROJECT_INDEX.json / CodeIndex as the primary C# symbol navigation path.
 - Keep Redcon budget at 12k unless a task demonstrably needs more context.
 - codex-agent-mem is project-local, minimal-profile and compact-response; never mix Spankyho memory with RAM Guard memory.
