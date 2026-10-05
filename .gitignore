@@ -52,6 +52,9 @@ tools/**/.venv/
 native/**/target/
 reference-npi/
 .agentdiff/
+.context-refresh/
+.tool-profile/
+.smart-route.json
 
 # Generated local workflow state
 .fast-state.json
