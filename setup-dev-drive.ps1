@@ -19,38 +19,72 @@ foreach($l in $letters){
 }
 if(!$letter){throw 'No free V/W/X/Y/Z drive letter.'}
 
-& fsutil.exe devdrv enable /allowAv
-if($LASTEXITCODE -ne 0){throw 'Failed to enable Dev Drive support.'}
+$stateDir=Join-Path $env:LOCALAPPDATA 'SpankyDevDrive'
+New-Item -ItemType Directory -Force $stateDir | Out-Null
+$pending=Join-Path $stateDir 'enable-pending.txt'
+
+$queryOut=& fsutil.exe devdrv query 2>&1
+$queryText=($queryOut | Out-String)
+if($queryText -match 'Developer volumes are enabled'){
+  Remove-Item $pending -Force -ErrorAction SilentlyContinue
+  Write-Host 'DEV_DRIVE_SUPPORT_ALREADY_ENABLED'
+}else{
+  $enableOut=& fsutil.exe devdrv enable /allowAv 2>&1
+  $enableCode=$LASTEXITCODE
+  $enableOut | Write-Host
+  if($enableCode -ne 0){throw 'Failed to enable Dev Drive support.'}
+  if(($enableOut | Out-String) -match 'reboot is required|restart is required|restart required'){
+    Set-Content -LiteralPath $pending -Value (Get-Date -Format o) -Encoding ascii
+    $resume=Join-Path $PSScriptRoot 'setup-dev-drive.ps1'
+    $action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$resume+'"')
+    $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $principalTask=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+    Register-ScheduledTask -TaskName 'Spanky Dev Drive Setup Resume' -Action $action -Trigger $trigger -Principal $principalTask -Force | Out-Null
+    Write-Host 'DEV_DRIVE_REBOOT_REQUIRED'
+    Write-Host 'Setup will continue automatically after the next Windows restart.'
+    exit 3010
+  }
+}
+
+Start-Service vds -ErrorAction SilentlyContinue
 
 if(!(Test-Path $VhdPath)){
   $dp=Join-Path $env:TEMP 'spanky-devdrive-create.txt'
   $mb=$SizeGB*1024
-  @(
-    'create vdisk file="'+$VhdPath+'" maximum='+$mb+' type=expandable',
-    'select vdisk file="'+$VhdPath+'"',
-    'attach vdisk',
-    'create partition primary',
-    'assign letter='+$letter,
+  $dpCommands=@(
+    'create vdisk file='+$VhdPath+' maximum='+$mb+' type=expandable'
+    'select vdisk file='+$VhdPath
+    'attach vdisk'
+    'create partition primary'
+    'assign letter='+$letter
     'exit'
-  ) | Set-Content -Encoding ascii $dp
+  )
+  [IO.File]::WriteAllText($dp,($dpCommands -join [Environment]::NewLine),[Text.Encoding]::ASCII)
   & diskpart.exe /s $dp
   $code=$LASTEXITCODE
-  Remove-Item $dp -Force -ErrorAction SilentlyContinue
-  if($code -ne 0){throw ('DiskPart create failed: '+$code)}
+  if($code -eq 0){Remove-Item $dp -Force -ErrorAction SilentlyContinue}
+  if($code -ne 0){throw ('DiskPart create failed: '+$code+' script='+$dp)}
 }else{
-  $dp=Join-Path $env:TEMP 'spanky-devdrive-attach.txt'
-  @('select vdisk file="'+$VhdPath+'"','attach vdisk','exit') | Set-Content -Encoding ascii $dp
-  & diskpart.exe /s $dp | Out-Null
-  Remove-Item $dp -Force -ErrorAction SilentlyContinue
+  $existingPartition=Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue
+  if(!$existingPartition){
+    $dp=Join-Path $env:TEMP 'spanky-devdrive-attach.txt'
+    $dpCommands=@('select vdisk file='+$VhdPath,'attach vdisk','exit')
+    [IO.File]::WriteAllText($dp,($dpCommands -join [Environment]::NewLine),[Text.Encoding]::ASCII)
+    & diskpart.exe /s $dp | Out-Null
+    if($LASTEXITCODE -ne 0){throw ('DiskPart attach failed: '+$LASTEXITCODE)}
+    Remove-Item $dp -Force -ErrorAction SilentlyContinue
+  }
 }
 
-if(!(Test-Path ($letter+':\'))){throw 'VHD mounted but drive letter was not available.'}
+$partition=Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue
+if(!$partition){throw 'VHD mounted but drive letter partition was not available.'}
 $vol=Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue
-if($vol -and $vol.FileSystem){
+if($vol -and $vol.FileSystem -and $vol.FileSystem -ne 'RAW'){
   Write-Host ('Existing formatted volume detected: '+$vol.FileSystem)
 }else{
-  & format.com ($letter+':') /DevDrv /Q /Y /V:SpankyDevDrive
-  if($LASTEXITCODE -ne 0){throw ('Dev Drive format failed: '+$LASTEXITCODE)}
+  Format-Volume -DriveLetter $letter -DevDrive -NewFileSystemLabel 'SpankyDevDrive' -Force -Confirm:$false | Out-Null
+  $vol=Get-Volume -DriveLetter $letter -ErrorAction Stop
+  Write-Host ('DEV_DRIVE_FORMATTED fs='+$vol.FileSystem)
 }
 
 & fsutil.exe devdrv trust ($letter+':')
@@ -62,8 +96,6 @@ foreach($sub in @('sccache','npm','uv')){
 }
 [Environment]::SetEnvironmentVariable('SPANKY_DEV_DRIVE',($letter+':'),'User')
 
-$stateDir=Join-Path $env:LOCALAPPDATA 'SpankyDevDrive'
-New-Item -ItemType Directory -Force $stateDir | Out-Null
 $state=[ordered]@{drive_letter=$letter;vhd_path=$VhdPath;size_gb=$SizeGB;cache_root=$cacheRoot}
 $state | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $stateDir 'state.json')
 
@@ -72,6 +104,7 @@ $action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile
 $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $principalTask=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
 Register-ScheduledTask -TaskName 'Spanky Dev Drive Mount' -Action $action -Trigger $trigger -Principal $principalTask -Force | Out-Null
+Unregister-ScheduledTask -TaskName 'Spanky Dev Drive Setup Resume' -Confirm:$false -ErrorAction SilentlyContinue
 
 & fsutil.exe devdrv query ($letter+':')
 Write-Host ('DEV_DRIVE_READY drive='+$letter+': cache='+$cacheRoot)
