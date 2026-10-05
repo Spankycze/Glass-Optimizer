@@ -14,7 +14,7 @@
 - Use PROJECT_INDEX.json for code navigation before broad recursive scans; do not dump its whole one-line JSON.
 - Use TASK_STATE.json / CHECKPOINT.json through ai-workflow.ps1 for multi-step work.
 - Load only the skill relevant to the current task from skills/.
-- For verbose commands use cc-run.ps1 or dc-smart.ps1; invoke custom ps1 explicitly in PowerShell.
+- For verbose commands use cc-run.ps1 or dc-smart.ps1; invoke custom ps1 explicitly in PowerShell. Prefer fast-search.ps1/ripgrep over broad PowerShell recursive text scans. Main build scripts must source dev-perf-env.ps1 so MSBuild Server and shared sccache stay enabled. Use node-install-fast.ps1 for Node dependencies, python-tool-fast.ps1 for isolated Python CLI installs, and Ninja only when build.ninja exists.
 - Route long build/test/git/diagnostic shell output through context-compress when practical.
 - Use codex-context-mcp for large logs, XML/Markdown reports, patch analysis and heavyweight repo discovery; follow-up via stored artifact search instead of rereading raw data.
 - Use Capsule for exact-recoverable large terminal/file/project output when a compact evidence view is sufficient; expand only the needed evidence.

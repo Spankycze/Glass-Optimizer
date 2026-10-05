@@ -1,6 +1,7 @@
 param([switch]$KeepStaging,[switch]$ForceRestore,[switch]$SkipRuntimeTest)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $root 'dev-perf-env.ps1')
 & (Join-Path $root 'ai-automation-contract-audit.ps1')
 $auditOk=$?
 if(-not $auditOk){throw 'AI automation contract audit failed'}

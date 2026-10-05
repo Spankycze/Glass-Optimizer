@@ -12,6 +12,7 @@ function Write-BuildStatus([string]$Kind,[string]$Text){
 }
 
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $root 'dev-perf-env.ps1')
 . (Join-Path $root 'build-state.ps1')
 $dev=Join-Path $root 'build-dev.ps1'
 $exe=if([string]::IsNullOrWhiteSpace($ExePath)){

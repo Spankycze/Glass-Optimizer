@@ -1,6 +1,8 @@
 param([switch]$Debug,[switch]$Force,[switch]$StrictHash)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $root 'dev-perf-env.ps1')
+if($env:SPANKY_SCCACHE){$env:RUSTC_WRAPPER=$env:SPANKY_SCCACHE}
 $crate=Join-Path $root 'native\Spanky.NativeCore'
 $manifest=Join-Path $crate 'Cargo.toml'
 $dest=Join-Path $root 'src\SpankyhoOptimizer\Native\Spanky.NativeCore.dll'
