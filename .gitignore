@@ -56,6 +56,8 @@ reference-npi/
 .tool-profile/
 .smart-route.json
 .smart-learning/
+.session-warm/
+.roi/
 
 # Generated local workflow state
 .fast-state.json

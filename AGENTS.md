@@ -23,7 +23,7 @@
 - Use agent-compress.ps1 for large prose/state/report files when a compact manual view is useful; full source remains authoritative before edits.
 - LLMLingua heavy compression is installed but reserved for very large contexts where its model startup cost is justified; do not use it on small/latency-sensitive tasks.
 - All MCP downstream servers are exposed through MCP Compress Router; do not add duplicate direct MCP registrations unless rolling back.
-- Use Git changed-file state + CALM call graph/edit_context before broad/high-risk edits; run AgentDiff after multi-file/agent-generated change batches for risk and plan-drift review.
+- Use context-quality.ps1 before broad extra reads; if it reports ENOUGH, stop gathering context and edit/validate. Use session-warm.ps1 on continuation. Use Git changed-file state + CALM call graph/edit_context before broad/high-risk edits; run AgentDiff after multi-file/agent-generated change batches for risk and plan-drift review. Use task-roi.ps1 after significant tasks to measure actual routing/tool overhead.
 - Measure before optimizing; keep only measurable improvements.
 - Prefer safe C#/.NET/native read paths over new PowerShell/WMI subprocesses when practical.
 - Every mutation path needs timeout/cancellation/read-back/rollback where relevant.
