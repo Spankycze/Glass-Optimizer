@@ -54,6 +54,7 @@ reference-npi/
 .agentdiff/
 .context-refresh/
 .tool-profile/
+.perf-baseline/
 .smart-route.json
 .smart-learning/
 .session-warm/

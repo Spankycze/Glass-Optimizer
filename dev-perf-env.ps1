@@ -15,8 +15,31 @@ $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
 $user=[Environment]::GetEnvironmentVariable('Path','User')
 $env:Path=$machine+';'+$user
 
-$cacheRoot=Join-Path $env:LOCALAPPDATA 'SpankyDevCache'
+$configuredDev=[Environment]::GetEnvironmentVariable('SPANKY_DEV_DRIVE','User')
+$useDev=$false
+if($configuredDev){
+  try{$useDev=Test-Path ($configuredDev+'\')}catch{$useDev=$false}
+}
+if($useDev){
+  $cacheRoot=Join-Path $configuredDev 'SpankyDevCache'
+  $env:SPANKY_DEV_DRIVE_ACTIVE=$configuredDev
+}else{
+  $cacheRoot=Join-Path $env:LOCALAPPDATA 'SpankyDevCache'
+  Remove-Item Env:SPANKY_DEV_DRIVE_ACTIVE -ErrorAction SilentlyContinue
+}
 New-Item -ItemType Directory -Force $cacheRoot | Out-Null
+if($useDev){
+  $env:NPM_CONFIG_CACHE=Join-Path $cacheRoot 'npm'
+  $env:UV_CACHE_DIR=Join-Path $cacheRoot 'uv'
+  foreach($p in @($env:NPM_CONFIG_CACHE,$env:UV_CACHE_DIR)){
+    New-Item -ItemType Directory -Force $p | Out-Null
+  }
+}else{
+  Remove-Item Env:NPM_CONFIG_CACHE -ErrorAction SilentlyContinue
+  Remove-Item Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
+}
+# Keep NuGet on its existing package root because current builds use --no-restore.
+Remove-Item Env:NUGET_PACKAGES -ErrorAction SilentlyContinue
 
 $sccache=Get-Command sccache.exe -ErrorAction SilentlyContinue
 if($sccache){

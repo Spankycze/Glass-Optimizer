@@ -25,6 +25,12 @@ if(Get-Command atlas -ErrorAction SilentlyContinue){
   atlas $root --budget 2048 | Set-Content -Encoding utf8 (Join-Path $root 'atlas-map.md')
   Write-Host 'ATLAS_REFRESHED'
 }
-& 'C:\Users\spnka\AppData\Roaming\npm\calm-mcp.cmd' index --project-root $root | Select-Object -Last 8
+$oldEA=$ErrorActionPreference
+$ErrorActionPreference='Continue'
+$calmOut=& 'C:\Users\spnka\AppData\Roaming\npm\calm-mcp.cmd' index --project-root $root 2>&1
+$calmCode=$LASTEXITCODE
+$ErrorActionPreference=$oldEA
+$calmOut | Select-Object -Last 8
+if($calmCode -ne 0){throw ('CALM_REFRESH_FAIL exit='+$calmCode)}
 Set-Content -LiteralPath $stampFile -Value $head -Encoding ascii
 Write-Host 'SMART_REFRESH_OK'
