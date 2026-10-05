@@ -53,6 +53,16 @@ native/**/target/
 reference-npi/
 .agentdiff/
 
+# Generated local workflow state
+.fast-state.json
+.redcon_cache.json
+.mcp-router-test.json
+devtools/release-chunks/
+devtools/perf/cache/
+validate-*.out
+validate-*.code
+*.nupkg
+
 # Temp/runtime
 *.log
 *.tmp

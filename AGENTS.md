@@ -1,6 +1,6 @@
 # Spankyho Optimizer Agent Rules
 - Work through normal ChatGPT + DC Remote; do not use Work mode.
-- On continuation run continue-project.ps1, then read RESUME.md FIRST, PROJECT_STATE.md second and compact SESSION_HANDOFF.md third.
+- On continuation run continue-project.ps1, then read CURRENT_STATE.md first. Use RESUME.md for exact current-work detail, PROJECT_STATE.md second and compact SESSION_HANDOFF.md only when needed.
 - RESUME.md / .ai-state/RESUME_STATE.json are current work. SESSION_HISTORY.md and WORK_PROGRESS.md are history; read only relevant excerpts.
 - Before editing: start-task with concrete Summary and NextAction. After each meaningful batch and before ending a turn: checkpoint with Summary, NextAction, Done, Pending, FilesTouched, Evidence.
 - Save failed attempts and exact recovery action; never silently skip pending work. Checkpoint before long build/install operations.
@@ -23,6 +23,7 @@
 - Use agent-compress.ps1 for large prose/state/report files when a compact manual view is useful; full source remains authoritative before edits.
 - LLMLingua heavy compression is installed but reserved for very large contexts where its model startup cost is justified; do not use it on small/latency-sensitive tasks.
 - All MCP downstream servers are exposed through MCP Compress Router; do not add duplicate direct MCP registrations unless rolling back.
+- Use Git changed-file state + CALM call graph/edit_context before broad/high-risk edits; run AgentDiff after multi-file/agent-generated change batches for risk and plan-drift review.
 - Measure before optimizing; keep only measurable improvements.
 - Prefer safe C#/.NET/native read paths over new PowerShell/WMI subprocesses when practical.
 - Every mutation path needs timeout/cancellation/read-back/rollback where relevant.

@@ -65,6 +65,15 @@
         "serve"
       ],
       "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+    },
+    "calm": {
+      "command": "C:/Users/spnka/AppData/Roaming/npm/calm-mcp.cmd",
+      "args": [
+        "serve",
+        "--project-root",
+        "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+      ],
+      "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
     }
   }
 }
