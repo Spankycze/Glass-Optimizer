@@ -7,7 +7,6 @@ $p=Get-Content -Raw -LiteralPath $project
 $projectHead=(($p -split '(?m)^## Recent source changes')[0]).Trim()
 $out=@(
 '# CURRENT_STATE - compact',
-'Generated: '+(Get-Date -Format o),
 '',
 '## Current work',
 $r.Trim(),
