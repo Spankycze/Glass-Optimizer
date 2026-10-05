@@ -43,6 +43,16 @@ redcon-plan-*.md
 *.mp4
 *.webm
 
+# Historical/vendor/runtime trees not useful for change context
+.tools/CodeIndex/
+external/DNS-Hop/
+.ai-state/checkpoints/
+tools/**/runtime/
+tools/**/.venv/
+native/**/target/
+reference-npi/
+.agentdiff/
+
 # Temp/runtime
 *.log
 *.tmp
