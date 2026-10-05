@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mcp-compress-router": {
+      "command": "C:/Users/spnka/AppData/Roaming/npm/mcp-compress-router.cmd",
+      "args": [],
+      "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer",
+      "env": {
+        "MCP_COMPRESS_ROUTER_HOME": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer/.mcp-router"
+      }
+    }
+  }
+}

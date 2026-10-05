@@ -1,0 +1,56 @@
+is_global = true
+
+# Audit-only analyzer policy. Keep analyzer recommendations advisory until measured.
+dotnet_analyzer_diagnostic.severity = none
+
+# Windows/platform correctness must stay visible.
+dotnet_diagnostic.CA1416.severity = warning
+dotnet_diagnostic.CA1422.severity = warning
+
+# Performance rules we explicitly care about.
+dotnet_diagnostic.CA1802.severity = warning
+dotnet_diagnostic.CA1810.severity = warning
+dotnet_diagnostic.CA1822.severity = suggestion
+dotnet_diagnostic.CA1846.severity = warning
+dotnet_diagnostic.CA1849.severity = warning
+dotnet_diagnostic.CA1851.severity = warning
+dotnet_diagnostic.CA1869.severity = warning
+
+# Async/threading correctness.
+dotnet_diagnostic.CS4014.severity = warning
+dotnet_diagnostic.VSTHRD100.severity = warning
+dotnet_diagnostic.VSTHRD103.severity = warning
+dotnet_diagnostic.VSTHRD110.severity = warning
+
+# Do not auto-promote style/maintainability advice into release blockers.
+dotnet_analyzer_diagnostic.category-Style.severity = suggestion
+dotnet_analyzer_diagnostic.category-Documentation.severity = suggestion
+
+# Philips: suppress repository-policy/style noise; keep correctness-oriented rules visible.
+dotnet_diagnostic.PH2028.severity = none
+dotnet_diagnostic.PH2087.severity = none
+dotnet_diagnostic.PH2075.severity = none
+dotnet_diagnostic.PH2088.severity = none
+dotnet_diagnostic.PH2045.severity = none
+dotnet_diagnostic.PH2021.severity = none
+dotnet_diagnostic.PH2093.severity = none
+dotnet_diagnostic.PH2082.severity = none
+dotnet_diagnostic.PH2080.severity = none
+dotnet_diagnostic.PH2029.severity = none
+dotnet_diagnostic.PH2147.severity = none
+dotnet_diagnostic.PH2094.severity = none
+dotnet_diagnostic.PH2044.severity = none
+
+dotnet_diagnostic.PH2098.severity = warning
+dotnet_diagnostic.PH2031.severity = warning
+dotnet_diagnostic.PH2086.severity = warning
+dotnet_diagnostic.PH2097.severity = warning
+dotnet_diagnostic.PH2083.severity = warning
+
+# Meziantou: high-signal correctness only.
+dotnet_diagnostic.MA0040.severity = warning
+dotnet_diagnostic.MA0075.severity = warning
+
+# AsyncFixer: fire-and-forget / sync-over-async risks.
+dotnet_diagnostic.AsyncFixer02.severity = warning
+dotnet_diagnostic.AsyncFixer03.severity = warning

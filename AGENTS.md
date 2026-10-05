@@ -1,0 +1,34 @@
+# Spankyho Optimizer Agent Rules
+- Work through normal ChatGPT + DC Remote; do not use Work mode.
+- On continuation run continue-project.ps1, then read RESUME.md FIRST, PROJECT_STATE.md second and compact SESSION_HANDOFF.md third.
+- RESUME.md / .ai-state/RESUME_STATE.json are current work. SESSION_HISTORY.md and WORK_PROGRESS.md are history; read only relevant excerpts.
+- Before editing: start-task with concrete Summary and NextAction. After each meaningful batch and before ending a turn: checkpoint with Summary, NextAction, Done, Pending, FilesTouched, Evidence.
+- Save failed attempts and exact recovery action; never silently skip pending work. Checkpoint before long build/install operations.
+- complete-task must record final behavior, validation evidence, released/installed version and any remaining next action.
+- Distinguish current SOURCE version, last TESTED version, RELEASED version and INSTALLED version. Automatic version bumps are not tested builds.
+- Verify resume evidence exists. Never promote old status.json OK entries to current validation.
+- Use context-plan.ps1 for task-directed file ranking before broad scans; use context-pack.ps1 when a compact bundle is useful.
+- Read atlas-map.md as a tiny repository map/fallback; regenerate after structural changes. Keep PROJECT_INDEX.json / CodeIndex as the primary C# symbol navigation path.
+- Keep Redcon budget at 12k unless a task demonstrably needs more context.
+- codex-agent-mem is project-local, minimal-profile and compact-response; never mix Spankyho memory with RAM Guard memory.
+- Use PROJECT_INDEX.json for code navigation before broad recursive scans; do not dump its whole one-line JSON.
+- Use TASK_STATE.json / CHECKPOINT.json through ai-workflow.ps1 for multi-step work.
+- Load only the skill relevant to the current task from skills/.
+- For verbose commands use cc-run.ps1 or dc-smart.ps1; invoke custom ps1 explicitly in PowerShell.
+- Route long build/test/git/diagnostic shell output through context-compress when practical.
+- Use codex-context-mcp for large logs, XML/Markdown reports, patch analysis and heavyweight repo discovery; follow-up via stored artifact search instead of rereading raw data.
+- Use Capsule for exact-recoverable large terminal/file/project output when a compact evidence view is sufficient; expand only the needed evidence.
+- Use Tare skeletonization only for large code navigation reads when signatures/types are enough; do not use lossy skeletons for files about to be edited.
+- Use repo-context-mcp for lightweight repo maps/search/context packs when CodeIndex/Redcon would be overkill.
+- Use agent-compress.ps1 for large prose/state/report files when a compact manual view is useful; full source remains authoritative before edits.
+- LLMLingua heavy compression is installed but reserved for very large contexts where its model startup cost is justified; do not use it on small/latency-sensitive tasks.
+- All MCP downstream servers are exposed through MCP Compress Router; do not add duplicate direct MCP registrations unless rolling back.
+- Measure before optimizing; keep only measurable improvements.
+- Prefer safe C#/.NET/native read paths over new PowerShell/WMI subprocesses when practical.
+- Every mutation path needs timeout/cancellation/read-back/rollback where relevant.
+- Validate significant app changes with build-fast, targeted smoke and build-test; resolve the FRESH staged EXE after locked builds.
+- Update PERFORMANCE_BASELINE.md only from fresh measured runs.
+- Keep releases gated by build-release.ps1 and leave only the current Desktop installer.
+- User requires actual screenshots embedded in chat, EXE installers only on Desktop, no GitHub/source ZIP, no repeated confirmations.
+- Current UI: approved Glass21 native desktop blur and translucent dark panels, blue pill controls and native switch state lifecycle; System/Privacy groups have no decorative icons. Overview black hardware/header and original colored hardware navigation assets preserved. App-update Settings block remains removed. Design: docs/superpowers/plans/Glass21-design.md; final tested/released/installed15.4.640.
+- Preserve intentional session0 bridge; update/restart the actual fan agent after installation. Do not kill all RuntimeHosts.

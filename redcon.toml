@@ -1,0 +1,23 @@
+# Redcon configuration - tuned for low-context coding
+[budget]
+max_tokens = 12000
+top_files = 40
+
+[scan]
+ignore_globs = ["**/bin/**", "**/obj/**", ".tools/**", "artifacts/**", ".buildcache/**", ".perf/**", ".research/**", ".dependency-backups/**", ".token-audit/**", ".agent-memory/**", ".codex-context/**", ".capsule-state/**", "redcon-plan-*.json", "redcon-plan-*.md", "**/node_modules/**", "**/*.exe", "**/*.dll", "**/*.pdb", "**/*.zip", "**/*.7z", "**/*.obj", "**/*.res", "**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.ico"]
+
+[score]
+enable_import_graph_signals = true
+history_selected_file_boost = 1.25
+
+[compression]
+full_file_threshold_tokens = 600
+symbol_extraction_enabled = true
+
+[cache]
+backend = "local_file"
+summary_cache_enabled = true
+run_history_enabled = true
+
+[telemetry]
+enabled = false

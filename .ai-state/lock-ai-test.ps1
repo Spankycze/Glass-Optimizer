@@ -1,0 +1,1 @@
+$f=[IO.FileInfo]'C:\Users\spnka\Desktop\ChatGPT Projects\Spankyho Optimizer\tools\CoreTests\AiTweakRuntimeTests.cs'; $f.IsReadOnly=$true; Write-Output $f.IsReadOnly

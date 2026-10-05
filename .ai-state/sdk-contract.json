@@ -1,0 +1,6 @@
+﻿{
+    "sdk":  "10.0.401",
+    "targetFramework":  "net10.0-windows10.0.26100.0",
+    "windowsAppSdkWinUI":  "1.8.260803003",
+    "windowsAppSdkRuntime":  "1.8.260804001"
+}

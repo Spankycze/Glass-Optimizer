@@ -1,0 +1,28 @@
+FILES
+MainWindow.OverviewDashboard.cs
+MainWindow.OverviewHudTelemetry.cs
+MainWindow.StyledDialogs.cs
+MainWindow.Theme.cs
+MainWindow.UiPrimitives.cs
+MATCHES
+MainWindow.cs:828:_themeSection = key;
+MainWindow.cs:1962:private Button QuickButton(string text, Func<Task> action)
+MainWindow.cs:2231:string tag = string.IsNullOrWhiteSpace(_themeSection) ? "system" : _themeSection;
+MainWindow.DashboardModern.cs:136:private Border BuildFlatSectionHeader(string title, string subtitle)
+MainWindow.OverviewDashboard.cs:1448:private static Brush OverviewCardBackgroundBrush()
+MainWindow.OverviewDashboard.cs:1463:private static Brush OverviewNeonBorderBrush()
+MainWindow.SystemTools.cs:19:return BuildSectionSurface(string.IsNullOrWhiteSpace(_themeSection) ? "overview" : _themeSection, title, subtitle, content);
+MainWindow.Theme.cs:16:private static string _themeSection = "overview";
+MainWindow.Theme.cs:228:private static Brush SectionCardBackgroundBrush()
+MainWindow.Theme.cs:234:private static Brush SectionHeaderBackgroundBrush()
+MainWindow.UiPrimitives.cs:13:private Button PrimaryQuickButton(string text, Func<Task> action)
+SCRIPTS
+actual_ui_screen.png
+analyzer-regression-gate.ps1
+etwprof-capture.ps1
+perf-regression-gate.ps1
+promote-fuzz-regression.ps1
+regression-store.ps1
+runtime-capture.ps1
+update-smoke.json
+visual-regression.ps1

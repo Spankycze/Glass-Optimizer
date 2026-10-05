@@ -1,0 +1,22 @@
+# Spankyho Optimizer Agent Rules
+- Work through normal ChatGPT + DC Remote; do not use Work mode.
+- On continuation run continue-project.ps1, then read RESUME.md FIRST, PROJECT_STATE.md second and compact SESSION_HANDOFF.md third.
+- RESUME.md / .ai-state/RESUME_STATE.json are current work. SESSION_HISTORY.md and WORK_PROGRESS.md are history; read only relevant excerpts.
+- Before editing: start-task with concrete Summary and NextAction. After each meaningful batch and before ending a turn: checkpoint with Summary, NextAction, Done, Pending, FilesTouched, Evidence.
+- Save failed attempts and exact recovery action; never silently skip pending work. Checkpoint before long build/install operations.
+- complete-task must record final behavior, validation evidence, released/installed version and any remaining next action.
+- Distinguish current SOURCE version, last TESTED version, RELEASED version and INSTALLED version. Automatic version bumps are not tested builds.
+- Verify resume evidence exists. Never promote old status.json OK entries to current validation.
+- Use PROJECT_INDEX.json for code navigation before broad recursive scans; do not dump its whole one-line JSON.
+- Use TASK_STATE.json / CHECKPOINT.json through ai-workflow.ps1 for multi-step work.
+- Load only the skill relevant to the current task from skills/.
+- For verbose commands use dc-smart.ps1; invoke custom ps1 explicitly in PowerShell.
+- Measure before optimizing; keep only measurable improvements.
+- Prefer safe C#/.NET/native read paths over new PowerShell/WMI subprocesses when practical.
+- Every mutation path needs timeout/cancellation/read-back/rollback where relevant.
+- Validate significant app changes with build-fast, targeted smoke and build-test; resolve the FRESH staged EXE after locked builds.
+- Update PERFORMANCE_BASELINE.md only from fresh measured runs.
+- Keep releases gated by build-release.ps1 and leave only the current Desktop installer.
+- User requires actual screenshots embedded in chat, EXE installers only on Desktop, no GitHub/source ZIP, no repeated confirmations.
+- Current UI: deep black surfaces, restrained blue controls, colored hardware pictures/icons; app-update Settings block removed.
+- Preserve intentional session0 bridge; update/restart the actual fan agent after installation. Do not kill all RuntimeHosts.

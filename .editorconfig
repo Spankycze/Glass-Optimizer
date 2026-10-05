@@ -1,0 +1,16 @@
+root = true
+
+[*.cs]
+# Project policy: keep correctness/reliability diagnostics visible in build output,
+# but do not flood Release builds with API-shape/style/micro-performance suggestions.
+dotnet_diagnostic.CA1001.severity = suggestion
+dotnet_diagnostic.CA1068.severity = suggestion
+dotnet_diagnostic.CA1305.severity = suggestion
+dotnet_diagnostic.CA1720.severity = suggestion
+dotnet_diagnostic.CA1822.severity = suggestion
+dotnet_diagnostic.CA1838.severity = suggestion
+dotnet_diagnostic.CA1859.severity = suggestion
+dotnet_diagnostic.CA1861.severity = suggestion
+dotnet_diagnostic.CA1865.severity = suggestion
+dotnet_diagnostic.CA1866.severity = suggestion
+dotnet_diagnostic.CA2249.severity = suggestion

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>NetworkHotPathBenchmarks-20260928-012534</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26300.9550)
+AMD Ryzen 7 3700X 3.60GHz, 1 CPU, 16 logical and 8 physical cores
+.NET SDK 10.0.401
+  [Host] : .NET 10.0.12 (10.0.12, 10.0.1226.42308), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>Job=InProcess  Toolchain=InProcessEmitToolchain  
+</code></pre>
+
+<table>
+<thead><tr><th>Method    </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Median</th><th>Ratio</th><th>RatioSD</th><th>Gen0</th><th>Allocated</th><th>Alloc Ratio</th>
+</tr>
+</thead><tbody><tr><td>DnsReadbackClean</td><td>174.7 ns</td><td>6.60 ns</td><td>19.45 ns</td><td>168.9 ns</td><td>1.01</td><td>0.15</td><td>0.0610</td><td>512 B</td><td>1.00</td>
+</tr><tr><td>DnsReadbackLeak</td><td>238.6 ns</td><td>8.04 ns</td><td>23.59 ns</td><td>232.3 ns</td><td>1.38</td><td>0.20</td><td>0.0648</td><td>544 B</td><td>1.06</td>
+</tr></tbody></table>
+</body>
+</html>

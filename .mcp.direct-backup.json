@@ -1,0 +1,70 @@
+{
+  "mcpServers": {
+    "context-compress": {
+      "command": "node",
+      "args": [
+        "C:/Users/spnka/AppData/Roaming/npm/node_modules/context-compress/dist/index.js"
+      ],
+      "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+    },
+    "redcon": {
+      "command": "C:/Users/spnka/AppData/Roaming/Python/Python314/Scripts/redcon.exe",
+      "args": [
+        "mcp",
+        "serve",
+        "--repo",
+        "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+      ],
+      "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+    },
+    "codex-agent-mem": {
+      "command": "C:/Users/spnka/AppData/Roaming/Python/Python314/Scripts/codex-agent-mem-mcp.exe",
+      "args": [
+        "--db-path",
+        "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer/.agent-memory/memory.db",
+        "--profile",
+        "minimal",
+        "--response-mode",
+        "compact",
+        "--idle-timeout-seconds",
+        "1800"
+      ],
+      "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+    },
+    "codex-context-mcp": {
+      "command": "node",
+      "args": [
+        "C:/Users/spnka/Desktop/ChatGPT Projects/.tools/token-savers/codex-context-mcp/src/server.js"
+      ],
+      "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+    },
+    "capsule": {
+      "command": "node",
+      "args": [
+        "--no-warnings",
+        "C:/Users/spnka/Desktop/ChatGPT Projects/.tools/token-savers/capsule/mcp/server.cjs"
+      ],
+      "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer",
+      "env": {
+        "CAPSULE_STATE": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer/.capsule-state"
+      }
+    },
+    "codeindex": {
+      "command": "dotnet",
+      "args": [
+        "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer/.tools/CodeIndex/src/CodeIndex/bin/Release/net10.0/CodeIndex.dll",
+        "--root",
+        "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+      ],
+      "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+    },
+    "repo-context-mcp": {
+      "command": "node",
+      "args": [
+        "C:/Users/spnka/Desktop/ChatGPT Projects/.tools/token-savers/repo-context-mcp/dist/cli.js",
+        "serve"
+      ],
+      "cwd": "C:/Users/spnka/Desktop/ChatGPT Projects/Spankyho Optimizer"
+    }
+  }
+}

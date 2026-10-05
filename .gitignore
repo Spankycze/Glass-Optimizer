@@ -1,0 +1,64 @@
+# Build/generated
+**/bin/
+**/obj/
+artifacts/
+logs/
+.buildcache/
+.perf/
+.research/
+.dependency-backups/
+node_modules/
+dist/
+coverage/
+
+# Token/context tooling state
+.redcon/
+.calm/
+.agent-memory/
+.codex-context/
+.capsule-state/
+.mcp-router/
+.token-audit/
+.config/tare/
+redcon-plan-*.json
+redcon-plan-*.md
+
+# Binaries/packages/media
+*.exe
+*.dll
+*.pdb
+*.zip
+*.7z
+*.xpi
+*.crx
+*.obj
+*.res
+*.bin
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.ico
+*.mp4
+*.webm
+
+# Temp/runtime
+*.log
+*.tmp
+*.bak
+*.old
+*.dmp
+*.etl
+*.trace
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE/OS
+.vs/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

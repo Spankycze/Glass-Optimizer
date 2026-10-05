@@ -1,0 +1,90 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>SpankyhoOptimizer</RootNamespace>
+    <AssemblyName>SpankyhoOptimizer</AssemblyName>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PlatformTarget>x64</PlatformTarget>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\App.ico</ApplicationIcon>
+    <NoWarn>$(NoWarn);CS8981</NoWarn>
+    <Deterministic>true</Deterministic>
+    <UseSharedCompilation>true</UseSharedCompilation>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <TieredCompilation>true</TieredCompilation>
+    <TieredPGO>true</TieredPGO>
+    <Nullable>annotations</Nullable>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <Optimize>true</Optimize>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunComposite>false</PublishReadyToRunComposite>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <RunAnalyzersDuringBuild>true</RunAnalyzersDuringBuild>
+    <EnableXbfGeneration>true</EnableXbfGeneration>
+    <OptimizeImplicitStyles>true</OptimizeImplicitStyles>
+    <EnableBindingDiagnostics>false</EnableBindingDiagnostics>
+    <GeneratePriDebugFiles>false</GeneratePriDebugFiles>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(EnableOpenTelemetry)'=='true'">
+    <DefineConstants>$(DefineConstants);SPANKY_OTEL</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="Models\*.cs" />
+    <Compile Remove="Services\*.cs" />
+    <Compile Include="Services\UiResourceService.cs" />
+    <ProjectReference Include="..\SpankyhoOptimizer.Core\SpankyhoOptimizer.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.10-experimental" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.5.4-experimental" />
+    <PackageReference Include="System.Management" Version="11.0.0-rc.1.26425.128" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="11.0.0-rc.1.26425.128" />
+    <PackageReference Include="System.Diagnostics.EventLog" Version="11.0.0-rc.1.26425.128" />
+    <PackageReference Include="Meziantou.Analyzer" Version="3.0.290" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerMeziantou)'=='true'" />
+    <PackageReference Include="Microsoft.VisualStudio.Threading.Analyzers" Version="18.7.23" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerThreading)'=='true'" />
+    <PackageReference Include="AsyncFixer" Version="2.1.0" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerAsyncFixer)'=='true'" />
+    <PackageReference Include="Philips.CodeAnalysis.MaintainabilityAnalyzers" Version="2.0.0" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerPhilips)'=='true'" />
+    <PackageReference Include="OpenTelemetry" Version="1.19.1" Condition="'$(EnableOpenTelemetry)'=='true'" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.19.1" Condition="'$(EnableOpenTelemetry)'=='true'" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assets\App.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\AppLogo.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\HeroTargetExact.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\OverviewCpuVisual.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\OverviewGpuVisual.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\OverviewRamVisual.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\OverviewNvmeVisual.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\OverviewSystemVisual.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\OverviewUptimeVisual.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\SidebarIcons\*.svg" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\Hardware\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Cursors\**\*.cur" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Cursors\**\*.ani" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Cursors\**\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Tools\PowerShell_Terminal_Setup.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Tools\PowerShellTerminalApply.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Tools\CursorsCommunity\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Native\Spanky.NativeCore.dll" Link="Spanky.NativeCore.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Resources\GTweakBlocklist.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Resources\GTweakTelemetryIps.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\GTweakToolsetStore.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\WORK_PROGRESS.md" Link="Assets\Changelog.md" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.16.0-preview.2" />
+    <PackageReference Include="BenchmarkDotNet.Diagnostics.Windows" Version="0.16.0-preview.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SpankyhoOptimizer.Core\SpankyhoOptimizer.Core.csproj" />
+  </ItemGroup>
+</Project>

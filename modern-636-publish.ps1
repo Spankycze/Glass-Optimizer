@@ -1,0 +1,9 @@
+$ErrorActionPreference='Stop'
+Set-Location $PSScriptRoot
+$files=@('src\SpankyhoOptimizer\MainWindow.NeutralUi.cs','src\SpankyhoOptimizer\MainWindow.Shell.cs','src\SpankyhoOptimizer\MainWindow.NetworkDashboard.cs','src\SpankyhoOptimizer\MainWindow.VisualQa.cs')
+& .\ai-workflow.ps1 -Action checkpoint -TaskId 'modern-636' -Summary 'Fresh636 build/test and six suites passed. Actual captures checked for full-width panels, toolbar and selected navigation.' -NextAction 'Gated release636 and verify installed payload and fan agent.' -Done @('Full-width panel redesign','Responsive header toolbar','Filled dimensional sidebar selection','Six suites') -Pending @('Release/install') -FilesTouched $files -Evidence @('artifacts\modern-636\validation-result.json','artifacts\modern-636\screens\dark-network.png')
+$t=[IO.File]::ReadAllText((Join-Path $PWD 'weight-635-release.ps1')).Replace('weight-635','modern-636').Replace('15.4.635','15.4.636').Replace('V15_4_635','V15_4_636').Replace('WEIGHT635','MODERN636')
+$t=$t.Replace('Installed635: body Medium, larger13SemiBold sidebar and SemiBold actions. Six suites and gated release/install passed.','Installed636: redesigned full-width panels, responsive header toolbar, rounded dimensional navigation. Six suites and gated release/install passed.').Replace('Installed635 heavier typography update complete. Next UI batch GPU/Startup/Storage. Source636 is automatic bump.','Installed636 layout redesign complete. Next requested design iteration: Overview and section-specific tools. Source637 is automatic bump.').Replace("'Body Medium','Sidebar13SemiBold and action labels SemiBold','Fresh635 six smoke suites and gated release installed'","'Full-width panels','Responsive header actions','Rounded dimensional sidebar','Fresh636 six smoke suites and gated release installed'")
+[IO.File]::WriteAllText((Join-Path $PWD 'modern-636-release.ps1'),$t)
+& .\modern-636-release.ps1
+if(!$?){throw 'Release/install failed'}

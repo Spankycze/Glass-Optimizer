@@ -1,0 +1,8 @@
+$ErrorActionPreference='Stop'
+Set-Location $PSScriptRoot
+& .\ai-workflow.ps1 -Action checkpoint -TaskId 'changelog-630' -Summary 'Fresh630 build and all six smoke suites passed; dialog capture confirms stable actual release rows.' -NextAction 'Build gated release630, install and verify payload/fan agent/Desktop installer.' -Done @('Root cause and failing regression confirmed','Fix saved','Fresh630 six smoke suites passed') -Pending @('Release and installation') -Evidence @('artifacts\changelog-630\red-regression.log','artifacts\changelog-630\validation-result.json','artifacts\changelog-630\screens\dark-dialog.png')
+$text=[IO.File]::ReadAllText((Join-Path $PWD 'ui-audit-629-release.ps1')).Replace('ui-audit-629','changelog-630').Replace('15.4.629','15.4.630').Replace('V15_4_629','V15_4_630').Replace('UI629','CHANGELOG630')
+$text=$text.Replace('Installed629: readable disabled controls and unified operation states. Cold/warm measured, tests and release passed.','Installed630: changelog remains stable after actual hardware and tweak history refresh. Failing regression reproduced before fix, all six smoke suites and gated release/install passed.').Replace('All authorized UI audit work complete; follow next user request.','Changelog correction complete and installed630. Continue with next user request; source631 is only automatic bump.').Replace("'Cold/warm measured','Contrast and seven classic/virtual states tested','Fresh629 build and release installed'","'Failing regression confirmed before fix','Actual refresh keeps release rows stable','Fresh630 six smoke suites and gated release installed'")
+[IO.File]::WriteAllText((Join-Path $PWD 'changelog-630-release.ps1'),$text)
+& .\changelog-630-release.ps1
+if(!$?){throw 'Release/install failed'}

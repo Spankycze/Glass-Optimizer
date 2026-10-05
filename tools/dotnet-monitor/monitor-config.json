@@ -1,0 +1,116 @@
+{
+  "Egress": {
+    "FileSystem": {
+      "LocalArtifacts": {
+        "directoryPath": "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\diagnostics\\dotnet-monitor",
+        "intermediateDirectoryPath": "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\diagnostics\\dotnet-monitor-tmp"
+      }
+    }
+  },
+  "CollectionRuleDefaults": {
+    "Actions": {
+      "Egress": "LocalArtifacts"
+    }
+  },
+  "CollectionRules": {
+    "HighCpu": {
+      "Filters": [
+        {
+          "Key": "ProcessName",
+          "Value": "SpankyhoOptimizer",
+          "MatchType": "Exact"
+        }
+      ],
+      "Trigger": {
+        "Type": "EventCounter",
+        "Settings": {
+          "ProviderName": "System.Runtime",
+          "CounterName": "cpu-usage",
+          "GreaterThan": 70,
+          "SlidingWindowDuration": "00:00:10"
+        }
+      },
+      "Actions": [
+        {
+          "Type": "CollectTrace",
+          "Settings": {
+            "Profile": "Cpu",
+            "Duration": "00:00:20",
+            "Egress": "LocalArtifacts"
+          }
+        }
+      ],
+      "Limits": {
+        "ActionCount": 2,
+        "ActionCountSlidingWindowDuration": "01:00:00"
+      }
+    },
+    "HighHeap": {
+      "Filters": [
+        {
+          "Key": "ProcessName",
+          "Value": "SpankyhoOptimizer",
+          "MatchType": "Exact"
+        }
+      ],
+      "Trigger": {
+        "Type": "EventCounter",
+        "Settings": {
+          "ProviderName": "System.Runtime",
+          "CounterName": "gc-heap-size",
+          "GreaterThan": 268435456,
+          "SlidingWindowDuration": "00:00:15"
+        }
+      },
+      "Actions": [
+        {
+          "Type": "CollectGCDump",
+          "Settings": {
+            "Egress": "LocalArtifacts"
+          }
+        }
+      ],
+      "Limits": {
+        "ActionCount": 2,
+        "ActionCountSlidingWindowDuration": "01:00:00"
+      }
+    },
+    "ExceptionSpike": {
+      "Filters": [
+        {
+          "Key": "ProcessName",
+          "Value": "SpankyhoOptimizer",
+          "MatchType": "Exact"
+        }
+      ],
+      "Trigger": {
+        "Type": "EventCounter",
+        "Settings": {
+          "ProviderName": "System.Runtime",
+          "CounterName": "exception-count",
+          "GreaterThan": 20,
+          "SlidingWindowDuration": "00:00:10"
+        }
+      },
+      "Actions": [
+        {
+          "Type": "CollectExceptions",
+          "Settings": {
+            "Egress": "LocalArtifacts",
+            "Format": "NewlineDelimitedJson"
+          }
+        },
+        {
+          "Type": "CollectStacks",
+          "Settings": {
+            "Egress": "LocalArtifacts"
+          }
+        }
+      ],
+      "Limits": {
+        "ActionCount": 2,
+        "ActionCountSlidingWindowDuration": "01:00:00"
+      }
+    }
+  }
+}

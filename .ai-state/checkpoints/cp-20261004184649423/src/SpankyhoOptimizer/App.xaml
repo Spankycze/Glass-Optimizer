@@ -1,0 +1,215 @@
+<Application
+    x:Class="SpankyhoOptimizer.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    RequestedTheme="Light">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <controls:XamlControlsResources />
+            </ResourceDictionary.MergedDictionaries>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="SpankyRowSurfaceBrush" Color="#FFFFFFFF"/>
+                    <SolidColorBrush x:Key="SpankyRowBorderBrush" Color="#FFDADFE8"/>
+                    <SolidColorBrush x:Key="SpankyRowAccentSurfaceBrush" Color="#FFEAF2FF"/>
+                    <SolidColorBrush x:Key="SpankyRowBadgeSurfaceBrush" Color="#FFE9EDF4"/>
+                    
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="SpankyRowSurfaceBrush" Color="#FF0B0E17"/>
+                    <SolidColorBrush x:Key="SpankyRowBorderBrush" Color="#FF282D3D"/>
+                    <SolidColorBrush x:Key="SpankyRowAccentSurfaceBrush" Color="#FF101D33"/>
+                    <SolidColorBrush x:Key="SpankyRowBadgeSurfaceBrush" Color="#FF252B3C"/>
+                    
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+            <SolidColorBrush x:Key="SpankyControlOnBrush" Color="#FF1D7FE7"/>
+            <FontFamily x:Key="ContentControlThemeFontFamily">Segoe UI Variable Text, Segoe UI</FontFamily>
+            <FontFamily x:Key="ControlContentThemeFontFamily">Segoe UI Variable Text, Segoe UI</FontFamily>
+            <Style TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI"/>
+                <Setter Property="FontWeight" Value="Medium"/>
+            </Style>
+            <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#FF1D7FE7"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#FF399BF3"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#FF1464BF"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOnDisabled" Color="#661D7FE7"/>
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOn" Color="#FF1D7FE7"/>
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOnPointerOver" Color="#FF399BF3"/>
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOnPressed" Color="#FF1464BF"/>
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOnDisabled" Color="#661D7FE7"/>
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOn" Color="#FFFFFFFF"/>
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPointerOver" Color="#FFFFFFFF"/>
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPressed" Color="#FFFFFFFF"/>
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOnDisabled" Color="#99FFFFFF"/>
+            <SolidColorBrush x:Key="ToggleSwitchKnobStrokeOn" Color="#00FFFFFF"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOff" Color="#FF1B2333"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOffPointerOver" Color="#FF222D40"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOffPressed" Color="#FF18202E"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOffDisabled" Color="#661B2333"/>
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOff" Color="#FF56657A"/>
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOffPointerOver" Color="#FF71829A"/>
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOffPressed" Color="#FF45546A"/>
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOffDisabled" Color="#6656657A"/>
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOff" Color="#FFDCE7F7"/>
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOffPointerOver" Color="#FFFFFFFF"/>
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOffPressed" Color="#FFFFFFFF"/>
+            <SolidColorBrush x:Key="ToggleSwitchKnobFillOffDisabled" Color="#88DCE7F7"/>
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#FF1D7FE7"/>
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPointerOver" Color="#FF399BF3"/>
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPressed" Color="#FF1464BF"/>
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeChecked" Color="#FF1D7FE7"/>
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeCheckedPointerOver" Color="#FF399BF3"/>
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeCheckedPressed" Color="#FF1464BF"/>
+            <SolidColorBrush x:Key="CheckBoxCheckGlyphForegroundChecked" Color="#FFFFFFFF"/>
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFill" Color="#FF1D7FE7"/>
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFillPointerOver" Color="#FF399BF3"/>
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFillPressed" Color="#FF1464BF"/>
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStroke" Color="#FF1D7FE7"/>
+            <SolidColorBrush x:Key="RadioButtonCheckGlyphFill" Color="#FFFFFFFF"/>
+            <Color x:Key="AccentFillColorDefault">#FF1D7FE7</Color>
+            <Color x:Key="AccentFillColorSecondary">#FF399BF3</Color>
+            <Color x:Key="AccentFillColorTertiary">#FF1464BF</Color>
+            <Color x:Key="AccentFillColorDisabled">#661D7FE7</Color>
+            <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="{StaticResource AccentFillColorDefault}"/>
+            <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="{StaticResource AccentFillColorSecondary}"/>
+            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="{StaticResource AccentFillColorTertiary}"/>
+            <SolidColorBrush x:Key="AccentFillColorDisabledBrush" Color="{StaticResource AccentFillColorDisabled}"/>
+            <Style TargetType="ToggleSwitch">
+                <Setter Property="AutomationProperties.Name" Value="Přepínač nastavení"/>
+                <Setter Property="MinWidth" Value="42"/>
+                <Setter Property="MinHeight" Value="22"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ToggleSwitch">
+                            <Grid MinWidth="42" MinHeight="22">
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal"/>
+                                        <VisualState x:Name="PointerOver"/>
+                                        <VisualState x:Name="Pressed"/>
+                                        <VisualState x:Name="Disabled"/>
+                                    </VisualStateGroup>
+                                    <VisualStateGroup x:Name="ToggleStates">
+                                        <VisualState x:Name="Off">
+                                            <VisualState.Setters>
+                                                <Setter Target="SpankyThumbTransform.X" Value="0"/>
+                                                <Setter Target="SpankyTrack.Background" Value="{StaticResource ToggleSwitchFillOff}"/>
+                                                <Setter Target="SpankyTrack.BorderBrush" Value="{StaticResource ToggleSwitchStrokeOff}"/>
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                        <VisualState x:Name="On">
+                                            <VisualState.Setters>
+                                                <Setter Target="SpankyThumbTransform.X" Value="20"/>
+                                                <Setter Target="SpankyTrack.Background" Value="{StaticResource ToggleSwitchFillOn}"/>
+                                                <Setter Target="SpankyTrack.BorderBrush" Value="{StaticResource ToggleSwitchStrokeOn}"/>
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <Border x:Name="SpankyTrack" Width="42" Height="22" CornerRadius="11" Background="{StaticResource ToggleSwitchFillOff}" BorderBrush="{StaticResource ToggleSwitchStrokeOff}" BorderThickness="1" VerticalAlignment="Center">
+                                        <Border Width="16" Height="16" CornerRadius="8" Background="#FFFFFFFF" HorizontalAlignment="Left" Margin="3,0">
+                                            <Border.RenderTransform><TranslateTransform x:Name="SpankyThumbTransform"/></Border.RenderTransform>
+                                        </Border>
+                                    </Border>
+                                    <ContentPresenter Grid.Column="1" Content="{TemplateBinding OnContent}" VerticalAlignment="Center"/>
+                                </Grid>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <DataTemplate x:Key="StartupRowTemplateV209">
+                <Border Margin="0" Padding="12,16" CornerRadius="0" Background="{ThemeResource SpankyRowSurfaceBrush}" BorderBrush="{ThemeResource SpankyRowBorderBrush}" BorderThickness="0,0,0,1">
+                    <Grid ColumnSpacing="11">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Image Width="33" Height="33" Source="ms-appx:///Assets/SidebarIcons/startup.svg" Stretch="Uniform" VerticalAlignment="Center"/>
+                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13.5" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding Subtitle}" FontSize="11.2" Opacity=".68" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding FilePath}" FontSize="10.6" Opacity=".55" TextWrapping="Wrap" MaxLines="1" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding StateText}" FontSize="10.2" Opacity=".72" VerticalAlignment="Center"/>
+                            <ToggleSwitch IsOn="{Binding Enabled,Mode=TwoWay}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="{Binding Name}" OffContent="" OnContent="" MinWidth="50"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </DataTemplate>
+
+            <DataTemplate x:Key="TaskRowTemplateV136">
+                <Border Margin="0" Padding="12,16" CornerRadius="0" Background="{ThemeResource SpankyRowSurfaceBrush}" BorderBrush="{ThemeResource SpankyRowBorderBrush}" BorderThickness="0,0,0,1">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="31" Height="31" CornerRadius="8" Background="{ThemeResource SpankyRowAccentSurfaceBrush}">
+                            <FontIcon Glyph="&#xE823;" FontFamily="Segoe Fluent Icons" FontSize="21"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding Path}" FontSize="11" Opacity="0.62" TextWrapping="Wrap" MaxLines="1" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding SafetyText}" FontSize="10.6" Opacity="0.75" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Spacing="4" VerticalAlignment="Center">
+                            <Border Padding="7,3" CornerRadius="5" Background="{ThemeResource SpankyRowBadgeSurfaceBrush}">
+                                <TextBlock Text="{Binding StateText}" FontSize="9" FontWeight="SemiBold"/>
+                            </Border>
+                            <Border Padding="7,3" CornerRadius="5" Background="{ThemeResource SpankyRowAccentSurfaceBrush}">
+                                <TextBlock Text="{Binding ProtectionText}" FontSize="8.5" FontWeight="SemiBold"/>
+                            </Border>
+                        </StackPanel>
+                        <ToggleSwitch Grid.Column="3" IsOn="{Binding Enabled,Mode=TwoWay}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="{Binding Name}" OffContent="" OnContent="" VerticalAlignment="Center"/>
+                    </Grid>
+                </Border>
+            </DataTemplate>
+
+            <ItemsPanelTemplate x:Key="SpankyVirtualizingItemsPanel">
+                <ItemsStackPanel AreStickyGroupHeadersEnabled="False"/>
+            </ItemsPanelTemplate>
+
+            <DataTemplate x:Key="TweakVirtualRowTemplate">
+                <Grid HorizontalAlignment="Stretch">
+                    <Border Visibility="{Binding CardVisibility}" Background="{Binding CardBackground}" BorderBrush="{Binding CardBorder}" BorderThickness="0,0,0,1" CornerRadius="0" Margin="0" Padding="2,16">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="0"/>
+                                <ColumnDefinition/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            
+                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" Foreground="{Binding TextPrimary}"/>
+                                <TextBlock Text="{Binding Description}" FontSize="12" Foreground="{Binding TextSecondary}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="{Binding StatusText}" FontSize="9.5" FontWeight="SemiBold" Foreground="{Binding StatusBrush}"/>
+                                <TextBlock Text="{Binding Meta}" FontSize="10.7" Foreground="{Binding TextSecondary}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding ToggleStateText}" FontSize="11" FontWeight="SemiBold" Opacity=".72" VerticalAlignment="Center"/>
+                                <ToggleSwitch IsOn="{Binding Pending,Mode=TwoWay}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="{Binding Name}" ToolTipService.ToolTip="{Binding PolicyDetail}" OnContent="" OffContent="" MinWidth="0" Padding="0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </DataTemplate>
+
+            <!-- Hide vertical scrollbars app-wide while preserving wheel/touchpad/touch scrolling. -->
+            <Style TargetType="ScrollViewer">
+                <Setter Property="VerticalScrollBarVisibility" Value="Hidden"/>
+                <Setter Property="VerticalScrollMode" Value="Enabled"/>
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

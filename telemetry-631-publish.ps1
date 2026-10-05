@@ -1,0 +1,8 @@
+$ErrorActionPreference='Stop'
+Set-Location $PSScriptRoot
+& .\ai-workflow.ps1 -Action checkpoint -TaskId 'telemetry-631' -Summary 'Fresh631 six smoke suites passed, real RAM summary/gauge and late snapshot regression green.' -NextAction 'Gated release631 and verify installation/payload/fan agent.' -Done @('Old regression reproduced','Live sample synchronization fixed','Six smoke suites passed') -Pending @('Release and installation') -Evidence @('artifacts\telemetry-631\red-regression.log','artifacts\telemetry-631\validation-result.json')
+$text=[IO.File]::ReadAllText((Join-Path $PWD 'changelog-630-release.ps1')).Replace('changelog-630','telemetry-631').Replace('15.4.630','15.4.631').Replace('V15_4_630','V15_4_631').Replace('CHANGELOG630','RAM631')
+$text=$text.Replace('Installed630: changelog remains stable after actual hardware and tweak history refresh. Failing regression reproduced before fix, all six smoke suites and gated release/install passed.','Installed631: RAM summary and gauge update from same live sample; late snapshot retains latest data. Red regression confirmed, six green suites and gated release/install passed.').Replace('Changelog correction complete and installed630. Continue with next user request; source631 is only automatic bump.','RAM telemetry correction complete and installed631. Source632 is automatic bump; await next user request.').Replace("'Actual refresh keeps release rows stable'","'Live RAM summary/gauge and late snapshot verified'").Replace('Fresh630','Fresh631')
+[IO.File]::WriteAllText((Join-Path $PWD 'telemetry-631-release.ps1'),$text)
+& .\telemetry-631-release.ps1
+if(!$?){throw 'Release/install failed'}

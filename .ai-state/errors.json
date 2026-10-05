@@ -1,0 +1,652 @@
+{
+    "schema":  1,
+    "updatedAt":  "2026-10-03T21:39:33.1159488+02:00",
+    "errors":  [
+                   {
+                       "key":  "+ ... code -ne 0){throw \"release ui smoke bundle failed: $($releaseuismoke. ...",
+                       "message":  "+ ... Code -ne 0){throw \"Release UI smoke bundle failed: $($releaseUiSmoke. ...",
+                       "kind":  "build-release",
+                       "firstSeen":  "2026-10-01T03:40:02.8778012+02:00",
+                       "lastSeen":  "2026-10-03T21:35:49.6385663+02:00",
+                       "count":  7,
+                       "regressionCount":  4,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261003_213434_540.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-03T21:39:33.1159488+02:00"
+                   },
+                   {
+                       "key":  "release ui smoke bundle failed: #",
+                       "message":  "Release UI smoke bundle failed: 73",
+                       "kind":  "build-release",
+                       "firstSeen":  "2026-10-01T03:40:02.8778012+02:00",
+                       "lastSeen":  "2026-10-03T21:35:49.6385663+02:00",
+                       "count":  7,
+                       "regressionCount":  4,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261003_213434_540.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-03T21:39:33.1159488+02:00"
+                   },
+                   {
+                       "key":  "+ categoryinfo : operationstopped: (release ui smoke bundle failed: #:string) [], runtimeexception",
+                       "message":  "+ CategoryInfo          : OperationStopped: (Release UI smoke bundle failed: 73:String) [], RuntimeException",
+                       "kind":  "build-release",
+                       "firstSeen":  "2026-10-01T03:40:02.8778012+02:00",
+                       "lastSeen":  "2026-10-03T21:35:49.6385663+02:00",
+                       "count":  7,
+                       "regressionCount":  4,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261003_213434_540.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-03T21:39:33.1159488+02:00"
+                   },
+                   {
+                       "key":  "+ fullyqualifiederrorid : release ui smoke bundle failed: #",
+                       "message":  "+ FullyQualifiedErrorId : Release UI smoke bundle failed: 73",
+                       "kind":  "build-release",
+                       "firstSeen":  "2026-10-01T03:40:02.8778012+02:00",
+                       "lastSeen":  "2026-10-03T21:35:49.6385663+02:00",
+                       "count":  7,
+                       "regressionCount":  4,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261003_213434_540.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-03T21:39:33.1159488+02:00"
+                   },
+                   {
+                       "key":  "+ if($buildexit -ne 0){throw \u0027fast incremental build failed.\u0027}",
+                       "message":  "+ if($buildExit -ne 0){throw \u0027Fast incremental build failed.\u0027}",
+                       "kind":  "build-fast",
+                       "firstSeen":  "2026-09-28T15:17:29.6367274+02:00",
+                       "lastSeen":  "2026-10-03T21:07:25.1588826+02:00",
+                       "count":  10,
+                       "regressionCount":  9,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261003_210718_497.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-03T21:11:38.3223845+02:00"
+                   },
+                   {
+                       "key":  "+ categoryinfo : operationstopped: (fast incremental build failed.:string) [], runtimeexception",
+                       "message":  "+ CategoryInfo          : OperationStopped: (Fast incremental build failed.:String) [], RuntimeException",
+                       "kind":  "build-fast",
+                       "firstSeen":  "2026-09-28T15:17:29.6367274+02:00",
+                       "lastSeen":  "2026-10-03T21:07:25.1588826+02:00",
+                       "count":  10,
+                       "regressionCount":  9,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261003_210718_497.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-03T21:11:38.3223845+02:00"
+                   },
+                   {
+                       "key":  "+ fullyqualifiederrorid : fast incremental build failed.",
+                       "message":  "+ FullyQualifiedErrorId : Fast incremental build failed.",
+                       "kind":  "build-fast",
+                       "firstSeen":  "2026-09-28T15:17:29.6367274+02:00",
+                       "lastSeen":  "2026-10-03T21:07:25.1588826+02:00",
+                       "count":  10,
+                       "regressionCount":  9,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261003_210718_497.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-03T21:11:38.3223845+02:00"
+                   },
+                   {
+                       "key":  "fast incremental build failed.",
+                       "message":  "Fast incremental build failed.",
+                       "kind":  "build-fast",
+                       "firstSeen":  "2026-09-28T15:17:29.6367274+02:00",
+                       "lastSeen":  "2026-10-03T21:07:25.1588826+02:00",
+                       "count":  10,
+                       "regressionCount":  9,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261003_210718_497.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-03T21:11:38.3223845+02:00"
+                   },
+                   {
+                       "key":  "full fallback build failed. exit=1",
+                       "message":  "Full fallback build failed. exit=1",
+                       "kind":  "build-fast",
+                       "firstSeen":  "2026-09-30T19:16:50.2214551+02:00",
+                       "lastSeen":  "2026-10-02T23:50:54.7848408+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261002_235044_995.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-02T23:52:04.7260252+02:00"
+                   },
+                   {
+                       "key":  "+ categoryinfo : operationstopped: (full fallback build failed. exit=1:string) [], runtimeexception",
+                       "message":  "+ CategoryInfo          : OperationStopped: (Full fallback build failed. exit=1:String) [], RuntimeException",
+                       "kind":  "build-fast",
+                       "firstSeen":  "2026-09-30T19:16:50.2214551+02:00",
+                       "lastSeen":  "2026-10-02T23:50:54.7848408+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261002_235044_995.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-02T23:52:04.7260252+02:00"
+                   },
+                   {
+                       "key":  "+ ... code -ne 0){throw (\u0027full fallback build failed. exit={0}\u0027 -f $exitcod ...",
+                       "message":  "+ ... Code -ne 0){throw (\u0027Full fallback build failed. exit={0}\u0027 -f $exitCod ...",
+                       "kind":  "build-fast",
+                       "firstSeen":  "2026-09-30T19:16:50.2214551+02:00",
+                       "lastSeen":  "2026-10-02T23:50:54.7848408+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261002_235044_995.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-02T23:52:04.7260252+02:00"
+                   },
+                   {
+                       "key":  "+ fullyqualifiederrorid : full fallback build failed. exit=1",
+                       "message":  "+ FullyQualifiedErrorId : Full fallback build failed. exit=1",
+                       "kind":  "build-fast",
+                       "firstSeen":  "2026-09-30T19:16:50.2214551+02:00",
+                       "lastSeen":  "2026-10-02T23:50:54.7848408+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261002_235044_995.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-02T23:52:04.7260252+02:00"
+                   },
+                   {
+                       "key":  "+ fullyqualifiederrorid : dev build failed.",
+                       "message":  "+ FullyQualifiedErrorId : Dev build failed.",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-10-01T05:10:49.4897409+02:00",
+                       "lastSeen":  "2026-10-01T16:25:21.4522647+02:00",
+                       "count":  4,
+                       "regressionCount":  3,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_162515_735.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T16:26:31.6719811+02:00"
+                   },
+                   {
+                       "key":  "+ categoryinfo : operationstopped: (dev build failed.:string) [], runtimeexception",
+                       "message":  "+ CategoryInfo          : OperationStopped: (Dev build failed.:String) [], RuntimeException",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-10-01T05:10:49.4897409+02:00",
+                       "lastSeen":  "2026-10-01T16:25:21.4522647+02:00",
+                       "count":  4,
+                       "regressionCount":  3,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_162515_735.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T16:26:31.6719811+02:00"
+                   },
+                   {
+                       "key":  "dev build failed.",
+                       "message":  "Dev build failed.",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-10-01T05:10:49.4897409+02:00",
+                       "lastSeen":  "2026-10-01T16:25:21.4522647+02:00",
+                       "count":  4,
+                       "regressionCount":  3,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_162515_735.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T16:26:31.6719811+02:00"
+                   },
+                   {
+                       "key":  "+ if($buildexit -ne 0){throw \u0027dev build failed.\u0027}",
+                       "message":  "+ if($buildExit -ne 0){throw \u0027Dev build failed.\u0027}",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-10-01T05:10:49.4897409+02:00",
+                       "lastSeen":  "2026-10-01T16:25:21.4522647+02:00",
+                       "count":  4,
+                       "regressionCount":  3,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_162515_735.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T16:26:31.6719811+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.16s",
+                       "message":  "--process-timeout-smoke  1.16s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-10-01T01:15:07.0722415+02:00",
+                       "lastSeen":  "2026-10-01T02:58:54.4842487+02:00",
+                       "count":  3,
+                       "regressionCount":  2,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_025740_369.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T02:58:54.4842487+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.19s",
+                       "message":  "--process-timeout-smoke  1.19s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-30T20:55:50.3410099+02:00",
+                       "lastSeen":  "2026-10-01T02:42:01.3844321+02:00",
+                       "count":  5,
+                       "regressionCount":  4,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_024046_793.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T02:42:01.3844321+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.21s",
+                       "message":  "--process-timeout-smoke  1.21s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-30T19:22:17.6836744+02:00",
+                       "lastSeen":  "2026-10-01T02:31:10.2842300+02:00",
+                       "count":  5,
+                       "regressionCount":  4,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_022955_575.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T02:31:10.2842300+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.18s",
+                       "message":  "--process-timeout-smoke  1.18s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T14:33:04.1681371+02:00",
+                       "lastSeen":  "2026-10-01T02:16:39.2055505+02:00",
+                       "count":  3,
+                       "regressionCount":  2,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_021524_133.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T02:16:39.2055505+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.22s",
+                       "message":  "--process-timeout-smoke  1.22s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-30T20:49:14.0601636+02:00",
+                       "lastSeen":  "2026-10-01T01:29:24.1341595+02:00",
+                       "count":  3,
+                       "regressionCount":  2,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_012809_371.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T01:29:24.1341595+02:00"
+                   },
+                   {
+                       "key":  "+ categoryinfo : operationstopped: (critical leak release smoke failed: #:string) [], runtimeexception",
+                       "message":  "+ CategoryInfo          : OperationStopped: (Critical leak release smoke failed: 52:String) [], RuntimeException",
+                       "kind":  "build-release",
+                       "firstSeen":  "2026-10-01T01:16:44.5105597+02:00",
+                       "lastSeen":  "2026-10-01T01:16:44.5105597+02:00",
+                       "count":  1,
+                       "regressionCount":  0,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_011507_161.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T01:20:33.2117244+02:00"
+                   },
+                   {
+                       "key":  "+ ... code -ne 0){throw \"critical leak release smoke failed: $($criticallea ...",
+                       "message":  "+ ... Code -ne 0){throw \"Critical leak release smoke failed: $($criticalLea ...",
+                       "kind":  "build-release",
+                       "firstSeen":  "2026-10-01T01:16:44.5105597+02:00",
+                       "lastSeen":  "2026-10-01T01:16:44.5105597+02:00",
+                       "count":  1,
+                       "regressionCount":  0,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_011507_161.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T01:20:33.2117244+02:00"
+                   },
+                   {
+                       "key":  "critical leak release smoke failed: #",
+                       "message":  "Critical leak release smoke failed: 52",
+                       "kind":  "build-release",
+                       "firstSeen":  "2026-10-01T01:16:44.5105597+02:00",
+                       "lastSeen":  "2026-10-01T01:16:44.5105597+02:00",
+                       "count":  1,
+                       "regressionCount":  0,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_011507_161.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T01:20:33.2117244+02:00"
+                   },
+                   {
+                       "key":  "+ fullyqualifiederrorid : critical leak release smoke failed: #",
+                       "message":  "+ FullyQualifiedErrorId : Critical leak release smoke failed: 52",
+                       "kind":  "build-release",
+                       "firstSeen":  "2026-10-01T01:16:44.5105597+02:00",
+                       "lastSeen":  "2026-10-01T01:16:44.5105597+02:00",
+                       "count":  1,
+                       "regressionCount":  0,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_011507_161.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T01:20:33.2117244+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.17s",
+                       "message":  "--process-timeout-smoke  1.17s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-10-01T00:38:16.7886071+02:00",
+                       "lastSeen":  "2026-10-01T00:53:19.9504618+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_005205_149.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T00:53:19.9504618+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.2s",
+                       "message":  "--process-timeout-smoke  1.2s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-30T16:00:41.6571365+02:00",
+                       "lastSeen":  "2026-10-01T00:29:28.9311232+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20261001_002814_043.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-10-01T00:29:28.9311232+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.24s",
+                       "message":  "--process-timeout-smoke  1.24s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T12:17:13.9244392+02:00",
+                       "lastSeen":  "2026-09-30T19:01:38.5892432+02:00",
+                       "count":  3,
+                       "regressionCount":  2,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260930_190025_659.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-30T19:01:38.5892432+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.31s",
+                       "message":  "--process-timeout-smoke  1.31s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T12:20:44.5084149+02:00",
+                       "lastSeen":  "2026-09-30T15:33:54.4930528+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260930_153228_721.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-30T15:33:54.4930528+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.25s",
+                       "message":  "--process-timeout-smoke  1.25s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T12:47:49.8790193+02:00",
+                       "lastSeen":  "2026-09-28T21:25:25.7217899+02:00",
+                       "count":  5,
+                       "regressionCount":  4,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260928_212412_835.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-28T21:25:25.7217899+02:00"
+                   },
+                   {
+                       "key":  "+ fullyqualifiederrorid : --full-smoke selhal, exit=#",
+                       "message":  "+ FullyQualifiedErrorId : --full-smoke selhal, exit=51",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T15:55:09.7433975+02:00",
+                       "lastSeen":  "2026-09-28T15:55:09.7433975+02:00",
+                       "count":  1,
+                       "regressionCount":  0,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260928_155504_994.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-28T20:41:11.1535716+02:00"
+                   },
+                   {
+                       "key":  "--full-smoke selhal, exit=#",
+                       "message":  "--full-smoke selhal, exit=51",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T15:55:09.7433975+02:00",
+                       "lastSeen":  "2026-09-28T15:55:09.7433975+02:00",
+                       "count":  1,
+                       "regressionCount":  0,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260928_155504_994.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-28T20:41:11.1535716+02:00"
+                   },
+                   {
+                       "key":  "+ if($p.exitcode -ne 0){throw \"$arg selhal, exit=$($p.exitcode)\"}",
+                       "message":  "+   if($p.ExitCode -ne 0){throw \"$arg selhal, exit=$($p.ExitCode)\"}",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T13:21:34.5926112+02:00",
+                       "lastSeen":  "2026-09-28T15:55:09.7433975+02:00",
+                       "count":  3,
+                       "regressionCount":  2,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260928_155504_994.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-28T20:41:11.1535716+02:00"
+                   },
+                   {
+                       "key":  "+ categoryinfo : operationstopped: (--full-smoke selhal, exit=#:string) [], runtimeexception",
+                       "message":  "+ CategoryInfo          : OperationStopped: (--full-smoke selhal, exit=51:String) [], RuntimeException",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T15:55:09.7433975+02:00",
+                       "lastSeen":  "2026-09-28T15:55:09.7433975+02:00",
+                       "count":  1,
+                       "regressionCount":  0,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260928_155504_994.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-28T20:41:11.1535716+02:00"
+                   },
+                   {
+                       "key":  "--process-timeout-smoke 1.23s",
+                       "message":  "--process-timeout-smoke  1.23s",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T12:25:09.0029629+02:00",
+                       "lastSeen":  "2026-09-28T14:48:08.0257584+02:00",
+                       "count":  5,
+                       "regressionCount":  4,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260928_144654_886.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-28T14:48:08.0257584+02:00"
+                   },
+                   {
+                       "key":  "+ fullyqualifiederrorid : --keyboard-activation-smoke selhal, exit=#",
+                       "message":  "+ FullyQualifiedErrorId : --keyboard-activation-smoke selhal, exit=81",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T13:21:34.5926112+02:00",
+                       "lastSeen":  "2026-09-28T14:15:44.4240767+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260928_141448_688.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-28T14:20:04.3305505+02:00"
+                   },
+                   {
+                       "key":  "--keyboard-activation-smoke selhal, exit=#",
+                       "message":  "--keyboard-activation-smoke selhal, exit=81",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T13:21:34.5926112+02:00",
+                       "lastSeen":  "2026-09-28T14:15:44.4240767+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260928_141448_688.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-28T14:20:04.3305505+02:00"
+                   },
+                   {
+                       "key":  "+ categoryinfo : operationstopped: (--keyboard-acti...selhal, exit=#:string) [], runtimeexception",
+                       "message":  "+ CategoryInfo          : OperationStopped: (--keyboard-acti...selhal, exit=81:String) [], RuntimeException",
+                       "kind":  "build-test",
+                       "firstSeen":  "2026-09-28T13:21:34.5926112+02:00",
+                       "lastSeen":  "2026-09-28T14:15:44.4240767+02:00",
+                       "count":  2,
+                       "regressionCount":  1,
+                       "lastLog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\.dc-logs\\dc_20260928_141448_688.log",
+                       "rootCause":  null,
+                       "fixThatWorked":  null,
+                       "filesInvolved":  [
+
+                                         ],
+                       "resolved":  true,
+                       "resolvedAt":  "2026-09-28T14:20:04.3305505+02:00"
+                   }
+               ]
+}

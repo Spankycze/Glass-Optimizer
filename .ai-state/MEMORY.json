@@ -1,0 +1,19 @@
+{
+    "schema":  1,
+    "updatedAt":  "2026-09-28T00:13:30.4976386+02:00",
+    "items":  [
+                  {
+                      "id":  "mem-20260928001330422",
+                      "text":  "AI workflow bootstrap verified",
+                      "scope":  "project",
+                      "taskId":  "",
+                      "tags":  [
+                                   "workflow",
+                                   "checkpoint"
+                               ],
+                      "createdAt":  "2026-09-28T00:13:30.4169699+02:00",
+                      "lastAccessedAt":  "2026-09-28T00:13:30.4520169+02:00",
+                      "expiresAt":  "2026-10-28T00:13:30.4169699+01:00"
+                  }
+              ]
+}

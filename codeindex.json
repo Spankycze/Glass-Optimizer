@@ -1,0 +1,13 @@
+{
+  "cacheDir": "user",
+  "exclude": [
+    ".tools",
+    "artifacts",
+    ".buildcache",
+    "benchmarks",
+    "fuzz",
+    "tools"
+  ],
+  "indexTypeScript": false,
+  "looseProjects": true
+}

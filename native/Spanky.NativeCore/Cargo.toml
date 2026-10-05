@@ -1,0 +1,14 @@
+[package]
+name = "spanky-native-core"
+version = "13.7.0"
+edition = "2021"
+
+[lib]
+name = "spanky_native_core"
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

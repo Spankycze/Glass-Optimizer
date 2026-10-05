@@ -1,0 +1,17 @@
+<Project>
+  <Target Name="_SpankyFastReuseXamlBefore"
+          BeforeTargets="XamlPreCompile"
+          Condition="'$(SpankyFastXamlReuse)' == 'true' and Exists('@(XamlIntermediateAssembly)')">
+    <PropertyGroup>
+      <_SpankyOriginalSkipCompilerExecution>$(SkipCompilerExecution)</_SpankyOriginalSkipCompilerExecution>
+      <SkipCompilerExecution>true</SkipCompilerExecution>
+    </PropertyGroup>
+  </Target>
+  <Target Name="_SpankyFastReuseXamlAfter"
+          AfterTargets="XamlPreCompile"
+          Condition="'$(SpankyFastXamlReuse)' == 'true'">
+    <PropertyGroup>
+      <SkipCompilerExecution>$(_SpankyOriginalSkipCompilerExecution)</SkipCompilerExecution>
+    </PropertyGroup>
+  </Target>
+</Project>

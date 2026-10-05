@@ -1,0 +1,459 @@
+{
+    "generatedAt":  "2026-09-27T23:54:32.7918781+02:00",
+    "version":  "15.4.371",
+    "repetitions":  10,
+    "buildFastMs":  2049.8,
+    "buildProfile":  {
+                         "wallMs":  6253.5,
+                         "exit":  0,
+                         "binlog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\perf\\20260927_235324\\build-profile\\incremental.binlog",
+                         "hotLines":  [
+                                          "       CoreCompile:",
+                                          "       Skipping target \"CoreCompile\" because all output files are up-to-date with respect to the input files.",
+                                          "     1\u003eMarkupCompilePass1:",
+                                          "       XamlPreCompile:",
+                                          "       MarkupCompilePass2:",
+                                          "       CoreCompile:",
+                                          "       Skipping target \"CoreCompile\" because all output files are up-to-date with respect to the input files.",
+                                          "        0 ms  _BeforeVBCSCoreCompile                     2 calls",
+                                          "       16 ms  CoreCompile                                2 calls",
+                                          "      156 ms  ResolveProjectReferences                   2 calls",
+                                          "      443 ms  MarkupCompilePass2                         1 calls",
+                                          "      522 ms  MarkupCompilePass1                         1 calls",
+                                          "     3029 ms  XamlPreCompile                             1 calls"
+                                      ]
+                     },
+    "startup":  {
+                    "samples":  [
+                                    186,
+                                    187,
+                                    193,
+                                    198,
+                                    194,
+                                    193,
+                                    200,
+                                    186,
+                                    193,
+                                    184
+                                ],
+                    "medianMs":  193,
+                    "p95Ms":  200
+                },
+    "cold":  {
+                 "network":  {
+                                 "samples":  [
+                                                 23,
+                                                 22,
+                                                 21,
+                                                 22,
+                                                 23,
+                                                 20,
+                                                 20,
+                                                 26,
+                                                 24,
+                                                 29
+                                             ],
+                                 "medianMs":  22.5,
+                                 "p95Ms":  29
+                             },
+                 "storage":  {
+                                 "samples":  [
+                                                 18,
+                                                 17,
+                                                 18,
+                                                 15,
+                                                 16,
+                                                 18,
+                                                 15,
+                                                 17,
+                                                 19,
+                                                 16
+                                             ],
+                                 "medianMs":  17,
+                                 "p95Ms":  19
+                             },
+                 "gpu":  {
+                             "samples":  [
+                                             15,
+                                             14,
+                                             13,
+                                             13,
+                                             13,
+                                             14,
+                                             12,
+                                             12,
+                                             15,
+                                             11
+                                         ],
+                             "medianMs":  13,
+                             "p95Ms":  15
+                         },
+                 "startup":  {
+                                 "samples":  [
+                                                 13,
+                                                 12,
+                                                 13,
+                                                 12,
+                                                 11,
+                                                 12,
+                                                 12,
+                                                 12,
+                                                 12,
+                                                 11
+                                             ],
+                                 "medianMs":  12,
+                                 "p95Ms":  13
+                             },
+                 "services":  {
+                                  "samples":  [
+                                                  13,
+                                                  12,
+                                                  10,
+                                                  11,
+                                                  10,
+                                                  10,
+                                                  11,
+                                                  11,
+                                                  14,
+                                                  11
+                                              ],
+                                  "medianMs":  11,
+                                  "p95Ms":  14
+                              },
+                 "defender":  {
+                                  "samples":  [
+                                                  10,
+                                                  10,
+                                                  7,
+                                                  8,
+                                                  11,
+                                                  10,
+                                                  11,
+                                                  9,
+                                                  11,
+                                                  9
+                                              ],
+                                  "medianMs":  10,
+                                  "p95Ms":  11
+                              },
+                 "debloat":  {
+                                 "samples":  [
+                                                 8,
+                                                 8,
+                                                 7,
+                                                 8,
+                                                 8,
+                                                 7,
+                                                 7,
+                                                 9,
+                                                 9,
+                                                 7
+                                             ],
+                                 "medianMs":  8,
+                                 "p95Ms":  9
+                             },
+                 "power":  {
+                               "samples":  [
+                                               5,
+                                               4,
+                                               3,
+                                               4,
+                                               5,
+                                               4,
+                                               4,
+                                               4,
+                                               4,
+                                               4
+                                           ],
+                               "medianMs":  4,
+                               "p95Ms":  5
+                           }
+             },
+    "warm":  {
+                 "network":  {
+                                 "samples":  [
+                                                 3,
+                                                 2,
+                                                 1,
+                                                 2,
+                                                 2,
+                                                 2,
+                                                 1,
+                                                 1,
+                                                 2,
+                                                 1
+                                             ],
+                                 "medianMs":  2,
+                                 "p95Ms":  3
+                             },
+                 "storage":  {
+                                 "samples":  [
+                                                 4,
+                                                 2,
+                                                 2,
+                                                 3,
+                                                 2,
+                                                 2,
+                                                 3,
+                                                 2,
+                                                 2,
+                                                 3
+                                             ],
+                                 "medianMs":  2,
+                                 "p95Ms":  4
+                             },
+                 "gpu":  {
+                             "samples":  [
+                                             4,
+                                             2,
+                                             2,
+                                             3,
+                                             2,
+                                             2,
+                                             2,
+                                             2,
+                                             3,
+                                             2
+                                         ],
+                             "medianMs":  2,
+                             "p95Ms":  4
+                         },
+                 "startup":  {
+                                 "samples":  [
+                                                 1,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 1,
+                                                 0
+                                             ],
+                                 "medianMs":  0,
+                                 "p95Ms":  1
+                             },
+                 "services":  {
+                                  "samples":  [
+                                                  1,
+                                                  1,
+                                                  0,
+                                                  0,
+                                                  0,
+                                                  0,
+                                                  1,
+                                                  0,
+                                                  1,
+                                                  0
+                                              ],
+                                  "medianMs":  0,
+                                  "p95Ms":  1
+                              },
+                 "defender":  {
+                                  "samples":  [
+                                                  7,
+                                                  7,
+                                                  6,
+                                                  6,
+                                                  7,
+                                                  7,
+                                                  6,
+                                                  6,
+                                                  7,
+                                                  6
+                                              ],
+                                  "medianMs":  6.5,
+                                  "p95Ms":  7
+                              },
+                 "debloat":  {
+                                 "samples":  [
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 0
+                                             ],
+                                 "medianMs":  0,
+                                 "p95Ms":  0
+                             },
+                 "power":  {
+                               "samples":  [
+                                               9,
+                                               7,
+                                               6,
+                                               9,
+                                               6,
+                                               7,
+                                               8,
+                                               6,
+                                               8,
+                                               7
+                                           ],
+                               "medianMs":  7,
+                               "p95Ms":  9
+                           }
+             },
+    "memory":  {
+                   "privateDeltaMbMedian":  68.6,
+                   "privateDeltaMbP95":  70.6,
+                   "wsDeltaMbMedian":  78.2,
+                   "handleDeltaMedian":  244
+               },
+    "backend":  {
+                    "storage-probe-smoke":  {
+                                                "coldMs":  125,
+                                                "refreshMs":  28,
+                                                "id":  44,
+                                                "count":  3
+                                            },
+                    "gpu-detection-smoke":  {
+                                                "coldMs":  179,
+                                                "version":  617.14,
+                                                "warmMs":  20
+                                            },
+                    "task-scheduler-backend-smoke":  {
+                                                         "freshMs":  296,
+                                                         "tasks":  249,
+                                                         "refreshScans":  1,
+                                                         "id":  631,
+                                                         "persistentMs":  1
+                                                     },
+                    "nic-capability-smoke":  {
+                                                 "elapsedMs":  56
+                                             },
+                    "dns-readback-guard-smoke":  {
+                                                     "elapsedMs":  1
+                                                 },
+                    "dns-benchmark-smoke":  {
+                                                "elapsedMs":  2473,
+                                                "avgMs":  5.1,
+                                                "id":  5,
+                                                "total":  24,
+                                                "alive":  16
+                                            },
+                    "adapter-enumeration":  {
+                                                "medianMs":  4.275,
+                                                "p95Ms":  5.367
+                                            }
+                },
+    "soak":  {
+                 "wsDeltaMb":  0,
+                 "privateDeltaMb":  -1,
+                 "managedDeltaMb":  0,
+                 "handleDelta":  0
+             },
+    "subprocess":  {
+                       "count":  36,
+                       "powershellCount":  0,
+                       "byFile":  [
+                                      {
+                                          "file":  "netsh.exe",
+                                          "count":  11,
+                                          "totalMs":  651,
+                                          "medianMs":  59
+                                      },
+                                      {
+                                          "file":  "fsutil.exe",
+                                          "count":  5,
+                                          "totalMs":  90,
+                                          "medianMs":  17
+                                      },
+                                      {
+                                          "file":  "wpr.exe",
+                                          "count":  3,
+                                          "totalMs":  3784,
+                                          "medianMs":  3190
+                                      },
+                                      {
+                                          "file":  "dotnet-trace.exe",
+                                          "count":  2,
+                                          "totalMs":  12733,
+                                          "medianMs":  6366.5
+                                      },
+                                      {
+                                          "file":  "dotnet-counters.exe",
+                                          "count":  2,
+                                          "totalMs":  12663,
+                                          "medianMs":  6331.5
+                                      },
+                                      {
+                                          "file":  "clink_x64.exe",
+                                          "count":  2,
+                                          "totalMs":  87,
+                                          "medianMs":  43.5
+                                      },
+                                      {
+                                          "file":  "powercfg.exe",
+                                          "count":  2,
+                                          "totalMs":  39,
+                                          "medianMs":  19.5
+                                      },
+                                      {
+                                          "file":  "SpankyhoOptimizer.exe",
+                                          "count":  1,
+                                          "totalMs":  420,
+                                          "medianMs":  420
+                                      },
+                                      {
+                                          "file":  "pnputil.exe",
+                                          "count":  1,
+                                          "totalMs":  33,
+                                          "medianMs":  33
+                                      },
+                                      {
+                                          "file":  "cmd.exe",
+                                          "count":  1,
+                                          "totalMs":  24,
+                                          "medianMs":  24
+                                      },
+                                      {
+                                          "file":  "rg.exe",
+                                          "count":  1,
+                                          "totalMs":  45,
+                                          "medianMs":  45
+                                      },
+                                      {
+                                          "file":  "bcdedit.exe",
+                                          "count":  1,
+                                          "totalMs":  62,
+                                          "medianMs":  62
+                                      },
+                                      {
+                                          "file":  "zoxide.exe",
+                                          "count":  1,
+                                          "totalMs":  43,
+                                          "medianMs":  43
+                                      },
+                                      {
+                                          "file":  "fzf.exe",
+                                          "count":  1,
+                                          "totalMs":  53,
+                                          "medianMs":  53
+                                      },
+                                      {
+                                          "file":  "bat.exe",
+                                          "count":  1,
+                                          "totalMs":  50,
+                                          "medianMs":  50
+                                      },
+                                      {
+                                          "file":  "fd.exe",
+                                          "count":  1,
+                                          "totalMs":  42,
+                                          "medianMs":  42
+                                      }
+                                  ]
+                   },
+    "trace":  {
+                  "dotnetTrace":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\perf\\20260927_235324\\performance.nettrace",
+                  "dotnetCounters":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\perf\\20260927_235324\\runtime-counters.json",
+                  "wpr":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\perf\\20260927_235324\\startup.etl",
+                  "requiresElevation":  false
+              }
+}

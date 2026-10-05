@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>Spankyho_Optimizer_V$(SpankyVersionUnderscore)_Setup</AssemblyName>
+    <ApplicationIcon>App.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <SatelliteResourceLanguages>cs;en-US</SatelliteResourceLanguages>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <AssemblyTitle>Spankyho Optimizer Setup</AssemblyTitle>
+    <Product>Spankyho Optimizer</Product>
+    <Company>Spankyho</Company>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="ModernInstaller.cs" />
+    <Page Remove="ModernInstaller.xaml" />
+    <EmbeddedResource Include="ModernInstaller.xaml" LogicalName="installer-ui.xaml" />
+    <EmbeddedResource Include="payload.zip" LogicalName="payload.zip" />
+    <Content Include="App.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Resource Include="..\src\SpankyhoOptimizer\Assets\AppLogo.png" Link="AppLogo.png" />
+    <Resource Include="..\src\SpankyhoOptimizer\Assets\HeroTargetExact.png" Link="HeroTargetExact.png" />
+    <Resource Include="ReferenceInstaller.png" />
+  </ItemGroup>
+</Project>
+
+
+

@@ -1,0 +1,2520 @@
+﻿{
+    "schema":  3,
+    "generatedAt":  "2026-09-29T03:34:08.0087455+02:00",
+    "files":  [
+                  {
+                      "path":  ".context-compress.json",
+                      "length":  42,
+                      "ticks":  639261261348499784,
+                      "sha256":  "7BBBE87C5508EE239AB3333C9DEC62E9500208B909F8A7ED51A13742279C5395"
+                  },
+                  {
+                      "path":  ".dc-last.json",
+                      "length":  247,
+                      "ticks":  639262203258174423,
+                      "sha256":  "5E7505EF5DD69E7E319D8AB2E17793698F1F06F8039469627826EFAAC3DF0605"
+                  },
+                  {
+                      "path":  ".mcp.json",
+                      "length":  305,
+                      "ticks":  639261460339932868,
+                      "sha256":  "92167E6238D4D3F1120410B661AFF2B77EB4B871B422A5DA32C3391F759276F8"
+                  },
+                  {
+                      "path":  "_patch_build_console.ps1",
+                      "length":  3982,
+                      "ticks":  639261541595804581,
+                      "sha256":  "65DDF2C002EDE3DC9A87AC24022292271BB6595D9E8F6B91E70BC3631ADDEF1F"
+                  },
+                  {
+                      "path":  "agent-loop.ps1",
+                      "length":  1315,
+                      "ticks":  639261440981994861,
+                      "sha256":  "68AD2B7C5EFEDF795C2D7302881DABB9934441B9D65DA7ECA21D1C8A7905D11B"
+                  },
+                  {
+                      "path":  "ai-workflow.ps1",
+                      "length":  9599,
+                      "ticks":  639261540900966357,
+                      "sha256":  "63C5F5955FD0D0B3B25C18B1BEC526288A7A32EEDA62F8190A36426C70A849ED"
+                  },
+                  {
+                      "path":  "analyze-performance.ps1",
+                      "length":  1005,
+                      "ticks":  639261415778497138,
+                      "sha256":  "F8201D8C6D4499BC0CA0403BAB246E74EB969E12CF825F6EF642BDE0E952D4D5"
+                  },
+                  {
+                      "path":  "analyzer-regression-gate.ps1",
+                      "length":  3661,
+                      "ticks":  639262167621457519,
+                      "sha256":  "3038230356011CC1E746BAC355C28DE3B6C12417D942F86E109BAB19D6820860"
+                  },
+                  {
+                      "path":  "analyzer-timing.ps1",
+                      "length":  2446,
+                      "ticks":  639261536204338399,
+                      "sha256":  "4833684914CAFF91DA720563A087AF1D47CA57D5B57535EFF3C13CF29865BCE2"
+                  },
+                  {
+                      "path":  "api-compat-gate.ps1",
+                      "length":  2281,
+                      "ticks":  639261537477542807,
+                      "sha256":  "8387BE3FB523B550B2F68635E0C1027310284C44FE894906C614D7F000818FD1"
+                  },
+                  {
+                      "path":  "background-interference-audit.ps1",
+                      "length":  1936,
+                      "ticks":  639262135284830744,
+                      "sha256":  "7186DC98331A995535FA8021E2B53C013E1A05A3AFCB742419B6A4B9556BFB16"
+                  },
+                  {
+                      "path":  "bench.ps1",
+                      "length":  2802,
+                      "ticks":  639261437898587518,
+                      "sha256":  "28DDCFED1CC88CACEB4F830EA683834BC8A5E98E9E0EA644829B040DBD035DA4"
+                  },
+                  {
+                      "path":  "benchmarks\\SpankyhoOptimizer.Benchmarks\\Program.cs",
+                      "length":  860,
+                      "ticks":  639261483240669985,
+                      "sha256":  "8EE0B8756E6C0161CBBD7D3A456985E66A724E62009E4AB379308AC1FE77FE39"
+                  },
+                  {
+                      "path":  "benchmarks\\SpankyhoOptimizer.Benchmarks\\SpankyhoOptimizer.Benchmarks.csproj",
+                      "length":  654,
+                      "ticks":  639261458927719795,
+                      "sha256":  "F56A5B513186EC359CCE5935D68A2A18205D2813E453AB96610B63656C77EFE9"
+                  },
+                  {
+                      "path":  "binlog-report.ps1",
+                      "length":  2152,
+                      "ticks":  639261459207555546,
+                      "sha256":  "A7330295E8870D12F777F5CCD9C277D6B6C9F6AE4997C5B9E8F158B5ED64E3DF"
+                  },
+                  {
+                      "path":  "build-dev.ps1",
+                      "length":  5008,
+                      "ticks":  639262184637636666,
+                      "sha256":  "184F4B725A083086D40A30B8EF0ACC1A983950286B955F8DBB9201D5C234362B"
+                  },
+                  {
+                      "path":  "build-fast.ps1",
+                      "length":  11685,
+                      "ticks":  639262248608727655,
+                      "sha256":  "F531004F7DF82C3122049855E2D06EA50CF7B73D6BB98E2A36DC8BC082BAE0E8"
+                  },
+                  {
+                      "path":  "build-fast-xaml-reuse.targets",
+                      "length":  712,
+                      "ticks":  639262183692312363,
+                      "sha256":  "12E2D17A085E73E682E2322E946E1BB235AFC1BE30A7FBDA5D3D40B58D2827A8"
+                  },
+                  {
+                      "path":  "build-full-test.ps1",
+                      "length":  5288,
+                      "ticks":  639261841869193767,
+                      "sha256":  "84A8313D735B252C21DF6E655D2DB59FB6F0DFC684F47741925336D34718CE49"
+                  },
+                  {
+                      "path":  "build-installer-compact.ps1",
+                      "length":  2547,
+                      "ticks":  639262214953517362,
+                      "sha256":  "A04289E3DC4D2DA984DA2A63C711B6FC64D4852C6B875F8629AD6C7D2EA03538"
+                  },
+                  {
+                      "path":  "build-native.ps1",
+                      "length":  2786,
+                      "ticks":  639255567259363505,
+                      "sha256":  "95A50F1B964161572D6C9334A2F95884B3ED7462F68D4A2F905BE88DDC33AD2C"
+                  },
+                  {
+                      "path":  "build-otel.ps1",
+                      "length":  525,
+                      "ticks":  639261461351359605,
+                      "sha256":  "99D08764A4EA404D4F38F03B02FA213125553DE94886B73B3EAAD9DE63BCBF40"
+                  },
+                  {
+                      "path":  "build-perf.ps1",
+                      "length":  2260,
+                      "ticks":  639261436980639027,
+                      "sha256":  "CE18C31289CA1EE2F9B9E60E40B32DC08868D3F43EECE2FE58E2B47F353BD1B3"
+                  },
+                  {
+                      "path":  "build-profile.ps1",
+                      "length":  1444,
+                      "ticks":  639261415808145405,
+                      "sha256":  "2EEE6291BBCFAA71B4CA8C8FC17699A9F66DEAFE98FBB26E24A8947678D471E8"
+                  },
+                  {
+                      "path":  "build-release.ps1",
+                      "length":  39075,
+                      "ticks":  639262216529203510,
+                      "sha256":  "BF796973FAB3B140890D89F989E920C66EDDAC2E182C600645202E4E392DAF5A"
+                  },
+                  {
+                      "path":  "build-speed-audit.ps1",
+                      "length":  2654,
+                      "ticks":  639262206707511050,
+                      "sha256":  "2D76EB710905F84DD52486926A8C0AC9847DEE6A22BCD1A091AFA0819A324F9A"
+                  },
+                  {
+                      "path":  "build-state.ps1",
+                      "length":  12322,
+                      "ticks":  639262248571232142,
+                      "sha256":  "0AF4BCD564BBB97C3EB7E6B8291017A045820942EDFE97E3DACB2A8ABE17CE08"
+                  },
+                  {
+                      "path":  "build-test.ps1",
+                      "length":  5069,
+                      "ticks":  639261944654127973,
+                      "sha256":  "CD1558851A5B798D278A549E94749B16364EB6BA4EBC3F12644760222F6611C8"
+                  },
+                  {
+                      "path":  "cache-correctness-audit.ps1",
+                      "length":  1366,
+                      "ticks":  639262138157519058,
+                      "sha256":  "374C0F54D2199F5FA887D6FA5702B2EE53B7013B13C3AE61E1D6742935E6973A"
+                  },
+                  {
+                      "path":  "cc-run.ps1",
+                      "length":  280,
+                      "ticks":  639261262100012595,
+                      "sha256":  "DCF31A6E0872AE8BE285F3D7C0C2EADEE2609248A5D1F3B87AA668E8C9EBDFBB"
+                  },
+                  {
+                      "path":  "cleanup-audit.ps1",
+                      "length":  1732,
+                      "ticks":  639262135997739165,
+                      "sha256":  "AEB07346FF669C242B56DD9C9DA8C59E2A7BE47CB703FEBCE410CA59E999750C"
+                  },
+                  {
+                      "path":  "codeindex.json",
+                      "length":  189,
+                      "ticks":  639261460377539131,
+                      "sha256":  "B6BF93BC2B5D97486EB548F2EF98B7CE6BA3A21FE26DECA0E8617BB2FEB1B3CE"
+                  },
+                  {
+                      "path":  "continue-project.ps1",
+                      "length":  2305,
+                      "ticks":  639261559677597119,
+                      "sha256":  "C72E63EA2F67FD6BE2FD1ABCB21098C8FB24AB5039587929FB0CB336EAFDBFA4"
+                  },
+                  {
+                      "path":  "dc-smart.ps1",
+                      "length":  12599,
+                      "ticks":  639262195280999724,
+                      "sha256":  "17FBEECC5B3494D46B5F2687F4E315C740782FF5AF756FDAD165C65B0B2F5CC1"
+                  },
+                  {
+                      "path":  "dev-check.ps1",
+                      "length":  6832,
+                      "ticks":  639261583565199342,
+                      "sha256":  "E0CB9B0A4F8565DC79A777E93961F492B95E4E16B8C9BD0781B3C2EEECAFB316"
+                  },
+                  {
+                      "path":  "Directory.Build.props",
+                      "length":  1419,
+                      "ticks":  639262201815178488,
+                      "sha256":  "7AD60BDFC31B49392DEDFCE9CD55404651CAA1C1580A217DFBCDD9B60D921151"
+                  },
+                  {
+                      "path":  "dump-triage.ps1",
+                      "length":  2218,
+                      "ticks":  639261508002672187,
+                      "sha256":  "034CDA151951308703545BE02F40C080E2130E480EF5050F29280B6E3F8806EF"
+                  },
+                  {
+                      "path":  "etwprof-capture.ps1",
+                      "length":  1694,
+                      "ticks":  639261510724425975,
+                      "sha256":  "0B67AE699FE40C96C2F5C7B590EDF0F8CD0E9C8CE1176321F21BE2430036FC4E"
+                  },
+                  {
+                      "path":  "extended-analyzers.ps1",
+                      "length":  2337,
+                      "ticks":  639262194238225955,
+                      "sha256":  "98D420903E8B740DA377911D10EDC9C90B91A1CB5A37115C84B1F9DB0B5CB3C0"
+                  },
+                  {
+                      "path":  "fast-fingerprint.ps1",
+                      "length":  1687,
+                      "ticks":  639261556001721398,
+                      "sha256":  "16B3D05C38530B474BBF5D2FEF7549BA607010D51CC322A6AAD87A41D23D4C50"
+                  },
+                  {
+                      "path":  "fault-audit.ps1",
+                      "length":  1804,
+                      "ticks":  639261522083264986,
+                      "sha256":  "1F7078D30D4542A70110074C28807853C7149EF67288DF2CD1DA85A487763E97"
+                  },
+                  {
+                      "path":  "flaky-audit.ps1",
+                      "length":  3311,
+                      "ticks":  639261584224889497,
+                      "sha256":  "765A5DCC7C965A125FF0B593FA73F6FD7C47D9839C8B2D4AB10FDFAE323752DB"
+                  },
+                  {
+                      "path":  "framework-bug-classifier.ps1",
+                      "length":  2169,
+                      "ticks":  639261483975451575,
+                      "sha256":  "FAD4978325C1F9BEA3843373B89E5564251817677D98E5F7E1028564373E8470"
+                  },
+                  {
+                      "path":  "fuzz\\regressions\\json\\seed-trailing.json",
+                      "length":  34,
+                      "ticks":  639261582038844762,
+                      "sha256":  "E4FA6B4F90F9D6984CF9175C34A6195C47E49CE596E46E6067916407106AEBF5"
+                  },
+                  {
+                      "path":  "fuzz\\regressions\\json\\seed-valid.json",
+                      "length":  33,
+                      "ticks":  639261582019673449,
+                      "sha256":  "0A7F3B0D868FD1AD4B5DE791A0B56782FDB383417638C955D933E39F52B117D8"
+                  },
+                  {
+                      "path":  "fuzz\\SpankyhoOptimizer.Fuzz\\Program.cs",
+                      "length":  2995,
+                      "ticks":  639262138830694484,
+                      "sha256":  "9A9823F5B3875DF51078EDE6F9E673EAC00E970D72453FC07FCD7868B8B31CB7"
+                  },
+                  {
+                      "path":  "fuzz\\SpankyhoOptimizer.Fuzz\\SpankyhoOptimizer.Fuzz.csproj",
+                      "length":  558,
+                      "ticks":  639261455203301313,
+                      "sha256":  "D4E81C5B80172CC705033DFEC9846EDEA4F24CB32B8EFEF2A7A6522EFCE31A2F"
+                  },
+                  {
+                      "path":  "change-impact.ps1",
+                      "length":  7007,
+                      "ticks":  639262197177844688,
+                      "sha256":  "6A355FD2B2920CC248C32752AF088C01AF4C219BFFA094503F8C50140AA93F59"
+                  },
+                  {
+                      "path":  "ilspy-verify.ps1",
+                      "length":  1684,
+                      "ticks":  639261469468516703,
+                      "sha256":  "864158DC7D0C488B4490F82600A358567DA18E3D5C63C1F352A4388DE3A65C89"
+                  },
+                  {
+                      "path":  "inspect_recent_crash.ps1",
+                      "length":  368,
+                      "ticks":  639251906339157867,
+                      "sha256":  "44F9EA147F6A1012981CA6A46653BF289239EAB6F8997BB76CB97D9ED015637E"
+                  },
+                  {
+                      "path":  "inspect_spanky_processes.ps1",
+                      "length":  170,
+                      "ticks":  639251906790402093,
+                      "sha256":  "73204D1F6D22FDC3446C2231AFA7D30BE40A7B17CA04DFF1C52CC4082613260F"
+                  },
+                  {
+                      "path":  "installer\\AssemblyInfo.Restored.cs",
+                      "length":  77,
+                      "ticks":  639255219761888728,
+                      "sha256":  "51E45C062042BF67832FC053E98E20A80468BABE448DBAB0E7A2565F2FE3F8AC"
+                  },
+                  {
+                      "path":  "installer\\InstallerMain.cs",
+                      "length":  29119,
+                      "ticks":  639262221317766172,
+                      "sha256":  "3CA93F81B139456627551E547F374C3B33246C3F7AB965B8A23C809C5E0F6943"
+                  },
+                  {
+                      "path":  "installer\\InstallerWindow.Restored.cs",
+                      "length":  16568,
+                      "ticks":  639255188033427406,
+                      "sha256":  "23F1D348FFBB889FA0DC5E53380CF2B5B25819BE969B11CBF713D992D9D8AAAA"
+                  },
+                  {
+                      "path":  "installer\\ModernInstaller.xaml",
+                      "length":  5246,
+                      "ticks":  639255219761929612,
+                      "sha256":  "B871AD5E7E608533ACCE7E5FFFF8D787A1F427389DA7C3592615A74FD1EBFDF8"
+                  },
+                  {
+                      "path":  "installer\\SpankyInstaller.csproj",
+                      "length":  1614,
+                      "ticks":  639262214779548171,
+                      "sha256":  "762212F358B77E573629BAAD267E5F78580366C1ED70D5E173EC2827B54558E5"
+                  },
+                  {
+                      "path":  "installer-size-audit.ps1",
+                      "length":  1468,
+                      "ticks":  639262217368994563,
+                      "sha256":  "E6EE795A619EBDD2C5DE03E5C45897F633C5921D728A1A4A38D9134409242781"
+                  },
+                  {
+                      "path":  "keyboard-accessibility-audit.ps1",
+                      "length":  835,
+                      "ticks":  639261851229935461,
+                      "sha256":  "1193FB5E0D0168B7391CF054D3F13E6A24101034349F0417198D79A1E4D0B176"
+                  },
+                  {
+                      "path":  "keyboard-activation-audit.ps1",
+                      "length":  823,
+                      "ticks":  639261864830070325,
+                      "sha256":  "74A411824E8037401024CBB2DCE48E81CA53A8D866243B918E0A4B7BC65EEFB1"
+                  },
+                  {
+                      "path":  "memory-retention-audit.ps1",
+                      "length":  3408,
+                      "ticks":  639262174683185033,
+                      "sha256":  "2447350B312373994E3BC07297A5F2AA1FF6B3F508936893F16B91CECFF36DC8"
+                  },
+                  {
+                      "path":  "memory-store.ps1",
+                      "length":  2224,
+                      "ticks":  639261439195083261,
+                      "sha256":  "0EDC04D9F8489200DAFBA0B065C0279AAF5AA0A868CBB2687210D252EB23B40A"
+                  },
+                  {
+                      "path":  "mutation-audit.ps1",
+                      "length":  922,
+                      "ticks":  639261503511463295,
+                      "sha256":  "BF01BFCF551527B2D9086A0BDDE788DA604C2E730D0E30BBBCB405E8462A7D81"
+                  },
+                  {
+                      "path":  "native\\Spanky.NativeCore\\Cargo.toml",
+                      "length":  231,
+                      "ticks":  639248446368782458,
+                      "sha256":  "0EDF0C7A09A6E3A6F45360BB42A601FE26E372A7AF952161555A40DF59D1C7B0"
+                  },
+                  {
+                      "path":  "native\\Spanky.NativeCore\\src\\lib.rs",
+                      "length":  7760,
+                      "ticks":  639248446368728060,
+                      "sha256":  "6BF8631253A51EF9F75B1B4A8DB257988546E0C47C69A40F0BD551E8F823B42A"
+                  },
+                  {
+                      "path":  "navigation-race-audit.ps1",
+                      "length":  807,
+                      "ticks":  639261911361084855,
+                      "sha256":  "41E8BF4C668E6365155622116FA620DDECB55CBA052E729FBF755A4421151F2D"
+                  },
+                  {
+                      "path":  "network-bench.ps1",
+                      "length":  5233,
+                      "ticks":  639261392346353249,
+                      "sha256":  "A2E068AE28D4F68C93D27B7B37C0ACC28CD16079AF84E07C72A459651DC1EF04"
+                  },
+                  {
+                      "path":  "NuGet.Config",
+                      "length":  217,
+                      "ticks":  639245418657263234,
+                      "sha256":  "F545A7E2EA14AC53CDFB91217CAE67B8FF14275313F6298F9A3331D205B6C948"
+                  },
+                  {
+                      "path":  "page-scroll-input-audit.ps1",
+                      "length":  815,
+                      "ticks":  639261941504935491,
+                      "sha256":  "B61DE5ED5A6E53CCA15AD12EBD86BBCFE3B5C3EFB0EA64C06FF237B613070F87"
+                  },
+                  {
+                      "path":  "perf-analyzers.ps1",
+                      "length":  897,
+                      "ticks":  639261383628153037,
+                      "sha256":  "5B80CDD552017A247B779040ABE0B07E72F936FFA066B06AD0C519429C47DC2A"
+                  },
+                  {
+                      "path":  "perf-audit.ps1",
+                      "length":  11705,
+                      "ticks":  639261512551924902,
+                      "sha256":  "E5ABE55ABCCEA49A4D774A9AD049BDC0EF3E4EBAEAD2231AADA9829F1E1F2936"
+                  },
+                  {
+                      "path":  "perf-bench.ps1",
+                      "length":  7740,
+                      "ticks":  639262226915043817,
+                      "sha256":  "C9430A2969A31128D67394E9DCF6E26BBF67DF0E9998AC275A3F0413AFFAE586"
+                  },
+                  {
+                      "path":  "perf-budget.json",
+                      "length":  681,
+                      "ticks":  639262117879862117,
+                      "sha256":  "B4D83AD022EFB21238C0294BC5F217AD8E057A6C634DB12C8FEA5E8550B87E02"
+                  },
+                  {
+                      "path":  "perf-counters.ps1",
+                      "length":  1144,
+                      "ticks":  639261389924385518,
+                      "sha256":  "86D47BABF344F3530C86543A93688F6B16684845BBE886A3771005D5299586B0"
+                  },
+                  {
+                      "path":  "perf-gate.ps1",
+                      "length":  1663,
+                      "ticks":  639261380366876256,
+                      "sha256":  "D0BF0255317F2723C79A9D3B7E60DE39718E2D79288694B8FE8A1E27BB2F69E7"
+                  },
+                  {
+                      "path":  "performance-diagnose.ps1",
+                      "length":  1648,
+                      "ticks":  639262135802731709,
+                      "sha256":  "8FC974649CBC1844413D7EB28357D2E1E495AA68F3BED147AFB08E98A18C70D6"
+                  },
+                  {
+                      "path":  "perf-regression-gate.ps1",
+                      "length":  3086,
+                      "ticks":  639261522790700962,
+                      "sha256":  "9CC1CBDB055BEF2CEC9B742103BDA8154739E71FDCB7FFF998E85E1875CEB8EE"
+                  },
+                  {
+                      "path":  "perf-statistics.ps1",
+                      "length":  7136,
+                      "ticks":  639262119190281470,
+                      "sha256":  "56972122DF841C83A7786F7EE1BFF17C168855B978F29C687956D8274AE848FE"
+                  },
+                  {
+                      "path":  "perf-tools-status.ps1",
+                      "length":  1169,
+                      "ticks":  639261392385326133,
+                      "sha256":  "4F9E3CB5CE2913AC983792273D542E4D4E06872140D1CC962DA7C26FC162F916"
+                  },
+                  {
+                      "path":  "perf-trace.ps1",
+                      "length":  1827,
+                      "ticks":  639261390030292895,
+                      "sha256":  "2705C782D7805CCF988B59AD976C13DAF687638FBD45F185F2026249FF017DAF"
+                  },
+                  {
+                      "path":  "platform-compat-gate.ps1",
+                      "length":  1024,
+                      "ticks":  639261533543282719,
+                      "sha256":  "081D660C1E294294E73F1E509289CC0B8DDB003058A692C3ED8790DB9CFF3ABE"
+                  },
+                  {
+                      "path":  "profile-app.ps1",
+                      "length":  1459,
+                      "ticks":  639261461312993154,
+                      "sha256":  "6D0367B388C33F6CC5683CA2F5536E3B72AC7BAE0A87B4BC24D32357D30DEAEA"
+                  },
+                  {
+                      "path":  "PROJECT_INDEX.json",
+                      "length":  1394480,
+                      "ticks":  639261965301801976,
+                      "sha256":  "9858FC269BD540D89E455D951B316E775A574A05C66C337DA9E54EC07046A285"
+                  },
+                  {
+                      "path":  "project-index.ps1",
+                      "length":  8427,
+                      "ticks":  639261544593773337,
+                      "sha256":  "234D37D0266B78937B29842F41E10874404C00C5A20AD7A2058E9A5E03A1AA37"
+                  },
+                  {
+                      "path":  "project-wiki.ps1",
+                      "length":  1669,
+                      "ticks":  639261439578690789,
+                      "sha256":  "2C4EE6A6B528CA5BE58824E76E08FE991FEF1061D47D35B2DA776F7704CC6BA0"
+                  },
+                  {
+                      "path":  "promote-fuzz-regression.ps1",
+                      "length":  1037,
+                      "ticks":  639261584158903133,
+                      "sha256":  "82D4CD7BF6CD38371EFFE641463A2012427ACD9256FDE7B95CD477A9109AA6B2"
+                  },
+                  {
+                      "path":  "quality-audit.ps1",
+                      "length":  5673,
+                      "ticks":  639261841839798967,
+                      "sha256":  "819A79041121164B6681AAD2A0E7D3020515D0E12E1B58C7B5C856B47EA419A1"
+                  },
+                  {
+                      "path":  "regression-store.ps1",
+                      "length":  2196,
+                      "ticks":  639261584051184749,
+                      "sha256":  "9257F489EF5BB454DC115A7BC6A9176A1A1C7A0B36F2D934E3B5629CEDB60DAF"
+                  },
+                  {
+                      "path":  "rollback-matrix.ps1",
+                      "length":  410,
+                      "ticks":  639261583374350721,
+                      "sha256":  "556488831ACB5B733E1CC4DA5CF780F2FFC272D08366984B6033FCF165BB3342"
+                  },
+                  {
+                      "path":  "run-benchmarks.ps1",
+                      "length":  660,
+                      "ticks":  639261459351463377,
+                      "sha256":  "A93459A5A8ECE8D169026B9A19F392A373EC42268B603149959431D391143BDB"
+                  },
+                  {
+                      "path":  "run-coyote.ps1",
+                      "length":  1651,
+                      "ticks":  639261499646645547,
+                      "sha256":  "35676DC0F8C056847FCB118690FC8FAE5531702F3030F9406923C4E33D4914A0"
+                  },
+                  {
+                      "path":  "run-fuzz.ps1",
+                      "length":  867,
+                      "ticks":  639262139248884365,
+                      "sha256":  "28501F571F2AB1A407D9CDE48C35C18AE7484DB48475EA6CF9CEF7A8C4FF7427"
+                  },
+                  {
+                      "path":  "runtime-capture.ps1",
+                      "length":  1124,
+                      "ticks":  639261505976481602,
+                      "sha256":  "CB694B631C874558A7DE9CC37E2F58A0DFE60C67C515F020DFE674366C94FEC8"
+                  },
+                  {
+                      "path":  "runtime-watch.ps1",
+                      "length":  2538,
+                      "ticks":  639261505976470782,
+                      "sha256":  "9BDC8A88A1352E75FBE086EA4F09A1D8F850CE16DC84EF4B5AFDFB3DD5C85B4D"
+                  },
+                  {
+                      "path":  "save-handoff.ps1",
+                      "length":  1532,
+                      "ticks":  639261282163824252,
+                      "sha256":  "532CB77513E1DC461C339AEE1F36C244C0665292C845DB643D765CD105D46BA1"
+                  },
+                  {
+                      "path":  "sdk-upgrade-gate.ps1",
+                      "length":  1866,
+                      "ticks":  639261533316076227,
+                      "sha256":  "A542AF6C9CE2A03A47E9D29FF49DBDC9FE91E07D59C2379BACFD7729878DCC7D"
+                  },
+                  {
+                      "path":  "section-tab-audit.ps1",
+                      "length":  791,
+                      "ticks":  639261877779591564,
+                      "sha256":  "CBC83F32779CFBB7C6E3889D85978C04C1916CCE9677F9B69E3DD8D3312CD570"
+                  },
+                  {
+                      "path":  "semantic-slice.ps1",
+                      "length":  1812,
+                      "ticks":  639261440292712952,
+                      "sha256":  "1F030A8593CF684FECBC205C00F823CB12CDCD4D8D4093D8835560B4F391F794"
+                  },
+                  {
+                      "path":  "smart-quality.ps1",
+                      "length":  5058,
+                      "ticks":  639262206230113019,
+                      "sha256":  "CB30809C5E95798DB78EAB99CA1517C5D8535017ADC746AB26A0C73332A41609"
+                  },
+                  {
+                      "path":  "source-index.ps1",
+                      "length":  1669,
+                      "ticks":  639261412999009864,
+                      "sha256":  "9AD784F4AA0601F0423D719F871C01066AFF38D4723DEA95541D89FDA606455D"
+                  },
+                  {
+                      "path":  "source-query.ps1",
+                      "length":  347,
+                      "ticks":  639261379035334333,
+                      "sha256":  "89A2039ED8C93A39E72E2158D68B0BDC4B0423CA300094173EF2BE90207C156B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer.Core\\AssemblyInfo.cs",
+                      "length":  420,
+                      "ticks":  639261514618854780,
+                      "sha256":  "98537582E979A493226BD01C0402CB10E6F7F0E4E9612803A48373DDFA449F81"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer.Core\\SpankyhoOptimizer.Core.csproj",
+                      "length":  1925,
+                      "ticks":  639261527501051136,
+                      "sha256":  "F6E647265437447FF3ADDF498B08289F29F0FEFABC3763F86BD0F3091485A546"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\App.cs",
+                      "length":  150506,
+                      "ticks":  639262412085612390,
+                      "sha256":  "94152044607C0FD13D7E6CAF9E0A0CB43DAA4E44E04FCC77547B755015E33016"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\App.xaml",
+                      "length":  19560,
+                      "ticks":  639260760021273338,
+                      "sha256":  "EDD34EB26287D75AB1F46D6B52C80A2C09AC3FED24AD3E14BAD062552A60C2F6"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Assets\\GTweakToolsetStore.json",
+                      "length":  9683,
+                      "ticks":  639252123149648340,
+                      "sha256":  "AA31E3BF572DA1981D19B172209B0990FFECFA21304781912037FDDE34328EA7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Assets\\Tools\\PowerShellTerminalApply.ps1",
+                      "length":  40488,
+                      "ticks":  639261303195877844,
+                      "sha256":  "46053028208E13B92743424E715CD88665910409378AC0E76189C7AD3CCD89B2"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.AdvancedCenters.cs",
+                      "length":  12130,
+                      "ticks":  639261055333664264,
+                      "sha256":  "7422062F341647E4CC06E004EE7A2F4B30578390EB76D3E4B546C342C0BBDAD0"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Ai.cs",
+                      "length":  10007,
+                      "ticks":  639260173346351747,
+                      "sha256":  "C62F9A1E1CFB90780D6C8D97E2B89BA0A69A2ED52D7E0D8813889C4C43EA8390"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.AiProgress.cs",
+                      "length":  14295,
+                      "ticks":  639262150216852805,
+                      "sha256":  "9CE9064B662A66D825EE7E9F294B96921E6938D440E828542922F9367F78B648"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.AppDetection.cs",
+                      "length":  3846,
+                      "ticks":  639261055403436180,
+                      "sha256":  "A358EF3E889E00E1AD78A72CF07155B6EFF6FC33D71B1F5E6CDE57E894F27F17"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.BackgroundActivity.cs",
+                      "length":  8086,
+                      "ticks":  639260174524526216,
+                      "sha256":  "E1F380B43BF44FA7CC1240A3340C18EA06262076162667AF6D83B5587EAC3ADF"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.BrowserPageCache.cs",
+                      "length":  7390,
+                      "ticks":  639256944907277628,
+                      "sha256":  "D665B5FA3D8652C9E1444E8C969F7F43C9ACB78FE8DAF3ADB279EA1AE4BAAA45"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ComponentCenter.cs",
+                      "length":  17011,
+                      "ticks":  639261130871295862,
+                      "sha256":  "C9199E51EF00EF23FBDD02D92F102F0145C04B32DDFFB06D34C88C13B9EA4443"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ComponentPages.cs",
+                      "length":  9897,
+                      "ticks":  639261135049417268,
+                      "sha256":  "2551540F05151833A3CEAB2C4469868BF96DBA64C7FC3683B9139A208E7ACDD6"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ComponentsLegacy.cs",
+                      "length":  5965,
+                      "ticks":  639260174245681744,
+                      "sha256":  "8A7CAD4E6AE116DE72EE63E494BBB8C5E52F1991A3F9D6476E7B7FAF5D1DAF77"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ComponentsPageCache.cs",
+                      "length":  4467,
+                      "ticks":  639259371079173806,
+                      "sha256":  "C99FF9BF47FAA7591C2E6A3B4EF5E8A06475908446984E727FFA9597E4F0F7C3"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ContextMenu.cs",
+                      "length":  30296,
+                      "ticks":  639260640319937179,
+                      "sha256":  "A045EB284192B3FA6250C13ADB444480EF0B172442F1EDDB0C0B462E3FB385C7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.cs",
+                      "length":  93154,
+                      "ticks":  639262398388603028,
+                      "sha256":  "3953BB0DEF51B5E1E4AD2CBDE6822B383902F227E2838DFAA13FE51F7A11F147"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Dashboard.cs",
+                      "length":  882,
+                      "ticks":  639259902701990745,
+                      "sha256":  "8C7176E24A8A9242883E35FD27B1E6265283B54A133D70CA33079A1AD6DD9577"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.DashboardModern.cs",
+                      "length":  7087,
+                      "ticks":  639260741385045865,
+                      "sha256":  "39954FD79C1493EB0863406BAF030A24F7C87F6210DE7A6982F323858CE6275A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Debloat.cs",
+                      "length":  11111,
+                      "ticks":  639259900812650429,
+                      "sha256":  "800F21215C87A184DF17D74D7249D610E8E33BED60F63FA161A503417C4BDC7D"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.DebloatActions.cs",
+                      "length":  11529,
+                      "ticks":  639260174281479341,
+                      "sha256":  "68F2E2185B4F93843E2BE71205A54F7B01A4CBC472D9CBB64FDA56B2BCEA563A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.DebloatPageCache.cs",
+                      "length":  951,
+                      "ticks":  639253552464031766,
+                      "sha256":  "DDF27FB700156AF9ED204746354067087967F36ED165CBF56152FD9BB4780C87"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.DebloatProgress.cs",
+                      "length":  6006,
+                      "ticks":  639261076112549381,
+                      "sha256":  "7CDEE00009F8AEE801DF315D49B0A19D353A53DE92C87779F76979537DFC60B7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Defender.cs",
+                      "length":  16505,
+                      "ticks":  639262370051352916,
+                      "sha256":  "0B17DBFE7B632DE829641371DD43B7A000404D03867BC75CA3F826BA4D279BED"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.DefenderPageCache.cs",
+                      "length":  2102,
+                      "ticks":  639259362567425204,
+                      "sha256":  "E6328503F68D22B885262A4DD8430205180056155F53FA07AF91D45C9F3DC1B0"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Diagnostics.cs",
+                      "length":  1131,
+                      "ticks":  639260174315644067,
+                      "sha256":  "7C59CDA467CF0F13C4B3C2B693101EA7E1EBB69EF848A0C646B14408A5389260"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.DnsBenchmarkPopup.cs",
+                      "length":  36355,
+                      "ticks":  639261360929176037,
+                      "sha256":  "177C7148CCC553268EC122C55BC6DEDFF1BD0454918A320B160769D35462B9AB"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.DriverErrorDialog.cs",
+                      "length":  6370,
+                      "ticks":  639261134927292383,
+                      "sha256":  "21BD7E594D84BB6F560B5AC46113D662FA4390216E3F24D360AE66BBDDA38B6A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.DriverSmoke.cs",
+                      "length":  4821,
+                      "ticks":  639259372334666838,
+                      "sha256":  "0CD4003E4B0A2FF8607E57B348ECB5DD052D8872ECEF063ABDE61263989B85D7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ExostenzaProgress.cs",
+                      "length":  10461,
+                      "ticks":  639261360309008632,
+                      "sha256":  "2FDF87579917B8276593B7AC25590554227AF1610CDBC80A5F3A502C37D9C9D8"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Extensions.cs",
+                      "length":  11900,
+                      "ticks":  639261114705344229,
+                      "sha256":  "54B527F50F5A3CB3D60ED5DD02C2957FB7FF7DD1C8A5D5007FF457C67C9D2B29"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ExtraSections.cs",
+                      "length":  14653,
+                      "ticks":  639258696648503936,
+                      "sha256":  "E45919979600F258460A4C8E5F6128EDDB3D27EF7E2820961A34FB4CB4F7E8D2"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Fixer.cs",
+                      "length":  11001,
+                      "ticks":  639261059746237530,
+                      "sha256":  "FB63A270D28835C577D3E1D9CCBEC33AFC228260E7B5DA3A150B8C962191B5F6"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.FixerPageCache.cs",
+                      "length":  7091,
+                      "ticks":  639260504541329326,
+                      "sha256":  "CBAD7C6AAFC003E043CDA2719B3FFB149FFDEA01C596B1392269C02D4F3FFCC0"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.GpuDeferred.cs",
+                      "length":  3903,
+                      "ticks":  639262132255515717,
+                      "sha256":  "A4C3A6A6FB048A6D111B2B4F2011DF2FC511ACE7BF3F87071B231052E9FE9436"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.GpuDriverCenter.cs",
+                      "length":  28469,
+                      "ticks":  639262145402516871,
+                      "sha256":  "16C02037926BDF2B7975053DA47D64A77BD1F2F1DA06ED3A655E83AD114E3769"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.GpuPageCache.cs",
+                      "length":  2625,
+                      "ticks":  639261157866295704,
+                      "sha256":  "208862B8F52337649CD60C732A7BB6569C7673A69C8B4828A36015022D222AE5"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.GpuPrewarm.cs",
+                      "length":  3377,
+                      "ticks":  639259494191868260,
+                      "sha256":  "D92A268639DC3D87FB27D0BAA767BA8D993D1DD0DBDA1C10D8F5CFBA246CCD0F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.GTweakLocalScripts.cs",
+                      "length":  3332,
+                      "ticks":  639261113637314128,
+                      "sha256":  "525BC62E129C5A6CBC7BF726867F41316F3AF865B179E98F4BE198DA3207B3E3"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.GTweakMemory.cs",
+                      "length":  1415,
+                      "ticks":  639258134472726810,
+                      "sha256":  "7B67B9D5AF0B49ACB82E7AE7B03845437FB5D354E7CB4D031AB8AC21EC8EF2FD"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.GTweakPort.cs",
+                      "length":  5942,
+                      "ticks":  639258124932248677,
+                      "sha256":  "302A9D4E71C665B3552C89C8D7C9EAD6427BFC3FF3824027D03E3B63497B49E0"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.GTweakRestore.cs",
+                      "length":  3616,
+                      "ticks":  639252412954001964,
+                      "sha256":  "1857BD191E99019709468F819F47DCC07F3060548449B8A2DD017D87BD0898C0"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.GTweakToolset.cs",
+                      "length":  5916,
+                      "ticks":  639261113532334624,
+                      "sha256":  "FE4221824BF6E19B2CF037078391DCFD969FD024FA79FCDFED931E823390B835"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.HardwareInsights.cs",
+                      "length":  14598,
+                      "ticks":  639260173187777859,
+                      "sha256":  "E2D527058D57F482A840630DD4A99C21307D3FBD52A13C2DAEC78D1C8F90A32B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Changelog.cs",
+                      "length":  5604,
+                      "ticks":  639260752394234631,
+                      "sha256":  "494B0C3E2DED767B2D83430AF108D2C843D7544191A9E50D5A81CD7C48E87457"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.LegacyTweaks.cs",
+                      "length":  34990,
+                      "ticks":  639262341923431271,
+                      "sha256":  "09BF1017118866BFC452F05E3D9BBA574F2F7371B33019DC914D748394364D72"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Lifecycle.cs",
+                      "length":  12344,
+                      "ticks":  639262150239885607,
+                      "sha256":  "655F9B3F9B0E9E30F43CCDD23300162B830E5432EB668C957C4CE66B76871059"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Memory.cs",
+                      "length":  3142,
+                      "ticks":  639252534908513206,
+                      "sha256":  "B4CD1118B432BFA7E686D43F62F3F70EB24BC64760C4B6E7D715DD5AE1B24103"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Motion.cs",
+                      "length":  8454,
+                      "ticks":  639262128738346176,
+                      "sha256":  "4B894BEBB9D8D6E863C84F123278E5858279A7867DE1D0BEE4C5C2178532686B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.NetworkDashboard.cs",
+                      "length":  15362,
+                      "ticks":  639260475850552297,
+                      "sha256":  "6A8B25E0569114211A99322B4AABE5D82C984129E4A9112A1ADD158984FC3111"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.NetworkPageCache.cs",
+                      "length":  5104,
+                      "ticks":  639261110288394591,
+                      "sha256":  "4CBA00DB98869E18E7DEA3CC2A77D70E90029BEB1E5EADA4B8EA9E39CA755378"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.OptimizationAdvisor.cs",
+                      "length":  5232,
+                      "ticks":  639260489058354539,
+                      "sha256":  "E08912799F9ABC824570003C611B0E31A69C9A7297BBB3C9023630CC00EEF152"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.OptimizationPlan.cs",
+                      "length":  1899,
+                      "ticks":  639260332905441517,
+                      "sha256":  "B4760E10DBD6E5BCB3B9D6B87AEA7395D694B17BF1AF1922BE8DCFC4FC3C5043"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.OverviewDashboard.cs",
+                      "length":  96800,
+                      "ticks":  639262423363271148,
+                      "sha256":  "EF57F5F49D0A8EDA00528EFD020FF54A51B4D857859E579FAAD3F51BAF0C1E28"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.OverviewHudTelemetry.cs",
+                      "length":  14295,
+                      "ticks":  639262423312803840,
+                      "sha256":  "E2FE5AD7EF156D6BC40A29C6AF3DEE519C98B83024EF7BBB8C6EEC8779D1BCE4"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.OverviewTelemetryStyles.cs",
+                      "length":  16324,
+                      "ticks":  639260724570595293,
+                      "sha256":  "572134D0B694FCFE6E068E47114B3991D93C0CA89C4CF4437B865D473EBCA226"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Performance.cs",
+                      "length":  440,
+                      "ticks":  639261109796843945,
+                      "sha256":  "B70C101005C416FB9FCB53ED8FB88265F5933E14125255AFE89B47A23C68C7EB"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.PerformanceSmoke.cs",
+                      "length":  9952,
+                      "ticks":  639262418927879242,
+                      "sha256":  "34E519EDC9A58159E13EE7C394ABFB5054BF8CDBB708BE87E11CEA966EA96725"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.PowerNetwork.cs",
+                      "length":  58938,
+                      "ticks":  639261851587854794,
+                      "sha256":  "F260884F623637DBD3379BC54AA65D6978E18E947A014AEF8C7E4FFC24CB4EB2"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.PowerPageCache.cs",
+                      "length":  2399,
+                      "ticks":  639258853678338228,
+                      "sha256":  "A2CED0107BE5225A29DF9CE222CC82A26729C5EF07164F5FC3931D627B03C231"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.PowerPlan.cs",
+                      "length":  31158,
+                      "ticks":  639262144987552821,
+                      "sha256":  "FA69BA81C63714F824B33618CA52BE5BAD3B9BDC52FA57C75E52599F29B89244"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.PowerShellCenter.cs",
+                      "length":  25743,
+                      "ticks":  639261338953223088,
+                      "sha256":  "AD26B7A501A318EF79175C35974786A1C54E06702EEE4E196F7889268F81F68D"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.PowerShellTweaker.cs",
+                      "length":  16478,
+                      "ticks":  639261361318011713,
+                      "sha256":  "8DE89646DAD67CD21D216638A4F63C7C6480190C7D478F958D0F9F64592576E9"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.PrivacyPageCache.cs",
+                      "length":  5439,
+                      "ticks":  639258140468683791,
+                      "sha256":  "9DA609B764BED011515B06CC7D1B8B482AEFA985CB0CC55D7074729F11CC35B1"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Regression.cs",
+                      "length":  29595,
+                      "ticks":  639258817718974535,
+                      "sha256":  "6FD5D507F0A268A57B69FD6BC08451A8651B5930B457CF8826FDA00CF737D06F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.RestorePageCache.cs",
+                      "length":  3754,
+                      "ticks":  639258948539426561,
+                      "sha256":  "5155E70FABF4FF7CA9EB01638AEA0485B871E2E772E3BB6448EFC29276C7036D"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.SafeMode.cs",
+                      "length":  1388,
+                      "ticks":  639252470613191154,
+                      "sha256":  "2473361D6557EED0B59124D5CC7C83AE05404FFFC32D02D19479CD2F6304CA18"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Sections.cs",
+                      "length":  3033,
+                      "ticks":  639260740870959386,
+                      "sha256":  "47A1615F65362142659CF87D96329E8ED8DF46FD99D5BC1E4D846A5083F34FD7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.SelectionPopups.cs",
+                      "length":  5433,
+                      "ticks":  639261095582197313,
+                      "sha256":  "F556094938FFF957262520367F494E96984B4ECF4F67A5574757BB878B1CF583"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ServicePrewarm.cs",
+                      "length":  39300,
+                      "ticks":  639262395989608044,
+                      "sha256":  "8C999B82D6158EBFE193FA97C5025D3404BF488CE7E91BE401BF325A42E22D68"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Shell.cs",
+                      "length":  38238,
+                      "ticks":  639262392578209990,
+                      "sha256":  "6F6F7D6C8E3AF63FF99A6C1F3E2DDBF24C267970725AFBE7810BB993AE2AA055"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ShellHealth.cs",
+                      "length":  6676,
+                      "ticks":  639261229966900320,
+                      "sha256":  "12D370234AE42E1F20639ACFEBBC5AAFF8476B521D95D04413E7E58D59F9B5DA"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ShellHelpers.cs",
+                      "length":  8737,
+                      "ticks":  639260518140351777,
+                      "sha256":  "E012EF588B16D72C929727252E92C63B90E216605F882EFAB200272D8B65F720"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.ShellToolkit.cs",
+                      "length":  7347,
+                      "ticks":  639261339001071185,
+                      "sha256":  "B6A113A93325C1B48E1212CC39CE834A4B52AAEE1EA96A32AB3E509D6D12732D"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Spicetify.cs",
+                      "length":  22651,
+                      "ticks":  639258922821241743,
+                      "sha256":  "12EAFAC5143B6BE6A6FBA7011657C420E176B8332D1334ECEE53D56DF9046BD5"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.SpicetifyPageCache.cs",
+                      "length":  2531,
+                      "ticks":  639257419517022242,
+                      "sha256":  "727E5F4CD52166706A51C210D3CEE4B90CFA4DF4C7C1A7FC6E6FF77E8D11BD43"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.SpicetifyTweaks.cs",
+                      "length":  4402,
+                      "ticks":  639259565203757595,
+                      "sha256":  "AC48D9CB9B02C3B77DC68AA7F9851C5BC29035EBB196E32621DF4691010E090E"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.StabilitySnapshot.cs",
+                      "length":  7621,
+                      "ticks":  639261098561634587,
+                      "sha256":  "E7C1AB95575062F0678B4D4764694B508C38BF8A6DDDB3D5ADF88E25E4D23B63"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Startup.cs",
+                      "length":  21043,
+                      "ticks":  639261432226918319,
+                      "sha256":  "1B515235BC4AE1094950F1F98A098EEFBAADAD2E71C2290FA6C571F72CBE7585"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.StartupPageCache.cs",
+                      "length":  939,
+                      "ticks":  639256192022402949,
+                      "sha256":  "963F448E037BBB686B2C384A4208E81DE4F5C3E18B5B6D99DE1E575B551115D8"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.StorageOptimization.cs",
+                      "length":  6567,
+                      "ticks":  639260512993152384,
+                      "sha256":  "7BEEB202CB3C2057CE9E464C2B20CE93543D0E2D3C6BE8851BD08352F791CC8D"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.StoragePageCache.cs",
+                      "length":  11138,
+                      "ticks":  639262131453011657,
+                      "sha256":  "B59863AB41482D022DA1699F98468CC10D1318EDCFF29E2799A09054ECBD701D"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.StyledDialogs.cs",
+                      "length":  43759,
+                      "ticks":  639261902859287431,
+                      "sha256":  "3AD3C34B8230AED66DB3F9ADABD97116A64AE742F3A4DED69ED5E38B9A9ED356"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.SystemOptimizationAdvisors.cs",
+                      "length":  15124,
+                      "ticks":  639259392855048180,
+                      "sha256":  "D0422FE1946DE569A501E58157D4B8946888BFBC37216AD22BE0A87604A91EF5"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.SystemPageCache.cs",
+                      "length":  5268,
+                      "ticks":  639257923723236219,
+                      "sha256":  "0A4F328CA79A9071CD80EE64E55D17114FA4CD8A003D953EE11F92C234D4AA53"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.SystemTools.cs",
+                      "length":  7004,
+                      "ticks":  639258135976513054,
+                      "sha256":  "6BAE65AF9F1E643E9965B1B197110DFE8B471B9DD0DAAA3826CDF0BB20312C05"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.TaskSchedulerSmoke.cs",
+                      "length":  1582,
+                      "ticks":  639258861875130322,
+                      "sha256":  "AC5E383A578E07C650F0F3AC50498505A852D454C5E6A2C9F23246A72280B403"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Theme.cs",
+                      "length":  18640,
+                      "ticks":  639262378305004948,
+                      "sha256":  "214D743BBD3D0F4D3EF722566BE11E45E5BE3CB6223F3D52974AD1203F902DA3"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.TileHelpers.cs",
+                      "length":  2191,
+                      "ticks":  639260173263579040,
+                      "sha256":  "D814E45CDB158AB344E1461B53044CB611E23E3C0E354FC85026DE0E37942D52"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Tools.cs",
+                      "length":  29920,
+                      "ticks":  639261910537467722,
+                      "sha256":  "3D0091EAD6DE6216E5F8FECFBC9E25B7B61BFC4A3797458D50F05F86741B7F9E"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.TweakVirtualization.cs",
+                      "length":  31983,
+                      "ticks":  639260760281451912,
+                      "sha256":  "B4BE8FA835E6B3CAF7D1D0F815F2DD3A295B4D380DDB38EA6FC3D7ACBA7AA1FC"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.UiPageCache.cs",
+                      "length":  3267,
+                      "ticks":  639260642284276071,
+                      "sha256":  "F0D9BA45A2B4966DF0B44FE4BE5CD7C72DB1EF4546E8CF1381358CD6E001AFF4"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.UiPrimitives.cs",
+                      "length":  2247,
+                      "ticks":  639261848898346319,
+                      "sha256":  "48CD8B13465CF46ABAD76F035929637AEBBF888F2D60E14ED77C39F357AA8A1E"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.UpdatePageCache.cs",
+                      "length":  4561,
+                      "ticks":  639258864239119622,
+                      "sha256":  "808FCE5426B8677E7BA715A6049980B4A1D2808629063BBD0E0961617ADB4951"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.UpstreamSources.cs",
+                      "length":  3140,
+                      "ticks":  639261114960951774,
+                      "sha256":  "4401B946F8F4DA3860A4A3DF58ADD6E0FED1940B536CF290CB81A6A83ABF38FE"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Ux.cs",
+                      "length":  2847,
+                      "ticks":  639252534909069225,
+                      "sha256":  "FB0B985E5D5B8B746661724C93933BF8EAF1420FB35EB2B15D337475853A3F93"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.VisualQa.cs",
+                      "length":  69677,
+                      "ticks":  639262402169183058,
+                      "sha256":  "47A1E8AA1719E4D269308F09CD83DADF04CCA0BC0F6623ACE87D36359E84B021"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.WindowsModernizer.cs",
+                      "length":  38698,
+                      "ticks":  639262311763093898,
+                      "sha256":  "0186EE2023B35E0EE5EB37DAAEE89E418FC013B3B91FE1AE52A9CF394A214D9B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.Winget.cs",
+                      "length":  19065,
+                      "ticks":  639259905545230834,
+                      "sha256":  "05448A39991D1A417360BD4E76472428F9ABEC788CA496058F2AF15FED679578"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\MainWindow.WinhanceUi.cs",
+                      "length":  4177,
+                      "ticks":  639258136097854363,
+                      "sha256":  "6DE8EFFF2450921D3503904C445DADC80242EAD24475C9EB74FB7ECBEC5C8C35"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Models\\DeviceInfo.cs",
+                      "length":  217,
+                      "ticks":  639256233599893392,
+                      "sha256":  "E436C9A0CE9B3EF608E247AD2E46C16720BBEB29C9980E395AF3FD3AC9AA29C2"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Models\\SectionDefinition.cs",
+                      "length":  141,
+                      "ticks":  639244995533756834,
+                      "sha256":  "D888A40D3F31B26DB40B80AF7425107FA51A106E99E154AA19EB3D5E3AD79BB8"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Models\\ServiceInfo.cs",
+                      "length":  140,
+                      "ticks":  639245026212033104,
+                      "sha256":  "8DC51522F9D52CDFA0DE05AF7F744DF27652A103B381C4E6E947A9F32A897D07"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Models\\TweakDefinition.cs",
+                      "length":  5168,
+                      "ticks":  639260467842490901,
+                      "sha256":  "339B583C27C16AE4CEA637A9B636922512CD3AA49FB5666C0C25EE84BF528E68"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Models\\TweakRisk.cs",
+                      "length":  108,
+                      "ticks":  639252470613291665,
+                      "sha256":  "BECDDEED6DFE296F6AE3DCF03815E038DF0FBFE17B0EF4D1F4ACFC0DD98AA91C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\OpenTelemetryBootstrap.cs",
+                      "length":  888,
+                      "ticks":  639261458093244565,
+                      "sha256":  "0500C90DB93A8595F548E98F61AF3F41D48DC548C1FAAFAFB7EC50C98BE0FE78"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ActionFeedbackService.cs",
+                      "length":  1179,
+                      "ticks":  639250966217319275,
+                      "sha256":  "5A367542E87D5CE8A82B2EF654E5C88614974294266492FB18B7D6060D8E3605"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\AdvancedCenterService.cs",
+                      "length":  14686,
+                      "ticks":  639262160112525307,
+                      "sha256":  "A30B840E59611DF04B3AFFFF5CBE247B2CD139AEC8D278D55E7C4DCD205994CD"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\AppDetectionService.cs",
+                      "length":  5213,
+                      "ticks":  639259608998724186,
+                      "sha256":  "50C781212CAA7A256C01A4253CAF9D4984A1637B1CCA7CB1EDCC70DA7B52CE84"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ApplyProfileSmokeService.cs",
+                      "length":  4579,
+                      "ticks":  639254937109192653,
+                      "sha256":  "0147C259EEFC38E4CD7F85E3349BC9C7982F316941309D7C28F1E688DC6A3EEB"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\AppThemeEngine.cs",
+                      "length":  4265,
+                      "ticks":  639260337084831969,
+                      "sha256":  "FC01E0BF06DE5F1208A3C8F284E527395EBCBC1FC89AD573788D3B05619FF794"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\AppThemeService.cs",
+                      "length":  1857,
+                      "ticks":  639262013564259705,
+                      "sha256":  "CC2C90F74740F69F094FE7E68DDF1CC553342C78B803A2890F1E1E156A8673C7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\AppUninstallService.cs",
+                      "length":  5028,
+                      "ticks":  639259609589988413,
+                      "sha256":  "122AEF219DE85C5DB2E52BDE67C902B5E068FE2D0634BCA147C828FC27216985"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\AppUpdateService.cs",
+                      "length":  12624,
+                      "ticks":  639257740881892726,
+                      "sha256":  "2E214862E179A29858AFBF93FF1D1FAA7038D915CA61BA579534531A0F8C6D30"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ArchiveSafetyService.cs",
+                      "length":  3138,
+                      "ticks":  639262224304083829,
+                      "sha256":  "DECF6002E6BB525CF8E1F23FFE391D2275020D27A35A54703136A57F37709BA7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\AtomicApplySmokeService.cs",
+                      "length":  2906,
+                      "ticks":  639252470613321870,
+                      "sha256":  "274C46B539FB4BB9417C0A297C43BA6BFAF2337318DA6ACFC5682AB2F295A0F4"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\AtomicFileService.cs",
+                      "length":  2433,
+                      "ticks":  639262167738716665,
+                      "sha256":  "5633EAA45BCCB5C7BE7C1FBD5BF68EEBE9BBC1CEB8844BCF455E23D1768D2E83"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\AuthenticodeVerifier.cs",
+                      "length":  6891,
+                      "ticks":  639254966638967673,
+                      "sha256":  "E24655BEE27810561A6F545A19FBD63C870F6E2843DA87E402A19780A9F59489"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\BackgroundActivityService.cs",
+                      "length":  7678,
+                      "ticks":  639262225115761131,
+                      "sha256":  "92BA53C36B0F67FADA9775F136D51C52442C954C568D9BA8EC672D726E77F0D0"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\BackgroundWorkSchedulerService.cs",
+                      "length":  1428,
+                      "ticks":  639248348071531511,
+                      "sha256":  "1BA146A83DA41A670D3633A5A8839F141633846645DF4B7BDCACD075AD812A84"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\BcdEditStateService.cs",
+                      "length":  5315,
+                      "ticks":  639262267754773362,
+                      "sha256":  "36A41B2737E59FEA241B61435822F52BE62EFEA3B5075E8970E665C5816918AD"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\BoundedLruCache.cs",
+                      "length":  1648,
+                      "ticks":  639248423203196033,
+                      "sha256":  "694BE12B54796A0871F8C4FF0D09648A14AB45A75FC0CD45F8A62743B5AFA6B0"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\CatalogService.cs",
+                      "length":  110488,
+                      "ticks":  639262280245157877,
+                      "sha256":  "FEB678DF7DE2A1668890EE614B66F0071223F18317C5F19CB82C1744758C502C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ContextMenuService.cs",
+                      "length":  13805,
+                      "ticks":  639262223580878265,
+                      "sha256":  "E5D00D7F2862BA5A85336B930A1C19EC6A9A45055478663AC03D45DFD0A2D744"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\CrashDumpService.cs",
+                      "length":  3644,
+                      "ticks":  639251274653793581,
+                      "sha256":  "59C4078935CBCFCC98FBDEB9B9B57DA405DDB923118DE86A8300E215868A7E37"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\CrashFingerprintService.cs",
+                      "length":  2282,
+                      "ticks":  639248347231710759,
+                      "sha256":  "23FCD7166F296D77847D6BB2E473EB277372FB96751EBB648AEE4ADAD5A775BF"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\CrashLoopGuardService.cs",
+                      "length":  2947,
+                      "ticks":  639258729679918213,
+                      "sha256":  "A2A77CFC5F0ECE80422D50C8ED89B4E4869B02A92EF682B18AAE5A9E0A2C6969"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\CrashReportService.cs",
+                      "length":  3396,
+                      "ticks":  639255549825807760,
+                      "sha256":  "30B87CF9454BF81E49632BC5566520B2FB822F7ABF8574C54070CDF83FEBECB3"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DebloatService.cs",
+                      "length":  2574,
+                      "ticks":  639257548558308187,
+                      "sha256":  "1A6C4B02D8A9777CD1C7889F9CED92D3BC4F162479DC03FBE7B88EAB821CC8D7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DiagnosticsTelemetry.cs",
+                      "length":  1974,
+                      "ticks":  639261458068271246,
+                      "sha256":  "389F06C7DEDF7AA34EC19CFFA55A436483F01B0CDB11E710921C1237B4454159"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DirectXGlobalSettingsService.cs",
+                      "length":  2695,
+                      "ticks":  639262330948338240,
+                      "sha256":  "0D20CC7E8D918D6325CB9A330B9E7F2D38E64DDDF338BA40C7785C3C9E4C31C5"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DiskPdhUsageService.cs",
+                      "length":  2760,
+                      "ticks":  639260682547586257,
+                      "sha256":  "3D3E85F82B18E174713B7B2545C8F785DBE2A31F473631EE07E4F1157BEE84B7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DnsBenchmarkCatalog.generated.cs",
+                      "length":  32460,
+                      "ticks":  639255695126611358,
+                      "sha256":  "F5CA41F921B2610AE18FB3612C4B01ED91028C63F0CD8A1A744B85E91BF7177C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DnsBenchmarkService.cs",
+                      "length":  27052,
+                      "ticks":  639261319385994136,
+                      "sha256":  "74A23B3AFF8BD9514918F2BC8A8CA809D6A8D1FF19A8BE46454F0B49B1E17F13"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DnsProfileService.cs",
+                      "length":  9450,
+                      "ticks":  639262153539164983,
+                      "sha256":  "78DC952E55A7B6D5F4A8A75ADC610F7389ABB3E2F947CE8C97F341B6D02C67EB"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DnsResolverCatalogService.cs",
+                      "length":  7840,
+                      "ticks":  639262153564023826,
+                      "sha256":  "A9B4F8A7FD9544DDD684341BED098D7B1176336AEDD3F6B96448364CB12D1F20"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DriverInventoryService.cs",
+                      "length":  6839,
+                      "ticks":  639262242274452267,
+                      "sha256":  "E9A703513978E232CCA34DD8B388C3245F0D98779825A8C279FA371F98509192"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\DriverReleaseCacheService.cs",
+                      "length":  1001,
+                      "ticks":  639245996696471164,
+                      "sha256":  "45958854CC39A773CF1FD5A611154AE08B51B3FC77AFE72153F9BE8C3DD2D71F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ErrorService.cs",
+                      "length":  854,
+                      "ticks":  639245923579117306,
+                      "sha256":  "9CE9CB8634AFC33DE56E12172F6B9982046948F3A1F688C72B2DF2F950D736B5"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\FaultInjectionService.cs",
+                      "length":  2830,
+                      "ticks":  639261513024529830,
+                      "sha256":  "1C8BE5DA0310A29E52CE57BEC61A9E2794E41EF1D5FF2FC610D908D38150E13D"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\FileSecurityService.cs",
+                      "length":  1842,
+                      "ticks":  639250697913446050,
+                      "sha256":  "6BEBCB5D601E4910E3E99B4312B745916173E42A82E2367A9803665556E0D590"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\FirefoxUpdateService.cs",
+                      "length":  11987,
+                      "ticks":  639262321911574117,
+                      "sha256":  "4810E8AB8DBF43BF88EF71AAD7585825EA752E07FDE8D985468A2FD1A096C64C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\FirewallStateService.cs",
+                      "length":  6179,
+                      "ticks":  639262274868801563,
+                      "sha256":  "D7535A5E5EE3D9AA430D801EE85DDD72C2FCE409C8E42804C16716995E4FD851"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GpuDriverService.cs",
+                      "length":  35286,
+                      "ticks":  639262162099233065,
+                      "sha256":  "6CA99E308F01152D6391788D1C2AE8D0C38BF98408E8360880F5554A55AC6630"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GpuPdhUsageService.cs",
+                      "length":  4452,
+                      "ticks":  639255162812804490,
+                      "sha256":  "848E294C56E87AF1D4406D9CE29668A7C4E991546844A0F1B402DA79FA46C225"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakBluetoothService.cs",
+                      "length":  5994,
+                      "ticks":  639262277695078876,
+                      "sha256":  "B491BD969416DAD305A7E6D782D28701F512DBE09C170B325F6F437148227F6B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakDebloatPostCleanupService.cs",
+                      "length":  2681,
+                      "ticks":  639252265129625555,
+                      "sha256":  "D157AEF4B18501DBA0FAD9A5F3D8DB7EAC97B572A1AEE1D3173F0DF98C36167B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakLocalScriptService.cs",
+                      "length":  2344,
+                      "ticks":  639257561399241040,
+                      "sha256":  "5F88E31EC6A172777D4A73DD00F20C358541C3D50E886D8E58446B6C0B4C2832"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakMaintenanceService.cs",
+                      "length":  5775,
+                      "ticks":  639257560307050825,
+                      "sha256":  "78AD736043EF2A36A7B5377477639DBEB8FFEA225071D4AAE547CCF23627F920"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakMemoryPurgeService.cs",
+                      "length":  4383,
+                      "ticks":  639251988613464337,
+                      "sha256":  "DE973E1D2BEFB96CCCA1DCB5EE0E3A1C53E9F778CDCB13940BA30533DE22CFCE"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakPortCatalog.cs",
+                      "length":  38591,
+                      "ticks":  639262331721881040,
+                      "sha256":  "4CF17FB15F73DF442D55B773ECC7FA777243638662E395D37543C9FE759F037C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakPortCatalog.Extras.cs",
+                      "length":  7991,
+                      "ticks":  639252412954136366,
+                      "sha256":  "4586713E2C1EC33F0CE6823A8CDBE117A9EBE7B3F35933D557FC090BDF07688D"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakPortCatalog.MoreSystemInterface.cs",
+                      "length":  2896,
+                      "ticks":  639262277837259943,
+                      "sha256":  "E242D937F1B18AA9AD961B76440A4E97E3B04437025BAC30BB3F535FEE536C44"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakPortCatalog.SystemInterface.cs",
+                      "length":  7076,
+                      "ticks":  639257825915750928,
+                      "sha256":  "61A078CE30F42611180AD0E3CB3BDE54F194613CB9AE0423B365B36789DAE789"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakPrivacyBlockService.cs",
+                      "length":  4238,
+                      "ticks":  639251984181439362,
+                      "sha256":  "39CB0876C8AA609C3546056D15736CE3A078C545C1E301626E8A112E0CE19682"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakRegistryExportService.cs",
+                      "length":  3840,
+                      "ticks":  639251988001723773,
+                      "sha256":  "686A1F246CE16737573F577DF3626B64AE5DCE5FAEC7634E1F6EAC0006A35E22"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakTaskCatalog.cs",
+                      "length":  9810,
+                      "ticks":  639257848627366335,
+                      "sha256":  "7299AA7090E72E7CE674DBEA77E8941BE6B9F5751D257AC62F03404978601456"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\GTweakToolsetService.cs",
+                      "length":  8326,
+                      "ticks":  639252353722275409,
+                      "sha256":  "D0D91E2FA81D79C8DD3D8B747021968F3D83E3A645B90876C2EA3947FA6F6267"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\HardwareChangeMonitorService.cs",
+                      "length":  2661,
+                      "ticks":  639260281772826227,
+                      "sha256":  "8A3B23BAEF38671B036AAC77E80F1F4BE67DE217A750F0A7754A183D42B652A7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\HardwareSnapshotService.cs",
+                      "length":  6325,
+                      "ticks":  639262284549116901,
+                      "sha256":  "7EE057ACC027772B36C2EFC50FD73E09174C6425A945988F94C3991CA8AE7F69"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\IdlePrewarmService.cs",
+                      "length":  3774,
+                      "ticks":  639257514856660397,
+                      "sha256":  "C26658A1E5B69D384496E1471ABDE3501E617F6616499B9CF812C89B5BE4C5A0"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\InputLatencyService.cs",
+                      "length":  6793,
+                      "ticks":  639262153638216252,
+                      "sha256":  "ADDB5F0081A13B4C93E7E4E0537342D7B45B29E46A84B9033B548F69D98650CC"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\InstalledAppService.cs",
+                      "length":  34179,
+                      "ticks":  639258850650732840,
+                      "sha256":  "A568BB9E241F046A639A6613E5C92DF8ECD323943078CFC4E837CB7AFEED074B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\InterruptLatencyService.cs",
+                      "length":  15692,
+                      "ticks":  639262242332016476,
+                      "sha256":  "5B457C5EEDF7231B80360CBD50ED32372BC11260F349558AE4E97D38F78656AD"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\LegacyMultimediaTuningService.cs",
+                      "length":  2133,
+                      "ticks":  639259119342758860,
+                      "sha256":  "280F26090F74A14809ED7548A3513FC79B1A1632549FE8CC80BCAC7C401B6C93"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\LogService.cs",
+                      "length":  6863,
+                      "ticks":  639261502173457958,
+                      "sha256":  "E57FEC01E1D98842C280A3A03FE734B24F06A2BAB845A1766ECC4C155699980C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\LogTailService.cs",
+                      "length":  2613,
+                      "ticks":  639248696709722474,
+                      "sha256":  "AC342DE16906196BC3413DCFFEE4B174F423F804692D1408394DE741CFA3E1A4"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\MemoryPressureService.cs",
+                      "length":  1166,
+                      "ticks":  639257333494611858,
+                      "sha256":  "6CF280211CAF5F6BB3CAAA9071BFDADCF5CDD418D5E5B4F92BDFD1356D5C7B96"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\MemoryStateService.cs",
+                      "length":  10349,
+                      "ticks":  639259114604505068,
+                      "sha256":  "BB37C4C9DE4A5B7C593C5685D93C246D2085F5235DDAF4DDBBEF5C469F8CE456"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\MtuOptimizerService.cs",
+                      "length":  23787,
+                      "ticks":  639262153752858183,
+                      "sha256":  "16E9A696C1B8F6682B7001DC1AC1F6433A99A799D654880103BCAF8579C42AD7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\NativeCore.cs",
+                      "length":  8794,
+                      "ticks":  639256233874273269,
+                      "sha256":  "9646A4CD4EB3BC6B638B8504A685188F580C8CB52D0A7A37D7B8498069691DA9"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\NativeNicTuningService.cs",
+                      "length":  46892,
+                      "ticks":  639262346644916808,
+                      "sha256":  "BEC702AB781DE9CD3B36E6A99C0B73E1D4109F45E741AB30EB291E493F3C7426"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\NativePerformanceSmokeService.cs",
+                      "length":  3695,
+                      "ticks":  639252470613362091,
+                      "sha256":  "E3DF14392AF08AE02F551506FFE9109F301258B7F8A1D00A0CBF848BD18EB14B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\NativeSystemProbeService.cs",
+                      "length":  39356,
+                      "ticks":  639262273068159142,
+                      "sha256":  "FE8F2A6FA119E3E2EA31343656E956158312C1EA607463944E8C5DA44AC26301"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\NativeTitleBarService.cs",
+                      "length":  3367,
+                      "ticks":  639259845129856442,
+                      "sha256":  "0BBE05BA8D9E676ECA933D9E136FAA41BCF062FC42BC35FB703741C262CE006F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\NetworkDiagnosticsService.cs",
+                      "length":  3946,
+                      "ticks":  639259565278706187,
+                      "sha256":  "7C45869D4056C3F199FAD505B5028E46B9362457AD6A22EC7913FA9D2694280F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\NetworkTransitionStateService.cs",
+                      "length":  6526,
+                      "ticks":  639256115937941726,
+                      "sha256":  "1D477769D44B6ED70716B797172EEE8AA2E3E8AAFC6BDD79013E2BF246F37554"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\NonTweakMutationAuditService.cs",
+                      "length":  2891,
+                      "ticks":  639250853547390857,
+                      "sha256":  "092612F44C4C761D318E2286A2A3949E374689BA7021BF632A0E4EB0CC7C2E5F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\OperationCoordinator.cs",
+                      "length":  2289,
+                      "ticks":  639261493542009745,
+                      "sha256":  "B14E45EBABC580E1975258628DAEF9B95E1144BF5B8545E3E33607F3E332CC5C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\OperationJournalService.cs",
+                      "length":  5235,
+                      "ticks":  639254306250759718,
+                      "sha256":  "834B21582CCDF1526E2749783720D5A694FF109A65F33FCB6B88726605907240"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\OptimizationAdvisorSmokeService.cs",
+                      "length":  3119,
+                      "ticks":  639259125559346280,
+                      "sha256":  "63073F3037103A5267281B8A7A1D3BF79AB662FBC58BFAB5F6B747295A3828D7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\OptimizerConfigService.cs",
+                      "length":  2604,
+                      "ticks":  639262153776188029,
+                      "sha256":  "1DCDB91AF61D118B0ED1EC339F0338A75F636C5245ABF34ED60EC1B1FFA3684E"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\OptimizerJsonContext.cs",
+                      "length":  509,
+                      "ticks":  639255056481991071,
+                      "sha256":  "049CA2EFC89E5823F2AC57D1873C460CBACCE172AA8F17EB9662888B2BFD7458"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\OptimizerModuleApi.cs",
+                      "length":  2260,
+                      "ticks":  639260465637520649,
+                      "sha256":  "91469E8CC8562A978B9C80473DA050EB89E225B9D6AA9E421ACCF382DABDB642"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PerformanceBaselineService.cs",
+                      "length":  1586,
+                      "ticks":  639252470613387314,
+                      "sha256":  "50A68DD9D74969513D2BE55190F0095ABEAB07EC4049B1DA18B8B8EAA1CE1099"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PerformanceProfilesService.cs",
+                      "length":  40784,
+                      "ticks":  639262347681610196,
+                      "sha256":  "64C80C541EAE624E7ACEC959D08DB7B2EFCF36125036A293771566514B988ECA"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PerformanceTelemetryService.cs",
+                      "length":  1948,
+                      "ticks":  639257377186655288,
+                      "sha256":  "76184FC381F6AF9CBBC3C7150C0EE69266D4ACB79CBFABB19045F4E3F1D80769"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PerformanceTraceService.cs",
+                      "length":  3501,
+                      "ticks":  639261427945539200,
+                      "sha256":  "E62D87078777E61B1C56FD6E041226CDF8D097C00595EB2A7C78E7CAF946F435"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PersistentHardwareCacheService.cs",
+                      "length":  14105,
+                      "ticks":  639258892004744398,
+                      "sha256":  "89745ABB0B2D337ADEC7EEFD3F5BCC934596E337B60E4E43D074F635B212C219"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PlatformCompatibilityAuditService.cs",
+                      "length":  751,
+                      "ticks":  639250845015102333,
+                      "sha256":  "96E3119189A04A08973FD66F261F78D41D32C59CCDAD75CF8EE105FDF3FC6276"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PowerPlanGuardService.cs",
+                      "length":  13984,
+                      "ticks":  639259505153176051,
+                      "sha256":  "367F9500ED3EA2F7D52941112C46789B8EF9BCCAF672DF3BB403CFDA1658C306"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PowerPlanStateService.cs",
+                      "length":  25723,
+                      "ticks":  639262237596036581,
+                      "sha256":  "6D617E5B58064C8F3E98A5A411E51BC09ED466CBA82093BAE1553409CFD53556"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PowerShellCenterService.cs",
+                      "length":  30786,
+                      "ticks":  639261521393681821,
+                      "sha256":  "942E441C0B6AB4D4B537B65DF54E20E987637D0860AAFB851931B261A2F51612"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PowerShellRunner.cs",
+                      "length":  1192,
+                      "ticks":  639250725136531792,
+                      "sha256":  "3F8CBCC51D85FBB076DEEF4A381CDF966F88BA58DC70C28E281C2205E90D69E3"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\PowerShellTweakerService.cs",
+                      "length":  6511,
+                      "ticks":  639260770571602768,
+                      "sha256":  "460C5C8B0E81FFE11F8A62327DAFA4A94F799388DDE4E21E0A20D7374258582F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ProcessResult.cs",
+                      "length":  170,
+                      "ticks":  639252470613397475,
+                      "sha256":  "67673B2506787FD0F0AE13F95F0C6E43EE28077DFCBB0F9547C57000A1B23619"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ProcessRunner.cs",
+                      "length":  15402,
+                      "ticks":  639262196702079025,
+                      "sha256":  "02DEEE8E3870F9FEE4F7172ED559BB86EC662088F83410EF334634CD33CC003D"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\RecommendedEngine.cs",
+                      "length":  9979,
+                      "ticks":  639262242511297303,
+                      "sha256":  "A9522E335E8AF168397303BAF0AD70A97CF06F607B81276D44A8D4FA44C3FBF5"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\RegistryAtomicSnapshot.cs",
+                      "length":  2509,
+                      "ticks":  639252503879970983,
+                      "sha256":  "356E0DBA2A7A85059F2F31B9771AECED5E3FD1D9BA2EC922434300E6879F1D17"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\RegistryBackupStore.cs",
+                      "length":  11267,
+                      "ticks":  639262164564952839,
+                      "sha256":  "E04FCB7379FA9C5A3BD3A2CAA38863DC01A97BBD3396F0857CDDFE83B8BD4B5F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\RegistryBackupValue.cs",
+                      "length":  183,
+                      "ticks":  639244995533630985,
+                      "sha256":  "F2EBE0AC784B07FCD00DBE88F2FE314DB9C3D4524A9156464E32E1471B834428"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\RegistryBatchScope.cs",
+                      "length":  1762,
+                      "ticks":  639247566578484420,
+                      "sha256":  "B289450D17F80D60CFA402BC11C8DE8C5324785BAE6AACF4BFCD2090224D6D3A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\RustNativeCore.cs",
+                      "length":  4331,
+                      "ticks":  639248446368753229,
+                      "sha256":  "5C2F1989E1177FF4A6049A52198E8A89600FFF798A5B661532E3B10B6A24D1E5"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SafeModeLauncherService.cs",
+                      "length":  630,
+                      "ticks":  639261144595417621,
+                      "sha256":  "2AA87CB13EE19EF41356C16F848AF71EF35AEF136E8E50CACAFA0803F169F9B2"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SafePresetProfileService.cs",
+                      "length":  2044,
+                      "ticks":  639262154419683738,
+                      "sha256":  "23BB3528A6E837B718ECC30C2B15D37252859A71D7610E0E3AB08AEC9E181BA3"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SafeTaskService.cs",
+                      "length":  1451,
+                      "ticks":  639258037228827340,
+                      "sha256":  "56504A6ACE01402E19D6E8C8C1D41DF0FEB77522C3251EEC56496B144AF8F987"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SectionFailureService.cs",
+                      "length":  2463,
+                      "ticks":  639251953004751994,
+                      "sha256":  "379BC679B4C3A29376A67E64E10290FCBE8ECF650525B80699F081D40F62649C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SelfDiagnosticsService.cs",
+                      "length":  3308,
+                      "ticks":  639257548583424548,
+                      "sha256":  "41A7DF9F1A3AC43C0684DB62E93285903DFE341E5413083F604C60D879A9FC55"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SelfHealingJsonService.cs",
+                      "length":  2172,
+                      "ticks":  639258729582916782,
+                      "sha256":  "342540A2376A0CDA1EE1A5370D3FE44160ADC276AEF0E010C754580EC5EEAF6E"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ServiceCatalogService.cs",
+                      "length":  3839,
+                      "ticks":  639261138397932650,
+                      "sha256":  "535E1A244782CB3E3EB8796AD61668928F9874193BF80DCCE9B91B076072E771"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ServiceSafetyService.cs",
+                      "length":  3043,
+                      "ticks":  639251029506158944,
+                      "sha256":  "2ABA2834B8E27484ABA82682B56D373B511D6BA260EC00EE69B1C130D0DE5308"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ShellHealthService.cs",
+                      "length":  11348,
+                      "ticks":  639261226561694226,
+                      "sha256":  "7A0014DAC79F5A0B908FC5495976AAC8E375E457E8672DE915F9B1BD25D70667"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ShellToolkitService.cs",
+                      "length":  22422,
+                      "ticks":  639262158447035036,
+                      "sha256":  "392B0704300596CDFB3BD42B4330F88F26DD6B8FA23D275336974C4FA91FA141"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ShortcutAppearanceService.cs",
+                      "length":  12667,
+                      "ticks":  639257993828595985,
+                      "sha256":  "2B7F92638C780CCA0B2F13CBC31B3A2AE275630CECD120A27194373EEF5F334A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SpankyExtensionService.cs",
+                      "length":  2305,
+                      "ticks":  639254079730384892,
+                      "sha256":  "4B8DE4BFA7E498932CCAAB375217ADB7ADFB554BB476C59DE15BA5B1B7FE5A26"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SpicetifyService.cs",
+                      "length":  22782,
+                      "ticks":  639262242425001648,
+                      "sha256":  "5A6527E1E72B8AA0398FD708DC919D56C1D403780126CF23B398746144227589"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SpicetifyService.Tweaks.cs",
+                      "length":  8963,
+                      "ticks":  639259527672319805,
+                      "sha256":  "F66CD98375D84FC8F0BD3F21354897266F4E91770D4CD62DE52D61070CEFC2EC"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\StartupDiagnostics.cs",
+                      "length":  3521,
+                      "ticks":  639262391887056842,
+                      "sha256":  "B2E2BBE5182441761101BD23DAF7EE1907F88D816C1C6DE3DA2D7BA78026F380"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\StateAccuracyAuditService.cs",
+                      "length":  3217,
+                      "ticks":  639250822801291366,
+                      "sha256":  "BE6E029328C17141ED516A778CBFA7B1B23006642DD23650422B6CE04401DD37"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\StorageOptimizationService.cs",
+                      "length":  7445,
+                      "ticks":  639259115780169894,
+                      "sha256":  "16923958CDE9EFE0C595CE825904752FB6A6A7386B01057AD90112F4D1FE6871"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SystemInfoService.cs",
+                      "length":  20920,
+                      "ticks":  639262237969027794,
+                      "sha256":  "B7FF76B14B0A7849BD3B6B6F0711685FEEBBD03C3528B6E17551A5A2FFEF9EC9"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SystemInsightService.cs",
+                      "length":  13939,
+                      "ticks":  639260512892380648,
+                      "sha256":  "032D2F206617E06A13D3AED9F934949F0EC4F9144B3D645827353DD573971FE3"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SystemRepairDiagnosticsService.cs",
+                      "length":  26675,
+                      "ticks":  639262160969398516,
+                      "sha256":  "AC1DCBC2A16C3CFA2530889D98238E0CDDB4AA390A22363D55FA4373FB3DC85A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\SystemStateSnapshotService.cs",
+                      "length":  7004,
+                      "ticks":  639257548657707686,
+                      "sha256":  "88B5B04AC86D78DB7EBB234F69E0C1794F7DB186D5D1DFBDA419F8C695DFAC1C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TaskInfo.cs",
+                      "length":  145,
+                      "ticks":  639255480042088339,
+                      "sha256":  "9076C1CB390E8A6B2B055A8A2C73DD70B70BD0DBF755D0D0C05DB0EFACE1C02B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TaskSafetyService.cs",
+                      "length":  2282,
+                      "ticks":  639251029981239519,
+                      "sha256":  "1F7BCC5B3632E7333828D49E32DB96233203194F5A73259BA9A8397AF77B4B77"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TaskSchedulerComService.cs",
+                      "length":  10687,
+                      "ticks":  639262249144268691,
+                      "sha256":  "46414D96E3691E9560B6799FDF4657F09ED76E967452C8A6DFE5DEF3EE7C59AC"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TaskSchedulerService.cs",
+                      "length":  14359,
+                      "ticks":  639262223639078657,
+                      "sha256":  "CBBC7D66D54FB979AA1418123DADA94696AD3DCDFFBC93FE195CE71C35F7A15A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TcpGlobalStateService.cs",
+                      "length":  6707,
+                      "ticks":  639262280193104506,
+                      "sha256":  "039E2FA42F81EC80E1CCA8A0D4B48384F3707519C6A4297ECF786EED9B832413"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TweakBatchHistoryService.cs",
+                      "length":  7133,
+                      "ticks":  639260462533686027,
+                      "sha256":  "05CAE13541F157C22B9F325758AAC59990FC0CBC77640E4E25A5B54FFBF152E5"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TweakCompatibilityService.cs",
+                      "length":  3455,
+                      "ticks":  639260466069255546,
+                      "sha256":  "D1F7FB3FC67C0B685862D205B22359074ED67AADFA1518D8730F2E6BE233D149"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TweakDependencyRulesService.cs",
+                      "length":  1605,
+                      "ticks":  639247837397808022,
+                      "sha256":  "44E238E25CDA2D856138E3A332AD6CD2BFAF4E5B6B06CCA14B273BC931A25B8A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TweakDriftWatchdogService.cs",
+                      "length":  2998,
+                      "ticks":  639255478664053522,
+                      "sha256":  "0D0DE6A187CA552C368E8BE84991BB10A44EAC046C371208E927DB80A6715F15"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TweakEngine.cs",
+                      "length":  19727,
+                      "ticks":  639260465872146320,
+                      "sha256":  "DD2F46D5262410AC95A2A1677655A4DDF585D9926249BE8D3330ED0FC5F3D574"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TweakFactory.cs",
+                      "length":  5381,
+                      "ticks":  639260463424345937,
+                      "sha256":  "ECC0E96E681B34D3089BE7DD42442366D9ABAEE6EA1A7E9C6FAFBA81CCCC3306"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TweakPolicyService.cs",
+                      "length":  1864,
+                      "ticks":  639249808897548339,
+                      "sha256":  "E1DAEA4E69A91878B6FCB4033AD84EA6CD10963FB4E70F6E67AC768077E4EF0C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TweakPreflightService.cs",
+                      "length":  4483,
+                      "ticks":  639253513265207523,
+                      "sha256":  "865BC6C7A1A0EE9D034B0BF7525965D64D3426DCCB9D99CADD35AB0790092E6C"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\TweakVersionMatrixService.cs",
+                      "length":  1094,
+                      "ticks":  639248388111024486,
+                      "sha256":  "5D891C27999FA76A872A161D8685801C7E9C31EB7907F70F0B4E6B5368528556"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\UiMotionSettingsService.cs",
+                      "length":  1214,
+                      "ticks":  639257982185675073,
+                      "sha256":  "6B9AC8F2F5FFF201DC8052D45B410C848DE183243E5D68D71590A169C8534192"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\UiResourceService.cs",
+                      "length":  12572,
+                      "ticks":  639260760073899690,
+                      "sha256":  "0E421DD7DA361A7157F314DD7545FC50D5DD51316F3CF29044F88DE02D816177"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\UiStateService.cs",
+                      "length":  1691,
+                      "ticks":  639257112834002906,
+                      "sha256":  "4A59C5C09EB4730E5C7F4F17D8725F9BAECE06BF1E0AD933D3E80B62D3DED629"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\UnelevatedProcessRunner.cs",
+                      "length":  6867,
+                      "ticks":  639252725384951875,
+                      "sha256":  "09B4A59B89CE446FE5F308FB18EC8B97843A6485380364FE6507876B73270CEC"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\UpstreamSourceUpdateService.cs",
+                      "length":  9454,
+                      "ticks":  639262143989043323,
+                      "sha256":  "E6B995392608D45DDD608E01E395E333749B0ACB79EBABBC411C0BD85F72FA82"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\UsbHidInventoryService.cs",
+                      "length":  9395,
+                      "ticks":  639257070922974097,
+                      "sha256":  "8F709E2303F793D1473147377D2AC3EA043BDCE4BBE3B1C009E4AD0C1244A6A6"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\UserFeatureProfileService.cs",
+                      "length":  2533,
+                      "ticks":  639262144039591181,
+                      "sha256":  "CABA15A1A0D257DA1EBCD41688B11A0B43DE2DA5845C398C1034F2D7CD120C46"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\UserScopedCacheService.cs",
+                      "length":  3057,
+                      "ticks":  639257462790818328,
+                      "sha256":  "68BA17E620376D13E77F7C323702B07814C9B581E6DC9461FC0100AE055E10DA"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\V10PortServices.cs",
+                      "length":  50435,
+                      "ticks":  639262225245336700,
+                      "sha256":  "F77E54152632739D4CF3FEE874468CCEE36549E995ECAE40684430C471713CAB"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WatchdogService.cs",
+                      "length":  1024,
+                      "ticks":  639254895321202782,
+                      "sha256":  "22A3108F992985BB20982519284D1F6BF9C27BF2DA73F370A9AEE6C98C7C0DC6"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WindowsActions.cs",
+                      "length":  34412,
+                      "ticks":  639262357592156380,
+                      "sha256":  "4ECC5470ED7E690CA7DB4B7E6C3BAD208FCCAC8133BBC155BB32BDAC195BF23A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WindowsBuildRevalidationService.cs",
+                      "length":  2804,
+                      "ticks":  639253870943737167,
+                      "sha256":  "B9E6945C12192529FDC3F80CADB632E9DD84BFC5D494A833977251F0E7985053"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WindowsCapabilityService.cs",
+                      "length":  2039,
+                      "ticks":  639250841324447186,
+                      "sha256":  "5E46F843552B054810F5A4D51BA519A0FE48FC4207DC6BA681D001A5AC240ACD"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WindowsFeatureStateService.cs",
+                      "length":  13409,
+                      "ticks":  639262343098307002,
+                      "sha256":  "D0E7FE007E7AECF92A6DBF372F845A0D4D5888380213CC93A551DEB40501288F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WindowsModernizerService.cs",
+                      "length":  72131,
+                      "ticks":  639262312158338038,
+                      "sha256":  "951D87911BF9D0A5E6B822B132598DEEF83428FF1647AA2BEBD31B779F770076"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WingetUpdateService.cs",
+                      "length":  16550,
+                      "ticks":  639261205415310288,
+                      "sha256":  "A2EC93057640CE6948FD41876061D61793C7013B515780D26A8FFC645CCB787B"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WinhancePortCatalog.cs",
+                      "length":  8382,
+                      "ticks":  639257850966387148,
+                      "sha256":  "6D130C757FD4BBCFCDC77B54534A9C7A6A2B46F0C97411CCB0977DA0D2E7321F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WinhanceUiService.cs",
+                      "length":  2745,
+                      "ticks":  639252470613462819,
+                      "sha256":  "11D2084F697D2A2CAE59F62DF399D161E0522BAD2D8613B49EA3429900A7E11F"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WorkerClientService.cs",
+                      "length":  4294,
+                      "ticks":  639255550091588482,
+                      "sha256":  "E7FBE6B6C10E15A75EE8F246A80DE383357E754D57088CE18EC8D4DEE14D46C7"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WorkerExecutionContext.cs",
+                      "length":  134,
+                      "ticks":  639247815783791710,
+                      "sha256":  "DF7691FB694765BCF36EB9989265EAC82B35F9E1DFFF881F30DB8147C9494A0A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WorkerHealthService.cs",
+                      "length":  4454,
+                      "ticks":  639255542560666553,
+                      "sha256":  "9464848F942BC1023583ED87E5282A61AB724F22CEE6E5D5AAE15F2ECADC5E36"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WorkerHostService.cs",
+                      "length":  4703,
+                      "ticks":  639262163223372551,
+                      "sha256":  "215CE9729A6FCB665C1092F2CAE339ED41F5BC5242ED6F5EE5AFC17910479E8A"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WorkerMutationService.cs",
+                      "length":  4505,
+                      "ticks":  639254978330841209,
+                      "sha256":  "EFA0ADE2CC01D5D402516F433D2FC97D2F78709807017A2F3BA15BF91460AFC3"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WorkerPayloads.cs",
+                      "length":  1205,
+                      "ticks":  639251882649388257,
+                      "sha256":  "2B7F610BB6AE210F242BFD492A9B1C5A57317F17167076DE474CB066DEF0D65E"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\WriteAheadTransactionService.cs",
+                      "length":  9088,
+                      "ticks":  639257528088328986,
+                      "sha256":  "A00A9AEB74BF9D8DDE479382E0F29958620B0095869B67E0AEA436AE090BF6F8"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\Services\\ZoicwareToolsService.cs",
+                      "length":  12338,
+                      "ticks":  639258028216242618,
+                      "sha256":  "3CCEBA419524E3050D096BA34F38610A40E2872322902A9D5FADBA36739DB492"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\SpankyhoOptimizer.csproj",
+                      "length":  6176,
+                      "ticks":  639261527171662069,
+                      "sha256":  "D332F333492CEF2883F0CF97426D67A33B052245E30C2DBA6F12D58E6C77ACF2"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\ViewModels\\ComponentRowViewModels.cs",
+                      "length":  3456,
+                      "ticks":  639250454496176409,
+                      "sha256":  "9E2B710E028A77D48E62248397AA26963449B22E2F8E48909F005E359B8487F4"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\ViewModels\\DebloatRowViewModel.cs",
+                      "length":  2221,
+                      "ticks":  639254213277960285,
+                      "sha256":  "3799E700480E001F68F0FACF38C9F7E5E3873F876B01191EF2EACCF9A9D68321"
+                  },
+                  {
+                      "path":  "src\\SpankyhoOptimizer\\ViewModels\\StartupRowViewModel.cs",
+                      "length":  3520,
+                      "ticks":  639257522408011646,
+                      "sha256":  "DA3BF41325731F190DA2CE7B9E8AA4DB6AD702303820DCA7306AE51B4870ACA9"
+                  },
+                  {
+                      "path":  "start-codeindex.ps1",
+                      "length":  254,
+                      "ticks":  639261460508682505,
+                      "sha256":  "BD11081BB5E6A9E9E61D6AE11B3E3F09C7FF04571CFFEFD6196CD113DF4A36DA"
+                  },
+                  {
+                      "path":  "start-dotnet-monitor.ps1",
+                      "length":  415,
+                      "ticks":  639261514598312597,
+                      "sha256":  "0B81FD51CEBDA26CD5280A40F68E402D98BC2EC84C3E24CE73CF439DFBA0BC82"
+                  },
+                  {
+                      "path":  "sync-agent-rules.ps1",
+                      "length":  621,
+                      "ticks":  639261439734203492,
+                      "sha256":  "F87500729972D9F379A2ABD2E6DDC88002EEA0CA7C22728BBC86955386016443"
+                  },
+                  {
+                      "path":  "tooling-baseline.ps1",
+                      "length":  1457,
+                      "ticks":  639261540415215659,
+                      "sha256":  "7DA56D32ADCBCFED406135DF4D30A35B99298847A62CCC9D9E6F39AE1125B1B9"
+                  },
+                  {
+                      "path":  "tools\\ArchitectureTests\\ArchitectureRules.cs",
+                      "length":  1223,
+                      "ticks":  639261472188764479,
+                      "sha256":  "295AC6BD5A70C596DEE1834AE20474708C26713735DCE91AC7C7F42231947C09"
+                  },
+                  {
+                      "path":  "tools\\ArchitectureTests\\ArchitectureTests.csproj",
+                      "length":  923,
+                      "ticks":  639261452759504884,
+                      "sha256":  "4DC9034BCB4C66E6653DEC354DED3980012E1B00120C86475772791619EA59CC"
+                  },
+                  {
+                      "path":  "tools\\ArchitectureTests\\OperationCoordinatorTests.cs",
+                      "length":  1576,
+                      "ticks":  639261496577162636,
+                      "sha256":  "3E99402DAAE45FCCB8D56702C3270926CEED566407396D6E12EE8C84D39CFA99"
+                  },
+                  {
+                      "path":  "tools\\ArchitectureTests\\UnitTest1.cs",
+                      "length":  118,
+                      "ticks":  639261451499187733,
+                      "sha256":  "6C024DFE401C157E0B6D781F74322E0CA39A0AB2944DA0B73888313F4BAAF6B2"
+                  },
+                  {
+                      "path":  "tools\\BehaviorTests\\BehaviorTests.csproj",
+                      "length":  834,
+                      "ticks":  639261497285237845,
+                      "sha256":  "65912B0EEFAFB97EF0A1CA5EBD5624561E795BD7E32080B71E36CF1967AABF32"
+                  },
+                  {
+                      "path":  "tools\\BehaviorTests\\OperationCoordinatorBehaviorTests.cs",
+                      "length":  1673,
+                      "ticks":  639261497446303404,
+                      "sha256":  "62101D67D74E0895790D7DC2BFB06A518C80FDBBAD4626E81DB5CC44B10C978B"
+                  },
+                  {
+                      "path":  "tools\\BehaviorTests\\UnitTest1.cs",
+                      "length":  114,
+                      "ticks":  639261497267347443,
+                      "sha256":  "1C4C4B5EBA916F91D68C7B000B3156630A759EDFC0565CCCB2CEE003E17F4E00"
+                  },
+                  {
+                      "path":  "tools\\ConcurrencyTests\\ConcurrencyTests.csproj",
+                      "length":  566,
+                      "ticks":  639261455208765860,
+                      "sha256":  "67E331DF10658F2B5FC4527CA1FA23BD79FAF872E8C49D79BEEED8D250F23286"
+                  },
+                  {
+                      "path":  "tools\\ConcurrencyTests\\Program.cs",
+                      "length":  2376,
+                      "ticks":  639261495463985106,
+                      "sha256":  "1C95D7F92D80072DD3FE73ED3FB86D4FCDB0454BE7CAA4BD33807BA0719E5151"
+                  },
+                  {
+                      "path":  "tools\\CoreTests\\CoreBehaviorTests.cs",
+                      "length":  2286,
+                      "ticks":  639261479977875081,
+                      "sha256":  "7C04CA0C4B91A53A3704BAE289D6E9E7BA422EE3CF838D998DB5FAADA58A6917"
+                  },
+                  {
+                      "path":  "tools\\CoreTests\\CoreTests.csproj",
+                      "length":  844,
+                      "ticks":  639261479649900682,
+                      "sha256":  "08B679D22A0CFE42ACB6113A182EA0A0838F83405BD6EACB9F71D7EC6F8A6D9F"
+                  },
+                  {
+                      "path":  "tools\\CoreTests\\RollbackMatrixTests.cs",
+                      "length":  4001,
+                      "ticks":  639261583245887124,
+                      "sha256":  "A6343BF16B67CBBEB3825A0AEB5771091ABD04BC068D5D624FB74C3A07065016"
+                  },
+                  {
+                      "path":  "tools\\CoreTests\\stryker-config.json",
+                      "length":  1186,
+                      "ticks":  639261481133910830,
+                      "sha256":  "B4D5C2BD77B51C7CB363DC2E57FB6A9D9224C5061251D832F253A74AD7106F2C"
+                  },
+                  {
+                      "path":  "tools\\CoreTests\\UnitTest1.cs",
+                      "length":  110,
+                      "ticks":  639261479471205702,
+                      "sha256":  "15E08A006447DBCF23670C2756808B7FE59D4073DA64BD22D89017F90CE8B6CD"
+                  },
+                  {
+                      "path":  "tools\\CoyoteRewriter\\CoyoteRewriter.csproj",
+                      "length":  361,
+                      "ticks":  639261489423976448,
+                      "sha256":  "8AEDE3C40AAD25D2738960887F744826ACA97BD9E781041878EFE08FF75119BF"
+                  },
+                  {
+                      "path":  "tools\\CoyoteRewriter\\Program.cs",
+                      "length":  3670,
+                      "ticks":  639261492162729284,
+                      "sha256":  "4715B5BF0C09D3A608DFE13C158089A470B47AB49A9550088AD2CF0AF5212BA2"
+                  },
+                  {
+                      "path":  "tools\\DiagnosticsHarness\\DiagnosticsHarness.csproj",
+                      "length":  452,
+                      "ticks":  639261450987445785,
+                      "sha256":  "26EAC2743852746BC596D5C88B8300976FFF181B44B9221373A1D2B77496A26A"
+                  },
+                  {
+                      "path":  "tools\\DiagnosticsHarness\\Program.cs",
+                      "length":  5014,
+                      "ticks":  639261470750470286,
+                      "sha256":  "4F7F6A710B2673DD7BE54007E3E4B5C7071AB09AA98C7933B7653DB5F9572917"
+                  },
+                  {
+                      "path":  "tools\\dotnet-monitor\\monitor-config.json",
+                      "length":  2795,
+                      "ticks":  639261514059582039,
+                      "sha256":  "672CE18EA593737128C0805F0C6E2C94D7584C26783443A9F7E1054233121C15"
+                  },
+                  {
+                      "path":  "tools\\FaultInjectionTests\\FaultInjectionTests.csproj",
+                      "length":  465,
+                      "ticks":  639261514741010539,
+                      "sha256":  "81AD6E7DF5099B1B828D6C73B52F36384089C834DC8330AB7A811108CC180A46"
+                  },
+                  {
+                      "path":  "tools\\FaultInjectionTests\\Program.cs",
+                      "length":  5180,
+                      "ticks":  639261521951909452,
+                      "sha256":  "5D0F15C4EAAE8266E5E481E916905B3C87D013F81055F49F65F2879206D908B1"
+                  },
+                  {
+                      "path":  "tools\\PublicApiProbe\\Program.cs",
+                      "length":  4870,
+                      "ticks":  639261537218767257,
+                      "sha256":  "7466470417988A5C8AF846EA149F0781028F1693F63D9EEB737EB8E64286DCFB"
+                  },
+                  {
+                      "path":  "tools\\PublicApiProbe\\PublicApiProbe.csproj",
+                      "length":  314,
+                      "ticks":  639255057786203750,
+                      "sha256":  "8C0F80537D21891488809B283A9AB0B77EDC89B1BA4C567C3811E161EF5F3656"
+                  },
+                  {
+                      "path":  "tools\\RoslynAudit\\Program.cs",
+                      "length":  6537,
+                      "ticks":  639261456750219067,
+                      "sha256":  "B4EE3D04D28E9A476EFF95997F69BB89B78530E63C11F895CE39E8291ADC2808"
+                  },
+                  {
+                      "path":  "tools\\RoslynAudit\\RoslynAudit.csproj",
+                      "length":  620,
+                      "ticks":  639261451620148045,
+                      "sha256":  "00C08E66FAB3BA7AEB0B2DB0907AB49DC560215885918A8348A5E7D7E0DF9126"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.Coyote\\CoyoteStubs.cs",
+                      "length":  782,
+                      "ticks":  639261460463565251,
+                      "sha256":  "447C3C91422FA2F8665FFCEC36321B1540E34B2D74F51AA1A5938F2A7F1A15EE"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.Coyote\\Program.cs",
+                      "length":  3554,
+                      "ticks":  639261460047512083,
+                      "sha256":  "6D796751D2A445DB2995CB6460B4FAFDA7F8B90C85429A7B6CCE5FF52FB27EF8"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.Coyote\\Spankyho.Coyote.csproj",
+                      "length":  672,
+                      "ticks":  639261459954114857,
+                      "sha256":  "7B8B1B89E688D4974813F9F9BD87E97A81852F3969EA92E2DC827910AB9EED9D"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.Diagnostics\\Program.cs",
+                      "length":  11740,
+                      "ticks":  639261451202548276,
+                      "sha256":  "DD291EB27FD7679D7010D816E6639A96083DAEA77D0442C6B30C198995FEE7EB"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.Diagnostics\\Spankyho.Diagnostics.csproj",
+                      "length":  534,
+                      "ticks":  639261449121865466,
+                      "sha256":  "75383C8B40E961BC0DB26D9BB61EE2F41C17C2283272675139A4B5DBB3196FCE"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.Fuzz\\Program.cs",
+                      "length":  1122,
+                      "ticks":  639261456822479172,
+                      "sha256":  "95ACF129C0B0626E81157D23B9A2815ED86384239AA65CF486F78DC3669E38C9"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.Fuzz\\Spankyho.Fuzz.csproj",
+                      "length":  486,
+                      "ticks":  639261456713452283,
+                      "sha256":  "4F4AFFFBD45166531EF8029C95D6C4BD82FB2A34C636BD688B3A12DE3C4A8800"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.QualityTests\\ArchitectureTests.cs",
+                      "length":  1126,
+                      "ticks":  639261454768352952,
+                      "sha256":  "79B5310500E65B87DA9DD4355A2205EA6D17D5B3DDA6BC4346EC7DFCCBC59612"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.QualityTests\\SourceArchitectureTests.cs",
+                      "length":  3220,
+                      "ticks":  639261455235416100,
+                      "sha256":  "3DC1DC2CBEB4F9740241A51A52E7A6BC2346E6D858B039D1CC0E52EA18EEFF2F"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.QualityTests\\Spankyho.QualityTests.csproj",
+                      "length":  1673,
+                      "ticks":  639261453576451349,
+                      "sha256":  "4B23CE9FA3D532B5EC3B4366062E26F54D0F563A76A15169734934D0DBCA063D"
+                  },
+                  {
+                      "path":  "tools\\Spankyho.QualityTests\\UnitTest1.cs",
+                      "length":  122,
+                      "ticks":  639261452686885921,
+                      "sha256":  "702A27A0099990028724CC4956CD43F3A5472A35C5B350FC69C9B010A0618853"
+                  },
+                  {
+                      "path":  "tools\\UpdateSigner\\Program.cs",
+                      "length":  1654,
+                      "ticks":  639248153103782479,
+                      "sha256":  "C3E781B84BA5D3C210798941BE489E1076FEA6A3A48B347ABDA1609C5F3F13E5"
+                  },
+                  {
+                      "path":  "tools\\UpdateSigner\\UpdateSigner.csproj",
+                      "length":  237,
+                      "ticks":  639248152195466242,
+                      "sha256":  "FE991314F6470CA197AD6F1B304F2362BCD9B6CA06462BEA85F1CC564E481058"
+                  },
+                  {
+                      "path":  "ui-thread-budget-audit.ps1",
+                      "length":  1681,
+                      "ticks":  639262227739135715,
+                      "sha256":  "5901B49962B3769B474B93E10BE4FC01F761A548917F87240C3B37DE0DEF7F8E"
+                  },
+                  {
+                      "path":  "update-project-state.ps1",
+                      "length":  10202,
+                      "ticks":  639261555056968327,
+                      "sha256":  "4B86B4F873D20B03519DB88B24B17C3BFBFDE7740276174B65DAF45EB0454EF1"
+                  },
+                  {
+                      "path":  "update-smoke.json",
+                      "length":  239,
+                      "ticks":  639247545849706725,
+                      "sha256":  "3ADA4618CCBAD142F61B2E1F26368A265A0341E979713C61178FA7CA2BB31DB5"
+                  },
+                  {
+                      "path":  "validate-tooling.ps1",
+                      "length":  1268,
+                      "ticks":  639262217407625310,
+                      "sha256":  "47E133AD61F48CF7E0C176C38CEF84206D261D13C6B07160B26CC000270CB290"
+                  },
+                  {
+                      "path":  "visual-layout-audit.ps1",
+                      "length":  799,
+                      "ticks":  639261835964355603,
+                      "sha256":  "670D4FBB6AC223B59305B347EA467751E1C35B2DDC93250A02D6245EC9D34852"
+                  },
+                  {
+                      "path":  "visual-regression.ps1",
+                      "length":  4318,
+                      "ticks":  639261840261218653,
+                      "sha256":  "64BC6434AEF90C1E9926F41DB094240C24DFF1846207ACC2B145B7A0ACD5EE35"
+                  },
+                  {
+                      "path":  "visual-size-audit.ps1",
+                      "length":  791,
+                      "ticks":  639261841432270617,
+                      "sha256":  "4D9B772AD90A30BF9F00A8F9D0D7C8FB5B4E867F4A449E4FDDDA44086A06904C"
+                  },
+                  {
+                      "path":  "xaml-reuse-audit.ps1",
+                      "length":  1232,
+                      "ticks":  639262206091592367,
+                      "sha256":  "D16BA1115835DB5F3E0FA8425E448E70BF6F10229D0810DF97B3149519287308"
+                  }
+              ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "metrics": {
+    "startupActivatedMs": { "baseline": 193, "warnPct": 10, "failPct": 20, "absoluteFail": 300 },
+    "servicesPageMs": { "baseline": 11, "warnPct": 15, "failPct": 35, "absoluteFail": 30 },
+    "gpuPageMs": { "baseline": 13, "warnPct": 15, "failPct": 35, "absoluteFail": 30 },
+    "networkPageMs": { "baseline": 22.5, "warnPct": 15, "failPct": 35, "absoluteFail": 35 },
+    "storageForegroundMs": { "baseline": 17, "warnPct": 15, "failPct": 35, "absoluteFail": 30 },
+    "storageColdMs": { "baseline": 71, "warnPct": 15, "failPct": 35, "absoluteFail": 110 },
+    "storageRefreshMs": { "baseline": 14, "warnPct": 20, "failPct": 50, "absoluteFail": 35 },
+    "gpuDetectColdMs": { "baseline": 46, "warnPct": 15, "failPct": 35, "absoluteFail": 70 },
+    "taskSchedulerFreshMs": { "baseline": 239, "warnPct": 20, "failPct": 50, "absoluteFail": 400 },
+    "taskSchedulerCacheMs": { "baseline": 1, "warnPct": 100, "failPct": 300, "absoluteFail": 10 },
+    "privateDeltaMB": { "baseline": 9, "warnPct": 50, "failPct": 100, "absoluteFail": 20 },
+    "handleDelta": { "baseline": 0, "warnPct": 0, "failPct": 0, "absoluteFail": 20 }
+  }
+}
