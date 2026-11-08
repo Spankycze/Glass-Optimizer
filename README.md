@@ -46,17 +46,9 @@ Vydání obsahuje pouze ověřený kompaktní instalátor, jeho kontrolní souč
 
 ## Snímky aplikace
 
-### Přehled a ovládání ventilátorů
-
-![Glass Optimizer 16.323 – přehled](screenshots/glass-optimizer-overview.png)
-
 ### AI System Runtime
 
 ![Glass Optimizer – AI System Runtime](screenshots/glass-optimizer-ai-runtime.png)
-
-### Podporované ventilátory
-
-![Glass Optimizer – ovládání ventilátorů](screenshots/glass-optimizer-fans.png)
 
 ### Systémové tweaky a napájení
 
