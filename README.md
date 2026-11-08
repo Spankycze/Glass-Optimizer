@@ -58,6 +58,28 @@ Vydání obsahuje pouze ověřený kompaktní instalátor, jeho kontrolní souč
 
 ![Glass Optimizer – ovládání ventilátorů](screenshots/glass-optimizer-fans.png)
 
+### Systémové tweaky a napájení
+
+![Glass Optimizer – systémové tweaky](screenshots/glass-optimizer-system.png)
+
+![Glass Optimizer – Power Plan](screenshots/glass-optimizer-power.png)
+
+### Síť, grafika a úložiště
+
+![Glass Optimizer – Internet a síť](screenshots/glass-optimizer-network.png)
+
+![Glass Optimizer – GPU a Display](screenshots/glass-optimizer-gpu.png)
+
+![Glass Optimizer – úložiště NVMe](screenshots/glass-optimizer-storage.png)
+
+### Spouštění, rozhraní a personalizace
+
+![Glass Optimizer – Po spuštění](screenshots/glass-optimizer-startup.png)
+
+![Glass Optimizer – UI a Explorer](screenshots/glass-optimizer-ui.png)
+
+![Glass Optimizer – Personalizace](screenshots/glass-optimizer-personalizace.png)
+
 ## Kompatibilita
 
 Některé interní názvy instalace, procesu, naplánovaných úloh a registru zůstávají zachovány kvůli kompatibilitě při aktualizaci.
