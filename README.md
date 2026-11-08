@@ -4,7 +4,7 @@ Glass Optimizer je nástroj pro správu, úpravy a automatizaci vybraných funkc
 
 ## Ověřené vydání
 
-[Glass Optimizer 16.323.0](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v16.323.0)
+[Glass Optimizer 16.329.0](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v16.329.0)
 
 Vydání obsahuje pouze ověřený kompaktní instalátor, jeho kontrolní součet SHA-256 a changelog. Zdrojový kód součástí vydání není.
 
