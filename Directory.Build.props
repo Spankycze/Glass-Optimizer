@@ -1,7 +1,8 @@
 <Project>
   <PropertyGroup Condition="'$(MSBuildProjectName)'=='SpankyhoOptimizer' Or '$(MSBuildProjectName)'=='SpankyhoOptimizer.Core' Or '$(MSBuildProjectName)'=='SpankyhoOptimizer.RuntimeHost' Or '$(MSBuildProjectName)'=='SpankyInstaller'">
-    <SpankyVersion>15.4.661</SpankyVersion>
-    <SpankyVersionUnderscore>$([System.String]::Copy('$(SpankyVersion)').Replace('.', '_'))</SpankyVersionUnderscore>
+    <SpankyVersion>16.340.0</SpankyVersion>
+    <SpankyPublicVersion>16.340</SpankyPublicVersion>
+    <SpankyVersionUnderscore>$([System.String]::Copy('$(SpankyPublicVersion)').Replace('.', '_'))</SpankyVersionUnderscore>
     <Version>$(SpankyVersion)</Version>
     <AssemblyVersion>$(SpankyVersion).0</AssemblyVersion>
     <FileVersion>$(SpankyVersion).0</FileVersion>
