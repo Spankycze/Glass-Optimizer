@@ -1,77 +1,41 @@
 # Glass Optimizer
 
-Glass Optimizer je nástroj pro správu, úpravy a automatizaci vybraných funkcí Windows. Nabízí přehledné rozhraní, bezpečnostní kontroly a vratné změny tam, kde je lze obnovit.
+Glass Optimizer spravuje vybrané funkce Windows, napájení, systémové nastavení, síť, úložiště, GPU a místní AI Runtime.
 
 ## Ověřené vydání
 
-[Glass Optimizer 16.329.0](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v16.329.0)
+[Glass Optimizer 16.333.0](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v16.333.0)
 
-Vydání obsahuje pouze ověřený kompaktní instalátor, jeho kontrolní součet SHA-256 a changelog. Zdrojový kód součástí vydání není.
+Vydání obsahuje kompaktní instalátor, SHA-256 kontrolní součet a changelog.
 
-## Funkce
+## Hlavní funkce
 
-### Systém a výkon
+- Přehled a systémové tweaky Windows.
+- Power Plan a vybrané parametry napájení.
+- GPU, Display, úložiště NVMe a USB/HID.
+- Po spuštění, UI/Explorer a personalizace.
+- Síť, Windows Update, Spotify/Spicetify a podporované launchery.
+- Defender, Fixer a Debloater.
+- AI System Runtime pro místní automatizaci podporovaných systémových úloh.
+- Témata `Glass` a `Solid Dark`.
+- Updater s ověřením oficiálního GitHub vydání.
 
-- **Přehled:** vstupní obrazovka se stavem a odkazy na hlavní části aplikace.
-- **Systémové tweaky:** nastavení systému a soukromí uspořádaná do kategorií.
-- **Power Plan:** správa dostupných plánů napájení a jejich vybraných parametrů.
-- **GPU / Display:** nástroje pro nastavení grafiky a zobrazení.
-- **Úložiště / NVMe:** přehled a dostupné nástroje pro úložiště.
-- **USB / HID:** přehled připojených USB zařízení a zařízení pro vstup.
-- **Po spuštění:** správa podporovaných položek spouštěných po přihlášení.
-- **UI / Explorer:** nastavení uživatelského rozhraní Windows a Průzkumníka.
-- **Personalizace:** dostupné možnosti přizpůsobení Windows.
+### Ventilátory
 
-### Síť a aplikace
-
-- **Internet / Síť:** přehled síťových informací a dostupných síťových nástrojů.
-- **Windows Update:** zobrazení stavu a dostupných ovládacích prvků aktualizací.
-- **Spotify / Spicetify:** dostupné úpravy a nástroje pro Spotify a Spicetify.
-- **Programy / Launchery:** přehled podporovaných programů a herních launcherů.
-
-### Údržba a ochrana
-
-- **Nastavení:** nastavení a předvolby aplikace.
-- **Soukromí:** dostupná nastavení soukromí Windows.
-- **Defender:** přístup k dostupným informacím a ovládacím prvkům Microsoft Defenderu.
-- **AI Debloater:** asistované nástroje pro správu vybraných součástí Windows. Před potvrzením změn zkontrolujte jejich dopad.
-- **Debloater:** další dostupné nástroje pro správu předinstalovaných součástí.
-- **Fixer:** nástroje pro diagnostiku a opravu podporovaných problémů Windows.
-
-### AI a ventilátory
-
-- **AI System Runtime:** místní automatizace pro vybrané chování plánu napájení, priority procesů CPU a her GPU, a správu podporovaných služeb či naplánovaných úloh. Ovládací prvky lze zapnout nebo vypnout; změny jsou omezeny bezpečnostními pravidly aplikace.
-- **Ventilátory:** sekce se zobrazí a funguje pouze při detekci podporovaného řadiče Lian Li UNI FAN SL-Infinity USB `0CF2:A102`. Aplikace před změnou znovu ověřuje podporovaný hardware.
-- **AI Smart Runtime:** místní analýza telemetrie ventilátorů používá teplotu, příkon, zatížení a otáčky k odhadu vývoje teploty, sledování odchylek a řízení podporovaného chování ventilátorů. Nepotřebuje cloudové zpracování.
+Sekce Ventilátory se zobrazí a funguje pouze při detekci podporovaného řadiče Lian Li UNI FAN SL-Infinity USB (`0CF2:A102`). Aplikace hardware ověří také před změnou RPM, PWM, RGB nebo AI profilu.
 
 ## Snímky aplikace
 
-### AI System Runtime
-
-![Glass Optimizer – AI System Runtime](screenshots/glass-optimizer-ai-runtime.png)
-
-### Systémové tweaky a napájení
-
-![Glass Optimizer – systémové tweaky](screenshots/glass-optimizer-system.png)
-
-![Glass Optimizer – Power Plan](screenshots/glass-optimizer-power.png)
-
-### Síť, grafika a úložiště
-
-![Glass Optimizer – Internet a síť](screenshots/glass-optimizer-network.png)
-
-![Glass Optimizer – GPU a Display](screenshots/glass-optimizer-gpu.png)
-
-![Glass Optimizer – úložiště NVMe](screenshots/glass-optimizer-storage.png)
-
-### Spouštění, rozhraní a personalizace
-
-![Glass Optimizer – Po spuštění](screenshots/glass-optimizer-startup.png)
-
-![Glass Optimizer – UI a Explorer](screenshots/glass-optimizer-ui.png)
-
-![Glass Optimizer – Personalizace](screenshots/glass-optimizer-personalizace.png)
+![AI System Runtime](screenshots/glass-optimizer-ai-runtime.png)
+![Systémové tweaky](screenshots/glass-optimizer-system.png)
+![Power Plan](screenshots/glass-optimizer-power.png)
+![Internet a síť](screenshots/glass-optimizer-network.png)
+![GPU a Display](screenshots/glass-optimizer-gpu.png)
+![Úložiště NVMe](screenshots/glass-optimizer-storage.png)
+![Po spuštění](screenshots/glass-optimizer-startup.png)
+![UI a Explorer](screenshots/glass-optimizer-ui.png)
+![Personalizace](screenshots/glass-optimizer-personalizace.png)
 
 ## Kompatibilita
 
-Některé interní názvy instalace, procesu, naplánovaných úloh a registru zůstávají zachovány kvůli kompatibilitě při aktualizaci.
+Některé interní názvy instalace, procesu, naplánovaných úloh a registru zůstávají kvůli aktualizacím zachované.
