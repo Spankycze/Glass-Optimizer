@@ -1,41 +1,104 @@
 # Glass Optimizer
 
-Glass Optimizer spravuje vybrané funkce Windows, napájení, systémové nastavení, síť, úložiště, GPU a místní AI Runtime.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview.png" alt="Glass Optimizer overview" width="900">
+</p>
 
-## Ověřené vydání
+<p align="center">
+  <strong>A focused Windows control center for system tuning, maintenance, power management and local automation.</strong>
+</p>
 
-[Glass Optimizer 16.333.0](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v16.333.0)
+<p align="center">
+  <a href="https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.0.0"><img src="https://img.shields.io/badge/verified_release-17.0.0-19c7d8?style=for-the-badge" alt="Verified release 17.0.0"></a>
+  <a href="https://github.com/Spankycze/Glass-Optimizer/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-English-7c5cff?style=for-the-badge" alt="English changelog"></a>
+  <a href="https://github.com/Spankycze/Glass-Optimizer/releases"><img src="https://img.shields.io/github/downloads/Spankycze/Glass-Optimizer/total?style=for-the-badge&label=downloads" alt="GitHub downloads"></a>
+</p>
 
-Vydání obsahuje kompaktní instalátor, SHA-256 kontrolní součet a changelog.
+Glass Optimizer brings frequently used Windows controls into one compact desktop application. It combines a glass-style interface with guarded system changes, read-back checks and reversible operations where Windows allows them.
 
-## Hlavní funkce
+## Verified release
 
-- Přehled a systémové tweaky Windows.
-- Power Plan a vybrané parametry napájení.
-- GPU, Display, úložiště NVMe a USB/HID.
-- Po spuštění, UI/Explorer a personalizace.
-- Síť, Windows Update, Spotify/Spicetify a podporované launchery.
-- Defender, Fixer a Debloater.
-- AI System Runtime pro místní automatizaci podporovaných systémových úloh.
-- Témata `Glass` a `Solid Dark`.
-- Updater s ověřením oficiálního GitHub vydání.
+[Download Glass Optimizer 17.0.0](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.0.0)
 
-### Ventilátory
+The release provides the verified Compact installer, its SHA-256 checksum and the release changelog. The application can check official GitHub releases in the background approximately every five hours. Downloaded installers are verified before the existing elevated installation flow starts.
 
-Sekce Ventilátory se zobrazí a funguje pouze při detekci podporovaného řadiče Lian Li UNI FAN SL-Infinity USB (`0CF2:A102`). Aplikace hardware ověří také před změnou RPM, PWM, RGB nebo AI profilu.
+## What it includes
 
-## Snímky aplikace
+### Windows controls
 
-![AI System Runtime](screenshots/glass-optimizer-ai-runtime.png)
-![Systémové tweaky](screenshots/glass-optimizer-system.png)
-![Power Plan](screenshots/glass-optimizer-power.png)
-![Internet a síť](screenshots/glass-optimizer-network.png)
-![GPU a Display](screenshots/glass-optimizer-gpu.png)
-![Úložiště NVMe](screenshots/glass-optimizer-storage.png)
-![Po spuštění](screenshots/glass-optimizer-startup.png)
-![UI a Explorer](screenshots/glass-optimizer-ui.png)
-![Personalizace](screenshots/glass-optimizer-personalizace.png)
+- **Overview:** a single starting point for system status and the main application areas.
+- **System tweaks:** grouped Windows system, privacy and user-interface settings.
+- **Power Plan:** available plans and selected power parameters, including protected AC `Never` values.
+- **GPU and Display:** graphics and display-related controls.
+- **Storage and NVMe:** storage information and maintenance tools.
+- **USB and HID:** connected USB and input-device information.
+- **Startup:** supported registry, startup-folder and third-party scheduled-task entries.
+- **UI and Explorer:** supported Windows shell and Explorer settings.
+- **Personalization:** available appearance and personalization controls.
 
-## Kompatibilita
+### Network and applications
 
-Některé interní názvy instalace, procesu, naplánovaných úloh a registru zůstávají kvůli aktualizacím zachované.
+- **Internet and Network:** network information and supported network tools.
+- **Windows Update:** update status and supported repair controls.
+- **Spotify and Spicetify:** available Spotify and Spicetify tools.
+- **Apps and Launchers:** supported applications and game-launcher entries.
+
+### Maintenance and protection
+
+- **Privacy:** supported Windows privacy settings.
+- **Microsoft Defender:** available Defender information and controls.
+- **AI Debloater and Debloater:** guarded management of selected Windows components.
+- **Fixer:** supported Windows repair actions with confirmation before mutation.
+- **Settings:** application language, theme and preference controls.
+
+### Local automation and fan control
+
+- **AI System Runtime:** local automation for selected power-plan behavior, CPU process priorities, GPU game priorities, supported services and scheduled tasks.
+- **AI Smart Runtime:** local fan telemetry analysis using temperature, power, load and RPM data; no cloud processing is required.
+- **Fan control:** available only when the supported Lian Li UNI FAN SL-Infinity USB controller `0CF2:A102` is detected. Hardware is checked again before RPM, PWM, RGB or AI-profile changes.
+
+## Safety model
+
+- Mutating actions use confirmation, validation and read-back where supported.
+- Power-plan guard values protect the four requested AC `Never` settings.
+- Automatic behavior is local, bounded and controlled by application safety rules.
+- The updater verifies official release data and installer SHA-256 before installation.
+- Internal installer, process, task and registry identifiers remain stable for upgrade compatibility.
+
+## Screenshots
+
+### AI System Runtime
+
+![Glass Optimizer AI System Runtime](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-ai-runtime.png)
+
+### System, power and maintenance
+
+![Glass Optimizer system controls](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-system.png)
+
+![Glass Optimizer Power Plan](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-power.png)
+
+![Glass Optimizer startup management](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-startup.png)
+
+### Network, graphics and storage
+
+![Glass Optimizer network controls](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-network.png)
+
+![Glass Optimizer GPU and Display](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-gpu.png)
+
+![Glass Optimizer NVMe storage](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-storage.png)
+
+### Interface, personalization and fans
+
+![Glass Optimizer UI and Explorer](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-ui.png)
+
+![Glass Optimizer personalization](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-personalizace.png)
+
+![Glass Optimizer fan controls](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-fans.png)
+
+## Compatibility
+
+Glass Optimizer targets supported Windows desktop environments. Some internal installer, process, scheduled-task and registry names remain unchanged for upgrade compatibility.
+
+## License and release notes
+
+See the [17.0.0 release](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.0.0) for the verified installer and checksum. See [`CHANGELOG.md`](CHANGELOG.md) for the English release history.

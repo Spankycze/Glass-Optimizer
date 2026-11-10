@@ -1,0 +1,46 @@
+# Changelog
+
+## 17.0.0
+
+- Updated the application major version to `17.0.0`.
+- The `Glass Optimizer` name in the window title and Overview no longer displays a version number.
+- Improved keyboard navigation and control activation, including verification of the actual foreground window.
+- Hardened changelog validation during Overview refresh so edit history cannot overwrite released entries.
+- Preserved the power-plan safety guard for the AC `Never` values.
+
+## 16.339.0
+
+- Increased the CPU Focus tray popup to `480×300` so complete fan and mode descriptions fit.
+- Updated placement and pixel smoke validation for the new dimensions at 1×, 2× and 3× DPI.
+- Preserved the Lian Li fan hardware gate for `0CF2:A102` and the unsupported-hardware fallback.
+
+## 16.338.0
+
+- Improved text readability in the CPU Focus tray popup.
+- Increased and brightened the CPU, FAN, RPM and mode labels.
+- Preserved the `0CF2:A102` hardware restriction and unsupported-hardware fallback.
+
+## 16.337.0
+
+- Changed the tray popup to the CPU Focus layout: no product header, dominant CPU temperature, compact fan panel and mode status.
+- Shortened the fan label to fit the compact card while preserving the unsupported-hardware fallback.
+- Verified tray popup rendering and the release service smoke check.
+
+## 16.336.0
+
+- Changed the tray popup to the CPU Focus layout with a dominant CPU temperature and compact fan card.
+- Preserved the `0CF2:A102` Lian Li gate, unsupported-hardware fallback and GDI/DPI smoke coverage.
+
+## 16.335.0
+
+- Redesigned the tray popup with a layered Glass layout and clearer information hierarchy.
+- Preserved the Lian Li `0CF2:A102` hardware gate and unsupported-hardware fallback.
+- Verified GDI rendering at 1×, 2× and 3× DPI and popup resource stability.
+
+## 16.334.0
+
+- Added a quiet check for official GitHub releases approximately every five hours.
+- Updates download only after a second SHA-256 verification and use the existing elevated installation flow.
+- Added Czech / English language selection in Settings; Czech remains the default.
+- Expanded English text for animation and Glass/Solid Dark theme settings.
+- Preserved the Fan section restriction to the supported Lian Li `0CF2:A102` controller.
