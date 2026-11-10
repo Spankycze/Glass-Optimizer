@@ -8,6 +8,14 @@
 - Hardened changelog validation during Overview refresh so edit history cannot overwrite released entries.
 - Preserved the power-plan safety guard for the AC `Never` values.
 
+## 16.340.0
+
+- Fixed debounce timer lifetime when the main window closes.
+- Fixed round-trip handling for the light, system and dark themes.
+- Improved smoke validation for keyboard navigation and control activation.
+- Updated changelog smoke validation to accept the latest released version below the current working version.
+- Preserved the power-plan safety guard for the AC `Never` values.
+
 ## 16.339.0
 
 - Increased the CPU Focus tray popup to `480×300` so complete fan and mode descriptions fit.
