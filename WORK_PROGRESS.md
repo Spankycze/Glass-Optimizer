@@ -1,4 +1,7 @@
-## 15.4.660 Liquid Glass Přehled
+## 17.5.0 — aktivní stav, 11. 11. 2026
+Automatická volba češtiny nebo angličtiny podle Windows UI culture bez uloženého override; ruční volba zůstává trvalá. Tray single-instance handoff aktivuje existující okno přes foreground fallback. Popupy používají společný glass styl. `build-fast.ps1` a cílené smoke testy prošly. Release připravit přes `build-release.ps1`.
+
+## 17.4.0 — aktivní stav, 11. 11. 2026
 Čtyři kompaktní živé panely, průhledné grafy, malé ikony hardwaru, skleněná řada rychlých akcí a sjednocené systémové karty. Zachované údaje, statistiky, síť, historie změn a okno bez barevného rámování.
 
 15.4.651: fixed progress popup single-flight leak on setup exceptions; cleanup always clears operation state and releases the gate even if visual teardown fails. Completed progress stops activity timer and honors cancellation during completion delay. Added failure-injection coverage for setup/backend/verifier errors, duplicate execution, navigation cancellation, stale results and completion cancellation. Fixed clipped Overview subtitle by reserving full header height before first layout in both themes. Fresh Debug build, release UI bundle, visual capture, three window sizes, startup and critical leak tests passed. Wider UI/performance/AI rework remains pending.

@@ -581,7 +581,7 @@ public sealed partial class MainWindow
                  var language = new ComboBox
                  {
                      Header = LanguageService.Text("Jazyk aplikace", "Application language"),
-                     ItemsSource = new[] { "Čeština", "English" },
+                      ItemsSource = LanguageService.Options,
                      SelectedIndex = LanguageService.IsEnglish ? 1 : 0,
                      MinWidth = 220,
                      HorizontalAlignment = HorizontalAlignment.Left

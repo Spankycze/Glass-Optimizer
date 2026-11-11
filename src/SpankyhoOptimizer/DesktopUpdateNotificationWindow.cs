@@ -85,10 +85,10 @@ internal sealed class DesktopUpdateNotificationWindow : Window
 
         var card = new Border
         {
-            CornerRadius = new CornerRadius(22),
+            CornerRadius = new CornerRadius(28),
             BorderThickness = new Thickness(1),
             // Quiet neutral edge, no bright blue decorative border.
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(42, 142, 153, 170)),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(88, 220, 239, 250)),
             Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)),
             Padding = new Thickness(0)
         };
@@ -99,7 +99,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         var glassLayers = new Grid();
         var innerGlass = new SystemBackdropElement
         {
-            CornerRadius = new CornerRadius(22),
+            CornerRadius = new CornerRadius(28),
             SystemBackdrop = new UpdatePopupGlassBackdrop(),
             IsHitTestVisible = false
         };
@@ -117,7 +117,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         glassLayers.Children.Add(innerGlass);
         glassLayers.Children.Add(new Border
         {
-            CornerRadius = new CornerRadius(22),
+            CornerRadius = new CornerRadius(28),
             Background = new LinearGradientBrush
             {
                 StartPoint = new Windows.Foundation.Point(0, 0),
@@ -132,7 +132,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         });
         glassLayers.Children.Add(new Border
         {
-            CornerRadius = new CornerRadius(22),
+            CornerRadius = new CornerRadius(28),
             Background = new LinearGradientBrush
             {
                 StartPoint = new Windows.Foundation.Point(0, 0),
@@ -294,8 +294,8 @@ internal sealed class DesktopUpdateNotificationWindow : Window
     private static Button BuildButton(string text, bool primary) => new()
     {
         Content = text,
-        Height = 32,
-        CornerRadius = new CornerRadius(10),
+        Height = 38,
+        CornerRadius = new CornerRadius(19),
         BorderThickness = new Thickness(1),
         BorderBrush = new SolidColorBrush(primary
             ? Windows.UI.Color.FromArgb(72, 118, 155, 188)
