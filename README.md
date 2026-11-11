@@ -1,10 +1,6 @@
 # Glass Optimizer
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview-purple.jpg" alt="Glass Optimizer overview" width="900">
-</p>
-
-<p align="center">
   <strong>A focused Windows control center for system tuning, maintenance, power management and local automation.</strong>
 </p>
 
@@ -64,6 +60,10 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 - Automatic behavior is local, bounded and controlled by application safety rules.
 - The updater verifies official release data and installer SHA-256 before installation.
 - Internal installer, process, task and registry identifiers remain stable for upgrade compatibility.
+
+## Screenshots
+
+![Glass Optimizer overview](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview-purple.jpg)
 
 ## Compatibility
 
