@@ -681,6 +681,7 @@ $appFiles=$appReleaseSources | Select-Object -ExpandProperty FullName
 $appFiles+=$coreReleaseSources | Select-Object -ExpandProperty FullName
 $appFiles+=Get-ChildItem (Join-Path $root 'src\SpankyhoOptimizer.RuntimeHost') -File | Select-Object -ExpandProperty FullName
 $appFiles+=Join-Path $root 'NuGet.Config'
+$appFiles+=Join-Path $root 'CHANGELOG.md'
 $appFiles+=Join-Path $root 'WORK_PROGRESS.md'
 $appFiles+=$versionProps
 $appHash=Get-InputHash $appFiles
@@ -879,6 +880,10 @@ if($appChanged){
   if($runtimeHostChanged){
     Remove-Item $runtimeHostOut -Recurse -Force -ErrorAction SilentlyContinue
     New-Item $runtimeHostOut -ItemType Directory -Force | Out-Null
+    # Publish into the release cache, never the shared RuntimeHost bin that a
+    # source smoke process may keep loaded.
+    $hostBuildRoot=Join-Path $runtimeHostOut 'build'
+    $hostIsolationArgs=@("-p:BaseOutputPath=$hostBuildRoot\")
     # The GUI publish already built Core for this EXACT release version.
     # Avoid compiling it a second time only when the active MSBuild reference
     # assembly and RuntimeHost NuGet assets are present and version-matched.
@@ -893,11 +898,11 @@ if($appChanged){
     $hostRefsArg=if($hostSkipRefs){'-p:BuildProjectReferences=false'}else{'-p:BuildProjectReferences=true'}
     Write-Host ('RELEASE_HOST_PROJECT_REFS '+$(if($hostSkipRefs){'skip-verified-core'}else{'build-safe-fallback'}))
     dotnet publish $runtimeHost -c Release -r win-x64 --self-contained false -m -o $runtimeHostOut --nologo -v:q `
-      -p:RunAnalyzers=false -p:RunAnalyzersDuringBuild=false $hostRefsArg | Out-Host
+      -p:RunAnalyzers=false -p:RunAnalyzersDuringBuild=false $hostIsolationArgs $hostRefsArg | Out-Host
     if($LASTEXITCODE -ne 0 -and $hostSkipRefs){
       Write-Warning 'RELEASE_HOST_SAFE_RETRY: host publish could not reuse Core; retrying with project references built.'
       dotnet publish $runtimeHost -c Release -r win-x64 --self-contained false -m -o $runtimeHostOut --nologo -v:q `
-        -p:RunAnalyzers=false -p:RunAnalyzersDuringBuild=false -p:BuildProjectReferences=true | Out-Host
+        -p:RunAnalyzers=false -p:RunAnalyzersDuringBuild=false $hostIsolationArgs -p:BuildProjectReferences=true | Out-Host
     }
     if($LASTEXITCODE -ne 0){throw 'Runtime host publish failed.'}
     $hostCoreDll=Join-Path $runtimeHostOut 'SpankyhoOptimizer.Core.dll'
@@ -906,7 +911,7 @@ if($appChanged){
     if(-not $hostCoreValid -and $hostSkipRefs){
       Write-Warning 'RELEASE_HOST_SAFE_RETRY: reused reference yielded stale Core; retrying full dependency build.'
       dotnet publish $runtimeHost -c Release -r win-x64 --self-contained false -m -o $runtimeHostOut --nologo -v:q `
-        -p:RunAnalyzers=false -p:RunAnalyzersDuringBuild=false -p:BuildProjectReferences=true | Out-Host
+        -p:RunAnalyzers=false -p:RunAnalyzersDuringBuild=false $hostIsolationArgs -p:BuildProjectReferences=true | Out-Host
       if($LASTEXITCODE -ne 0){throw 'Runtime host dependency recovery publish failed.'}
       $hostCoreValid=(Test-Path -LiteralPath $hostCoreDll) -and
         ((Get-Item -LiteralPath $hostCoreDll).VersionInfo.FileVersion -eq "$releaseVersion.0")

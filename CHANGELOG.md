@@ -1,8 +1,8 @@
 # Changelog
 
-## 17.6.0
+## 17.7.0
 
-- Fixed tray double-click activation so it opens the Lian Li fan section through the existing single-instance handoff.
+- Fixed tray double-click activation so it opens the main application Overview through the existing single-instance handoff.
 - Hardened fallback resolution of the installed main application path when the tray agent runs outside the application directory.
 
 ## 17.5.0

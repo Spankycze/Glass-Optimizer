@@ -1603,7 +1603,6 @@ public static class FanProfileService
             {
                 _ = ProcessRunner.StartDetached(
                     exe,
-                    "--open-section=lianli",
                     useShellExecute: true);
             }
         }
