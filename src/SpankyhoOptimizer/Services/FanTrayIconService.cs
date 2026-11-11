@@ -112,8 +112,8 @@ public sealed partial class FanTrayIconService : IDisposable
         if (Interlocked.CompareExchange(ref _activeStartup, startupId, 0) != 0)
             throw new InvalidOperationException("Fan tray UI startup is already in progress.");
 
-        var ready = new TaskCompletionSource<(FanTrayIconService? Tray, Exception? Error)>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        var ready = new ManualResetEventSlim();
+        (FanTrayIconService? Tray, Exception? Error) outcome = (null, null);
         var handshake = new object();
         bool abandoned = false;
         var worker = new Thread(() =>
@@ -126,7 +126,8 @@ public sealed partial class FanTrayIconService : IDisposable
             }
             catch (Exception ex)
             {
-                ready.TrySetResult((null, ex));
+                outcome = (null, ex);
+                ready.Set();
                 Interlocked.CompareExchange(ref _activeStartup, 0, startupId);
                 return;
             }
@@ -139,7 +140,8 @@ public sealed partial class FanTrayIconService : IDisposable
                     Interlocked.CompareExchange(ref _activeStartup, 0, startupId);
                     return;
                 }
-                ready.TrySetResult((tray, null));
+                outcome = (tray, null);
+                ready.Set();
             }
             Interlocked.CompareExchange(ref _activeStartup, 0, startupId);
             tray.RunTrayMessageLoop();
@@ -154,11 +156,11 @@ public sealed partial class FanTrayIconService : IDisposable
             Interlocked.CompareExchange(ref _activeStartup, 0, startupId);
             throw;
         }
-        if (!ready.Task.Wait(TimeSpan.FromSeconds(5)))
+        if (!ready.Wait(TimeSpan.FromSeconds(5)))
         {
             lock (handshake)
             {
-                if (!ready.Task.IsCompleted)
+                if (!ready.IsSet)
                 {
                     abandoned = true;
                     throw new InvalidOperationException("Fan tray UI did not initialize.");
@@ -166,7 +168,6 @@ public sealed partial class FanTrayIconService : IDisposable
             }
         }
 
-        (FanTrayIconService? Tray, Exception? Error) outcome = ready.Task.GetAwaiter().GetResult();
         if (outcome.Error != null)
             throw new InvalidOperationException("Fan tray UI initialization failed.", outcome.Error);
         return outcome.Tray!;
