@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace SpankyhoOptimizer.Services;
 
-public sealed record UiState(string Section = "overview", string? Sub = null, string ViewMode = "Manual", double ScrollOffset = 0, string Language = "Czech");
+public sealed record UiState(string Section = "overview", string? Sub = null, string ViewMode = "Manual", double ScrollOffset = 0, string? Language = null);
 
 public static class UiStateService
 {

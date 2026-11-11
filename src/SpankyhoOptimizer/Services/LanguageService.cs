@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 
 namespace SpankyhoOptimizer.Services;
 
@@ -20,6 +21,8 @@ public static class LanguageService
 
     public static bool IsEnglish => Current == UiLanguage.English;
 
+    public static string[] Options => new[] { "Čeština", "English" };
+
     public static void Set(UiLanguage language)
     {
         lock (Gate) _current = language;
@@ -33,6 +36,14 @@ public static class LanguageService
         string? value = UiStateService.Load().Language;
         return Enum.TryParse(value, ignoreCase: true, out UiLanguage language)
             ? language
-            : UiLanguage.Czech;
+            : DetectSystemLanguage();
+    }
+
+    private static UiLanguage DetectSystemLanguage()
+    {
+        string language = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+        return string.Equals(language, "cs", StringComparison.OrdinalIgnoreCase)
+            ? UiLanguage.Czech
+            : UiLanguage.English;
     }
 }

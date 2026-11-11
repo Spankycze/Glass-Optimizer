@@ -46,6 +46,19 @@ public sealed partial class App : Application
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool BringWindowToTop(IntPtr hWnd);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+
     internal static bool IsSmokeUi { get; private set; }
 
     private static void PrepareSmokeWindow(Window window)
@@ -443,8 +456,7 @@ public sealed partial class App : Application
                 ? string.Empty
                 : $"section={openSection.Substring("--open-section=".Length).Trim()}{Environment.NewLine}";
 
-            await File.WriteAllTextAsync(
-                SingleInstanceHandoffPath,
+            await WriteSingleInstanceHandoffAsync(
                 $"action=activate{Environment.NewLine}{sectionLine}pid={Environment.ProcessId}{Environment.NewLine}version={AppVersion}{Environment.NewLine}utc={DateTime.UtcNow:O}{Environment.NewLine}");
             LogService.Info("startup", "SECOND_INSTANCE_ACTIVATE_REQUESTED" + (openSection == null ? string.Empty : " section"));
         }
@@ -470,8 +482,7 @@ public sealed partial class App : Application
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(SingleInstanceHandoffPath)!);
-            await File.WriteAllTextAsync(
-                SingleInstanceHandoffPath,
+            await WriteSingleInstanceHandoffAsync(
                 $"action=exit{Environment.NewLine}pid={Environment.ProcessId}{Environment.NewLine}version={AppVersion}{Environment.NewLine}utc={DateTime.UtcNow:O}{Environment.NewLine}");
         }
         catch (Exception ex)
@@ -595,8 +606,23 @@ public sealed partial class App : Application
             hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
             if (hwnd == IntPtr.Zero) return;
             ShowWindow(hwnd, SwRestore);
-            BringWindowToTop(hwnd);
-            SetForegroundWindow(hwnd);
+            IntPtr foreground = GetForegroundWindow();
+            uint foregroundThread = foreground == IntPtr.Zero
+                ? 0
+                : GetWindowThreadProcessId(foreground, out _);
+            uint targetThread = GetWindowThreadProcessId(hwnd, out _);
+            bool attached = foregroundThread != 0 && targetThread != 0 &&
+                foregroundThread != targetThread && AttachThreadInput(foregroundThread, targetThread, true);
+            try
+            {
+                BringWindowToTop(hwnd);
+                SetForegroundWindow(hwnd);
+            }
+            finally
+            {
+                if (attached)
+                    AttachThreadInput(foregroundThread, targetThread, false);
+            }
             LogService.Info("startup", $"SINGLE_INSTANCE_WINDOW_FOREGROUNDED hwnd=0x{hwnd.ToInt64():X}");
         }
         catch (Exception ex)
@@ -634,6 +660,25 @@ public sealed partial class App : Application
         {
             LogService.Error("startup", "Single-instance guard initialization failed", ex);
             return true;
+        }
+    }
+
+    private static async Task WriteSingleInstanceHandoffAsync(string request)
+    {
+        string temporaryPath = SingleInstanceHandoffPath + "." + Environment.ProcessId + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporaryPath, request).ConfigureAwait(false);
+            File.Move(temporaryPath, SingleInstanceHandoffPath, true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporaryPath))
+                    File.Delete(temporaryPath);
+            }
+            catch { }
         }
     }
 

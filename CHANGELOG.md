@@ -1,5 +1,11 @@
 # Changelog
 
+## 17.5.0
+
+- Added automatic Czech or English selection from the Windows UI language when no saved language override exists.
+- Preserved manual language selection and unified glass update, tray and system dialog styling.
+- Fixed tray single-instance activation so the existing main window is restored and brought to the foreground.
+
 ## 17.4.0
 
 - Refined the Overview into compact glass panels with live hardware values and charts.
