@@ -1,10 +1,6 @@
 # Glass Optimizer
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview.png" alt="Glass Optimizer overview" width="900">
-</p>
-
-<p align="center">
   <strong>A focused Windows control center for system tuning, maintenance, power management and local automation.</strong>
 </p>
 
