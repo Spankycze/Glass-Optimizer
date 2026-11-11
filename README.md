@@ -1,7 +1,7 @@
 # Glass Optimizer
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview.png" alt="Glass Optimizer overview" width="900">
+  <img src="https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview-purple.jpg" alt="Glass Optimizer overview" width="900">
 </p>
 
 <p align="center">
@@ -67,7 +67,7 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 
 ## Screenshots
 
-![Glass Optimizer overview](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview.png)
+![Glass Optimizer overview](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview-purple.jpg)
 
 ## Compatibility
 
