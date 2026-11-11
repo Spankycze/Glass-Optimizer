@@ -1,5 +1,16 @@
 # Changelog
 
+## 17.7.0
+
+- Fixed tray double-click activation so it opens the main application Overview through the existing single-instance handoff.
+- Hardened fallback resolution of the installed main application path when the tray agent runs outside the application directory.
+
+## 17.5.0
+
+- Added automatic Czech or English selection from the Windows UI language when no saved language override exists.
+- Preserved manual language selection and unified glass update, tray and system dialog styling.
+- Fixed tray single-instance activation so the existing main window is restored and brought to the foreground.
+
 ## 17.4.0
 
 - Refined the Overview into compact glass panels with live hardware values and charts.
