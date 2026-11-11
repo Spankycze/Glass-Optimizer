@@ -65,10 +65,6 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 - The updater verifies official release data and installer SHA-256 before installation.
 - Internal installer, process, task and registry identifiers remain stable for upgrade compatibility.
 
-## Screenshots
-
-![Glass Optimizer overview](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview-purple.jpg)
-
 ## Compatibility
 
 Glass Optimizer targets supported Windows desktop environments. Some internal installer, process, scheduled-task and registry names remain unchanged for upgrade compatibility.
