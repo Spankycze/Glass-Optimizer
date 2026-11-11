@@ -1,5 +1,5 @@
-## 17.5.0 — aktivní stav, 11. 11. 2026
-Automatická volba češtiny nebo angličtiny podle Windows UI culture bez uloženého override; ruční volba zůstává trvalá. Tray single-instance handoff aktivuje existující okno přes foreground fallback. Popupy používají společný glass styl. `build-fast.ps1` a cílené smoke testy prošly. Release připravit přes `build-release.ps1`.
+## 17.6.0 — aktivní stav, 11. 11. 2026
+Tray dvojklik posílá existující `FanTrayAction.OpenFans`; odstraněno blokující úvodní povýšení ikony, aby proběhl startup handshake. Fallback dohledání instalované hlavní aplikace otevírá existující Lian Li sekci. `build-release.ps1` připravuje release `17.6.0`.
 
 ## 17.4.0 — aktivní stav, 11. 11. 2026
 Čtyři kompaktní živé panely, průhledné grafy, malé ikony hardwaru, skleněná řada rychlých akcí a sjednocené systémové karty. Zachované údaje, statistiky, síť, historie změn a okno bez barevného rámování.
