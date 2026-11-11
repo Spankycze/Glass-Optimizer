@@ -16,6 +16,7 @@ namespace SpankyhoOptimizer;
 public sealed partial class MainWindow
 {
     private readonly Dictionary<Grid, WeakReference<Control>> _dialogFocusRestore = new();
+    private readonly Dictionary<Grid, FrameworkElement> _dialogMotionCards = new();
 
     private double DialogMaxHeight(double cap = 720)
     {
@@ -25,10 +26,22 @@ public sealed partial class MainWindow
     }
 
     private static Brush DialogSecondaryTextBrush()
-        => _darkTheme ? ThemeColor(176,176,176) : TextSecondaryBrush();
+        => _darkTheme ? ThemeColor(196,202,212) : TextSecondaryBrush();
+
+    private static Brush? _dialogModalCardBrush;
+    private static Brush? _dialogModalBodyBrush;
 
     private static Brush DialogBodyBrush()
-        => _darkTheme ? GlassPanelBrush() : SurfaceAltBrush();
+        => _darkTheme ? (_dialogModalBodyBrush ??= GlassSurfaceElevatedBrush()) : SurfaceAltBrush();
+
+    private static Brush DialogModalCardBrush()
+        => _darkTheme ? (_dialogModalCardBrush ??= new AcrylicBrush
+        {
+            TintColor = Windows.UI.Color.FromArgb(255, 82, 170, 220),
+            TintOpacity = 0.10,
+            TintLuminosityOpacity = 0.18,
+            FallbackColor = Windows.UI.Color.FromArgb(96, 19, 36, 48)
+        }) : SectionCardBackgroundBrush();
 
     private static Brush DialogNeutralBorderBrush()
         => _darkTheme ? GlassEdgeBrush() : BorderThemeBrush();
@@ -37,16 +50,16 @@ public sealed partial class MainWindow
         => _darkTheme ? GlassBlueEdgeBrush() : BorderThemeBrush();
 
     private static Brush DialogInnerSurfaceBrush()
-        => _darkTheme ? ThemeColor(64, 20, 32, 46) : SurfaceAltBrush();
+        => _darkTheme ? GlassDialogInnerSurfaceBrush() : SurfaceAltBrush();
 
     private static Brush DialogInnerStrongBrush()
-        => _darkTheme ? ThemeColor(82, 15, 27, 41) : SurfaceElevatedBrush();
+        => _darkTheme ? GlassSurfaceElevatedBrush() : SurfaceElevatedBrush();
 
-    private Grid CreateDialogOverlay(int zIndex = 30000, byte alpha = 112)
+    private Grid CreateDialogOverlay(int zIndex = 30000, byte alpha = 72)
     {
         var overlay = new Grid
         {
-            Background = DialogOverlayBrush(alpha),
+            Background = _darkTheme ? GlassOverlayBrush(alpha) : DialogOverlayBrush(alpha),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
@@ -75,10 +88,10 @@ public sealed partial class MainWindow
             MaxHeight = resolvedMaxHeight,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            Background = _darkTheme ? GlassPanelBrush() : SectionCardBackgroundBrush(),
+            Background = DialogModalCardBrush(),
             BorderBrush = DialogNeutralBorderBrush(),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(_darkTheme ? 24 : 10),
+            CornerRadius = new CornerRadius(_darkTheme ? 28 : 10),
             Padding = new Thickness(_darkTheme ? 26 : 24),
             Shadow = _darkTheme ? new ThemeShadow() : null
         };
@@ -95,6 +108,8 @@ public sealed partial class MainWindow
         var card = CreateDialogCard(760, 720, 860);
         if (card.MinHeight <= 0 || card.MaxHeight < card.MinHeight)
             throw new InvalidOperationException($"Dialog height invalid: min={card.MinHeight} max={card.MaxHeight}.");
+        if (_darkTheme && (card.Background is not AcrylicBrush acrylic || acrylic.TintOpacity >= 0.9 || acrylic.FallbackColor.A > 112))
+            throw new InvalidOperationException("Glass dialog needs background blur, translucent tint and a translucent readability fallback.");
         if (_darkTheme && card.BorderBrush == null)
             throw new InvalidOperationException("Dark glass dialog border is missing.");
         double maxAllowed = Math.Max(320, RootGrid.ActualWidth - 48);
@@ -137,10 +152,10 @@ public sealed partial class MainWindow
                 Margin = new Thickness(4, 6, 0, 0),
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch,
-                Background = _darkTheme ? ThemeColor(62, 7, 12, 18) : SurfaceAltBrush(),
+                Background = _darkTheme ? ThemeColor(80, 5, 11, 18) : SurfaceAltBrush(),
                 BorderBrush = DialogNeutralBorderBrush(),
                 BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(_darkTheme ? 26 : 8),
+                CornerRadius = new CornerRadius(_darkTheme ? 30 : 8),
                 Opacity = _darkTheme ? 0.72 : 0.72
             };
             depthShell.Translation = new System.Numerics.Vector3(0, 0, 14);
@@ -150,6 +165,34 @@ public sealed partial class MainWindow
             card.HorizontalAlignment = HorizontalAlignment.Stretch;
             card.Translation = new System.Numerics.Vector3(0, 0, 30);
             host.Children.Add(card);
+            if (_darkTheme)
+            {
+                var nativeGlass = CreateNativeGlassElement(card.CornerRadius);
+                var tint = new Border
+                {
+                    Background = GlassGradient(Windows.UI.Color.FromArgb(28, 116, 198, 238), Windows.UI.Color.FromArgb(12, 32, 74, 104)),
+                    CornerRadius = card.CornerRadius,
+                    IsHitTestVisible = false
+                };
+                var sheen = new Border
+                {
+                    Background = GlassGradient(Windows.UI.Color.FromArgb(34, 224, 243, 252), Windows.UI.Color.FromArgb(0, 224, 243, 252)),
+                    CornerRadius = card.CornerRadius,
+                    IsHitTestVisible = false
+                };
+                // Native SystemBackdropElement performs the actual blur. Tint and sheen only shape
+                // the iOS-like material and stay cheap because they are static compositor layers.
+                var content = card.Child;
+                card.Child = null;
+                card.Background = ThemeColor(0, 0, 0, 0);
+                var layers = new Grid { Margin = new Thickness(-card.Padding.Left, -card.Padding.Top, -card.Padding.Right, -card.Padding.Bottom) };
+                layers.Children.Add(nativeGlass);
+                layers.Children.Add(tint);
+                layers.Children.Add(sheen);
+                var contentHost = new Border { Padding = card.Padding, Child = content };
+                layers.Children.Add(contentHost);
+                card.Child = layers;
+            }
 
             var topHighlight = new Border
             {
@@ -159,7 +202,7 @@ public sealed partial class MainWindow
                 VerticalAlignment = VerticalAlignment.Top,
                 Background = _darkTheme ? ThemeColor(90, 255, 255, 255) : DialogNeutralBorderBrush(),
                 CornerRadius = new CornerRadius(1),
-                Opacity = _darkTheme ? 0.28 : 0.42
+                Opacity = _darkTheme ? 0.75 : 0.42
             };
             Canvas.SetZIndex(topHighlight, 6);
             host.Children.Add(topHighlight);
@@ -175,7 +218,7 @@ public sealed partial class MainWindow
                 Background = _darkTheme ? ThemeColor(54, 18, 26, 36) : SurfaceAltBrush(),
                 BorderBrush = DialogNeutralBorderBrush(),
                 BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(12),
+                CornerRadius = new CornerRadius(16),
                 Opacity = 0.96,
                 Content = new FontIcon { Glyph = "\uE711", FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 11.5, Foreground = TextPrimaryBrush() }
             };
@@ -189,17 +232,27 @@ public sealed partial class MainWindow
             Canvas.SetZIndex(close, 10);
             host.Children.Add(close);
             overlay.Children.Add(host);
-            close.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+            close.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
                 () => close.Focus(FocusState.Programmatic));
         }
         else overlay.Children.Add(card);
+        _dialogMotionCards[overlay] = card;
         RootGrid.Children.Add(overlay);
-        overlay.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => AnimateDialogIn(overlay, card));
+        overlay.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            AttachIosMotionTree(card);
+            AnimateDialogIn(overlay, card);
+        });
         return close;
     }
 
     private void UnmountDialog(Grid overlay)
     {
+        const string unmountKey = "SpankyDialogUnmounting";
+        if (overlay.Resources.ContainsKey(unmountKey)) return;
+        overlay.Resources[unmountKey] = true;
+        overlay.IsHitTestVisible = false;
+
         Control? restore = null;
         if (_dialogFocusRestore.TryGetValue(overlay, out var weak))
         {
@@ -207,22 +260,44 @@ public sealed partial class MainWindow
             weak.TryGetTarget(out restore);
         }
 
-        if (RootGrid.Children.Contains(overlay))
-            RootGrid.Children.Remove(overlay);
+        _dialogMotionCards.TryGetValue(overlay, out FrameworkElement? motionCard);
 
-        if (restore != null)
+        void FinalizeUnmount()
         {
-            restore.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            if (RootGrid.Children.Contains(overlay))
+                RootGrid.Children.Remove(overlay);
+
+            overlay.KeyboardAccelerators.Clear();
+            _dialogMotionCards.Remove(overlay);
+
+            if (restore != null)
             {
-                if (restore.IsLoaded &&
-                    restore.IsEnabled &&
-                    restore.Visibility == Visibility.Visible &&
-                    restore.XamlRoot != null)
+                restore.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
                 {
-                    restore.Focus(FocusState.Programmatic);
-                }
-            });
+                    if (restore.IsLoaded &&
+                        restore.IsEnabled &&
+                        restore.Visibility == Visibility.Visible &&
+                        restore.XamlRoot != null)
+                    {
+                        restore.Focus(FocusState.Programmatic);
+                    }
+                });
+            }
         }
+
+        bool smoke = Environment.GetCommandLineArgs().Any(x =>
+            string.Equals(x, "--dialog-lifecycle-smoke", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(x, "--release-ui-smoke", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(x, "--progress-lifecycle-smoke", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(x, "--keyboard-activation-smoke", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(x, "--community-cursor-layout-smoke", StringComparison.OrdinalIgnoreCase));
+
+        // Smoke/layout probes assert tree teardown synchronously. Runtime dialogs still get the
+        // full iOS-style exit animation; test-only modes bypass it so QA cannot race the compositor.
+        if (!smoke && motionCard != null && MotionEnabled)
+            AnimateDialogOut(overlay, motionCard, FinalizeUnmount);
+        else
+            FinalizeUnmount();
     }
 
     internal string RunDialogLifecycleSmoke()
@@ -272,13 +347,16 @@ public sealed partial class MainWindow
             CornerRadius = new CornerRadius(4),
             HorizontalAlignment = HorizontalAlignment.Right,
             Foreground = _darkTheme ? ThemeColor(241,241,241) : (primary ? OnAccentTextBrush() : TextPrimaryBrush()),
-            Background = _darkTheme ? (primary ? ThemeColor(7,7,7) : ThemeColor(0,0,0)) : (primary ? ButtonVioletBrush() : ButtonVioletSoftBrush()),
+            Background = _darkTheme ? (primary ? DialogInnerStrongBrush() : DialogInnerSurfaceBrush()) : (primary ? ButtonVioletBrush() : ButtonVioletSoftBrush()),
             BorderBrush = DialogNeutralBorderBrush(),
             BorderThickness = new Thickness(primary ? 1.4 : 1),
             FontWeight = primary ? FontWeights.SemiBold : FontWeights.Medium,
             
         };
         ApplyMaterialButtonAppearance(b, primary);
+        b.Height = 38;
+        b.Padding = new Thickness(18, 0, 18, 0);
+        b.CornerRadius = new CornerRadius(19);
         EnsureAccessibleButton(b, text);
         b.Translation = new System.Numerics.Vector3(0, 0, 0);
 
@@ -298,7 +376,7 @@ public sealed partial class MainWindow
         async Task RunDialogActionOnceAsync()
         {
             object normalContent = b.Content;
-            b.IsEnabled = false;
+            // Preserve keyboard focus while the single-flight guard blocks duplicate activation.
             b.Content = "Pracuji\u2026";
             try
             {
@@ -357,7 +435,7 @@ public sealed partial class MainWindow
         Grid.SetRow(actions, 2); root.Children.Add(actions);
         card.Child = root;
         MountDialog(overlay, card, () => { UnmountDialog(overlay); tcs.TrySetResult(false); });
-        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
             () => primary.Focus(FocusState.Programmatic));
         return await tcs.Task;
     }
@@ -388,7 +466,127 @@ public sealed partial class MainWindow
         root.Children.Add(actions);
         card.Child = root;
         MountDialog(overlay, card, () => { UnmountDialog(overlay); tcs.TrySetResult(true); });
-        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
+            () => primary.Focus(FocusState.Programmatic));
+        await tcs.Task;
+    }
+
+    private async Task ShowTweakApplyFailureAsync(IReadOnlyList<string> failures)
+    {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var overlay = CreateDialogOverlay(alpha: 78);
+        var card = CreateDialogCard(620, 620, 700);
+        var root = CreateDialogLayout();
+
+        var header = new Grid { ColumnSpacing = 12, Margin = new Thickness(0, 0, 48, 0) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition());
+        var icon = new Border
+        {
+            Width = 38,
+            Height = 38,
+            CornerRadius = new CornerRadius(12),
+            Background = ThemeColor(72, 255, 171, 64),
+            BorderBrush = ThemeColor(120, 255, 196, 104),
+            BorderThickness = new Thickness(1),
+            Child = new FontIcon
+            {
+                Glyph = "\uE7BA",
+                FontFamily = new FontFamily("Segoe Fluent Icons"),
+                FontSize = 17,
+                Foreground = WarningBrush()
+            }
+        };
+        header.Children.Add(icon);
+
+        var headerText = new StackPanel { Spacing = 3 };
+        headerText.Children.Add(new TextBlock
+        {
+            Text = "Některé změny se nepodařilo potvrdit",
+            FontSize = 23,
+            FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"),
+            FontWeight = FontWeights.SemiBold,
+            Foreground = TextPrimaryBrush(),
+            TextWrapping = TextWrapping.Wrap
+        });
+        headerText.Children.Add(new TextBlock
+        {
+            Text = "Windows po aplikaci nevrátil očekávaný stav u některých položek.",
+            FontSize = 12.8,
+            Foreground = DialogSecondaryTextBrush(),
+            TextWrapping = TextWrapping.Wrap
+        });
+        Grid.SetColumn(headerText, 1);
+        header.Children.Add(headerText);
+        root.Children.Add(header);
+
+        var rows = new StackPanel { Spacing = 8 };
+        foreach (string raw in failures.Take(8))
+        {
+            string friendly = raw
+                .Replace(": read-back nepotvrdil změnu.", ": Windows změnu po aplikaci nepotvrdil.", StringComparison.OrdinalIgnoreCase)
+                .Replace("read-back nepotvrdil změnu", "Windows změnu po aplikaci nepotvrdil", StringComparison.OrdinalIgnoreCase)
+                .Replace("read-back", "ověření ve Windows", StringComparison.OrdinalIgnoreCase);
+
+            var item = new Border
+            {
+                Background = DialogBodyBrush(),
+                BorderBrush = DialogNeutralBorderBrush(),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(14),
+                Padding = new Thickness(14, 12, 14, 12),
+                Child = new TextBlock
+                {
+                    Text = friendly,
+                    FontSize = 13.2,
+                    Foreground = TextPrimaryBrush(),
+                    TextWrapping = TextWrapping.Wrap,
+                    LineHeight = 20
+                }
+            };
+            rows.Children.Add(item);
+        }
+        if (failures.Count > 8)
+            rows.Children.Add(new TextBlock
+            {
+                Text = $"…a dalších {failures.Count - 8}",
+                FontSize = 12,
+                Foreground = DialogSecondaryTextBrush(),
+                Margin = new Thickness(4, 2, 0, 0)
+            });
+
+        var scroll = DialogScroll(rows);
+        Grid.SetRow(scroll, 1);
+        root.Children.Add(scroll);
+
+        Task Finish()
+        {
+            UnmountDialog(overlay);
+            tcs.TrySetResult(true);
+            return Task.CompletedTask;
+        }
+
+        var actions = DialogActions();
+        actions.Margin = new Thickness(0);
+        var primary = StyledDialogButton("Zavřít", true, Finish);
+        actions.Children.Add(primary);
+
+        var footer = new Border
+        {
+            Background = DialogInnerStrongBrush(),
+            BorderBrush = DialogNeutralBorderBrush(),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            CornerRadius = new CornerRadius(0, 0, 16, 16),
+            Padding = new Thickness(14, 12, 4, 0),
+            Margin = new Thickness(-4, 2, -4, -4),
+            Child = actions
+        };
+        Grid.SetRow(footer, 2);
+        root.Children.Add(footer);
+
+        card.Child = root;
+        MountDialog(overlay, card, () => { UnmountDialog(overlay); tcs.TrySetResult(true); });
+        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
             () => primary.Focus(FocusState.Programmatic));
         await tcs.Task;
     }
@@ -439,11 +637,12 @@ public sealed partial class MainWindow
         using var cts = new CancellationTokenSource();
         Grid? overlay = null;
         Microsoft.UI.Xaml.DispatcherTimer? timer = null;
+        System.EventHandler<object>? activityTick = null;
         bool popupClosed = false;
         try
         {
             lock (_progressOperationSync) _activeProgressCts = cts;
-            overlay = CreateDialogOverlay(11000, 145);
+            overlay = CreateDialogOverlay(11000, 96);
             var card = CreateDialogCard(520, 680, z: 36);
             var stack = new StackPanel { Spacing = 14 };
             var state = new TextBlock { Text = "APLIKUJI", FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = ProgressBrush() };
@@ -453,7 +652,7 @@ public sealed partial class MainWindow
                 if (string.IsNullOrWhiteSpace(message)) return;
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (!popupClosed)
+                    if (!popupClosed && !string.Equals(statusText.Text, message, StringComparison.Ordinal))
                         statusText.Text = message;
                 });
             });
@@ -465,24 +664,32 @@ public sealed partial class MainWindow
             for (int i = 0; i < bars.Length; i++)
             {
                 activity.ColumnDefinitions.Add(new ColumnDefinition());
-                bars[i] = new Border { CornerRadius = new CornerRadius(3), Background = SurfaceAltBrush() };
+                bars[i] = new Border { CornerRadius = new CornerRadius(3), Background = _darkTheme ? GlassTrackBrush() : SurfaceAltBrush() };
                 Grid.SetColumn(bars[i], i);
                 activity.Children.Add(bars[i]);
             }
             stack.Children.Add(activity);
             int activityIndex = 0;
-            timer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(220) };
-            timer.Tick += (_, _) =>
+            int previousActivityIndex = -1;
+            Brush activityIdleBrush = _darkTheme ? GlassTrackBrush() : SurfaceAltBrush();
+            Brush activityActiveBrush = ProgressBrush();
+            timer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(360) };
+            activityTick = (_, _) =>
             {
-                for (int i = 0; i < bars.Length; i++) bars[i].Background = i == activityIndex ? ProgressBrush() : SurfaceAltBrush();
+                if (previousActivityIndex >= 0) bars[previousActivityIndex].Background = activityIdleBrush;
+                bars[activityIndex].Background = activityActiveBrush;
+                previousActivityIndex = activityIndex;
                 activityIndex = (activityIndex + 1) % bars.Length;
             };
+            timer.Tick += activityTick;
 
             void ClosePopup()
             {
                 if (popupClosed) return;
                 popupClosed = true;
                 timer.Stop();
+                if (activityTick != null)
+                    timer.Tick -= activityTick;
                 try { cts.Cancel(); }
                 finally { UnmountDialog(overlay); }
             }
@@ -501,13 +708,14 @@ public sealed partial class MainWindow
                 return (false, default!);
             bool verified = isSuccess?.Invoke(result) ?? true;
             _lastProgressVerifiedForSmoke = verified;
-            state.Text = verified ? "OVĚŘENO ✓" : "CHYBA";
+            string finalState = verified ? "OVĚŘENO ✓" : "CHYBA";
+            if (!string.Equals(state.Text, finalState, StringComparison.Ordinal)) state.Text = finalState;
             state.Foreground = verified ? SuccessBrush() : WarningBrush();
             foreach (var bar in bars) bar.Background = verified ? SuccessBrush() : WarningBrush();
             if (!verified && failureStatus != null)
             {
                 string message = failureStatus(result);
-                if (!string.IsNullOrWhiteSpace(message)) statusText.Text = message;
+                if (!string.IsNullOrWhiteSpace(message) && !string.Equals(statusText.Text, message, StringComparison.Ordinal)) statusText.Text = message;
             }
             timer.Stop();
             await Task.Delay(verified ? 140 : 260, cts.Token);
@@ -524,7 +732,12 @@ public sealed partial class MainWindow
             popupClosed = true;
             try
             {
-                timer?.Stop();
+                if (timer != null)
+                {
+                    timer.Stop();
+                    if (activityTick != null)
+                        timer.Tick -= activityTick;
+                }
                 if (overlay != null) UnmountDialog(overlay);
             }
             finally
@@ -556,7 +769,9 @@ public sealed partial class MainWindow
     {
         // Cold standalone smoke must finish initial navigation before opening operations.
         await ShowSectionAsync("overview");
-        await WaitForVisualCaptureReadyAsync(_themePreference, "overview");
+        // Progress lifecycle needs a fully loaded Overview, not identical pixels. Live telemetry
+        // legitimately changes gauge geometry/text between samples and must not block this smoke.
+        await WaitForVisualCaptureReadyAsync(_themePreference, "overview", requirePixelStability: false, requireSectionData: false);
         int overlaysBefore = RootGrid.Children.Count;
         bool setupFailed = false;
         try
@@ -715,8 +930,8 @@ public sealed partial class MainWindow
     private async Task<bool> ShowTweakApplyConfirmationAsync(IReadOnlyList<TweakDefinition> dirty)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var overlay = CreateDialogOverlay();
-        var card = CreateDialogCard(830, 720, 920);
+        var overlay = CreateDialogOverlay(alpha: 78);
+        var card = CreateDialogCard(760, 700, 840);
         var root = CreateDialogLayout();
 
         var headerGrid = new Grid { ColumnSpacing = 12, Margin = new Thickness(0, 0, 48, 0) };
@@ -724,7 +939,7 @@ public sealed partial class MainWindow
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition());
         var icon = new Border
         {
-            Width = 38, Height = 34, CornerRadius = new CornerRadius(8),
+            Width = 38, Height = 34, CornerRadius = new CornerRadius(17),
             Background = AccentSoftBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(1),
             Child = new FontIcon { Glyph = "\uE73E", FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 15, Foreground = AccentBrush() }
         };
@@ -745,7 +960,7 @@ public sealed partial class MainWindow
         summary.Children.Add(summaryText);
         var countBadge = new Border
         {
-            MinWidth = 34, Height = 32, Padding = new Thickness(9, 0, 9, 0), CornerRadius = new CornerRadius(4),
+            MinWidth = 34, Height = 32, Padding = new Thickness(9, 0, 9, 0), CornerRadius = new CornerRadius(16),
             Background = AccentSoftBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(1),
             Child = new TextBlock { Text = dirty.Count.ToString(), FontSize = 13.3, FontWeight = FontWeights.SemiBold, Foreground = AccentBrush(), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }
         };
@@ -766,7 +981,7 @@ public sealed partial class MainWindow
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var number = new Border
             {
-                Width = 30, Height = 30, CornerRadius = new CornerRadius(8),
+                Width = 30, Height = 30, CornerRadius = new CornerRadius(15),
                 Background = DialogBodyBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(1),
                 Child = new TextBlock { Text = index.ToString(), FontSize = 11.5, Foreground = DialogSecondaryTextBrush(), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
             };
@@ -775,8 +990,8 @@ public sealed partial class MainWindow
             Grid.SetColumn(label, 1); row.Children.Add(label);
             var state = new Border
             {
-                MinWidth = 48, Height = 27, Padding = new Thickness(10, 0, 10, 0), CornerRadius = new CornerRadius(8),
-                Background = tweak.Pending ? AccentSoftBrush() : SurfaceAltBrush(),
+                MinWidth = 48, Height = 27, Padding = new Thickness(10, 0, 10, 0), CornerRadius = new CornerRadius(13.5),
+                Background = tweak.Pending ? AccentSoftBrush() : DialogInnerSurfaceBrush(),
                 BorderBrush = tweak.Pending ? DialogNeutralBorderBrush() : DialogNeutralBorderBrush(), BorderThickness = new Thickness(1),
                 Child = new TextBlock { Text = tweak.Pending ? "ZAP" : "VYP", FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = tweak.Pending ? AccentBrush() : DialogSecondaryTextBrush(), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
             };
@@ -827,7 +1042,7 @@ public sealed partial class MainWindow
                 Height = 36,
                 Padding = new Thickness(16, 0, 16, 0),
                 FontSize = 12,
-                CornerRadius = new CornerRadius(4),
+                CornerRadius = new CornerRadius(12),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 Foreground = primaryStyle ? OnAccentTextBrush() : TextPrimaryBrush(),
                 Background = primaryStyle ? ButtonVioletBrush() : ButtonVioletSoftBrush(),
@@ -843,16 +1058,28 @@ public sealed partial class MainWindow
         }
 
         var actions = DialogActions();
+        actions.Margin = new Thickness(0);
         var cancel = MakeActionButton("Zrušit", false);
         cancel.Click += (_, _) => Finish(false, "cancel");
         actions.Children.Add(cancel);
         var primary = MakeActionButton("Použít vybrané", true);
         primary.Click += (_, _) => Finish(true, "apply");
         actions.Children.Add(primary);
-        Grid.SetRow(actions, 2); root.Children.Add(actions);
+
+        var footer = new Border
+        {
+            Background = DialogInnerStrongBrush(),
+            BorderBrush = DialogNeutralBorderBrush(),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            CornerRadius = new CornerRadius(0, 0, 16, 16),
+            Padding = new Thickness(14, 12, 4, 0),
+            Margin = new Thickness(-4, 2, -4, -4),
+            Child = actions
+        };
+        Grid.SetRow(footer, 2); root.Children.Add(footer);
         card.Child = root;
         MountDialog(overlay, card, () => Finish(false, "close"));
-        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => primary.Focus(FocusState.Programmatic));
+        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () => primary.Focus(FocusState.Programmatic));
         return await tcs.Task;
     }
 
@@ -880,7 +1107,7 @@ public sealed partial class MainWindow
         Grid.SetRow(actions, 2); root.Children.Add(actions);
         card.Child = root;
         MountDialog(overlay, card, () => { UnmountDialog(overlay); tcs.TrySetResult(0); });
-        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
             () => primary.Focus(FocusState.Programmatic));
         return await tcs.Task;
     }
@@ -892,7 +1119,7 @@ public sealed partial class MainWindow
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cts = new CancellationTokenSource();
-        var overlay = CreateDialogOverlay(12000, 155);
+        var overlay = CreateDialogOverlay(12000, 96);
         var card = CreateDialogCard(700, 680, z: 36);
         var root = CreateDialogLayout();
         var header = new StackPanel { Spacing = 8, Margin = new Thickness(0, 0, 48, 0) };
@@ -901,13 +1128,13 @@ public sealed partial class MainWindow
         var current = new TextBlock { Text = "Připravuji…", FontSize = 13.5, Foreground = ProgressBrush(), TextWrapping = TextWrapping.Wrap };
         var detail = new TextBlock { Text = "Čekám na dokončení operace…", FontSize = 12, Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap };
         header.Children.Add(summary); header.Children.Add(current); header.Children.Add(detail);
-        var track = new Grid { Height = 7, Background = SurfaceAltBrush(), HorizontalAlignment = HorizontalAlignment.Stretch };
+        var track = new Grid { Height = 7, Background = _darkTheme ? GlassTrackBrush() : SurfaceAltBrush(), HorizontalAlignment = HorizontalAlignment.Stretch };
         var fill = new Border { Width = 0, Height = 7, CornerRadius = new CornerRadius(3.5), Background = ProgressBrush(), HorizontalAlignment = HorizontalAlignment.Left };
         track.Children.Add(fill); header.Children.Add(track); root.Children.Add(header);
         var middle = new StackPanel { Spacing = 10 };
         middle.Children.Add(new TextBlock { Text = "Průběh změn", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = DialogSecondaryTextBrush() });
         var logText = new TextBlock { FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 11.5, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap };
-        var logScroll = new ScrollViewer { Content = logText, Height = 300, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Background = SurfaceAltBrush(), Padding = new Thickness(12) };
+        var logScroll = new ScrollViewer { Content = logText, Height = 300, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Background = _darkTheme ? DialogInnerSurfaceBrush() : SurfaceAltBrush(), Padding = new Thickness(12) };
         middle.Children.Add(logScroll);
         var middleScroll = DialogScroll(middle); Grid.SetRow(middleScroll, 1); root.Children.Add(middleScroll);
         bool popupClosed = false;
@@ -924,25 +1151,34 @@ public sealed partial class MainWindow
         card.Child = root;
         var topClose = MountDialog(overlay, card, ClosePopup);
         var lines = new Queue<string>(128);
+        string? lastProgressLogEntry = null;
         int exitCode = -1;
         var progress = new Progress<PerformanceProfilesService.PowerProfileProgress>(p =>
         {
             if (popupClosed) return;
             double width = track.ActualWidth > 0 ? track.ActualWidth : 520;
-            fill.Width = width * Math.Clamp(p.Percent, 0, 100) / 100d;
-            summary.Text = $"{Math.Min(p.Current, 34)} / 34 změn • {p.Percent} %";
-            current.Text = p.Stage;
-            detail.Text = p.Detail;
+            double targetWidth = width * Math.Clamp(p.Percent, 0, 100) / 100d;
+            if (Math.Abs(fill.Width - targetWidth) >= 0.5) fill.Width = targetWidth;
+            string summaryValue = $"{Math.Min(p.Current, 34)} / 34 změn • {p.Percent} %";
+            if (!string.Equals(summary.Text, summaryValue, StringComparison.Ordinal)) summary.Text = summaryValue;
+            if (!string.Equals(current.Text, p.Stage, StringComparison.Ordinal)) current.Text = p.Stage;
+            if (!string.Equals(detail.Text, p.Detail, StringComparison.Ordinal)) detail.Text = p.Detail;
             if (p.Stage is "Aplikuji" or "Ověření")
             {
-                lines.Enqueue((p.Stage == "Ověření" ? "✓ " : "• ") + p.Detail);
-                while (lines.Count > 100) lines.Dequeue();
-                logText.Text = string.Join(Environment.NewLine, lines);
-                DispatcherQueue.TryEnqueue(() =>
+                string logEntry = (p.Stage == "Ověření" ? "✓ " : "• ") + p.Detail;
+                if (!string.Equals(lastProgressLogEntry, logEntry, StringComparison.Ordinal))
                 {
-                    if (popupClosed) return;
-                    try { if (logScroll.XamlRoot != null) logScroll.ChangeView(null, logScroll.ScrollableHeight, null, true); } catch { }
-                });
+                    lastProgressLogEntry = logEntry;
+                    lines.Enqueue(logEntry);
+                    while (lines.Count > 100) lines.Dequeue();
+                    string logValue = string.Join(Environment.NewLine, lines);
+                    if (!string.Equals(logText.Text, logValue, StringComparison.Ordinal)) logText.Text = logValue;
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        if (popupClosed) return;
+                        try { if (logScroll.XamlRoot != null) logScroll.ChangeView(null, logScroll.ScrollableHeight, null, true); } catch { }
+                    });
+                }
             }
         });
         try
@@ -965,10 +1201,14 @@ public sealed partial class MainWindow
             int total = critical.Total;
             int active = Math.Max(0, total - critical.Drift);
             exitCode = critical.ActiveOk && critical.Drift == 0 && total > 0 ? 0 : 2;
-            fill.Width = track.ActualWidth > 0 ? track.ActualWidth : 520;
-            summary.Text = $"{active} / {total} critical ověřeno • 100 %";
-            current.Text = exitCode == 0 ? "Hotovo — Recommended profil je aktivní" : "Finální ověření není kompletní";
-            detail.Text = $"Finální ověření: {active}/{total} • aktivní plán {(critical.ActiveOk ? "OK" : "NE")} • {PerformanceProfilesService.GetCpuName()}";
+            double finalWidth = track.ActualWidth > 0 ? track.ActualWidth : 520;
+            if (Math.Abs(fill.Width - finalWidth) >= 0.5) fill.Width = finalWidth;
+            string finalSummary = $"{active} / {total} critical ověřeno • 100 %";
+            string finalCurrent = exitCode == 0 ? "Hotovo — Recommended profil je aktivní" : "Finální ověření není kompletní";
+            string finalDetail = $"Finální ověření: {active}/{total} • aktivní plán {(critical.ActiveOk ? "OK" : "NE")} • {PerformanceProfilesService.GetCpuName()}";
+            if (!string.Equals(summary.Text, finalSummary, StringComparison.Ordinal)) summary.Text = finalSummary;
+            if (!string.Equals(current.Text, finalCurrent, StringComparison.Ordinal)) current.Text = finalCurrent;
+            if (!string.Equals(detail.Text, finalDetail, StringComparison.Ordinal)) detail.Text = finalDetail;
             lines.Enqueue((exitCode == 0 ? "✓ " : "! ") + $"Ověření: {active}/{total} • aktivní plán {(critical.ActiveOk ? "OK" : "NE")}");
             logText.Text = string.Join(Environment.NewLine, lines);
             SystemInfoService.InvalidateDynamic();
@@ -1013,7 +1253,7 @@ public sealed partial class MainWindow
 
 public sealed partial class MainWindow
 {
-    private async Task<int> RunNicProgressPopupAsync(bool autoClose = false)
+    private async Task<int> RunNicProgressPopupAsync(bool autoClose = false, Func<CancellationToken, Task<string>>? applyWork = null)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cts = new CancellationTokenSource();
@@ -1021,7 +1261,7 @@ public sealed partial class MainWindow
         var card = CreateDialogCard(590, 680, z: 36);
         var root = new StackPanel { Spacing = 16 };
         var head = new Grid { ColumnSpacing = 14, Margin = new Thickness(0, 0, 48, 0) }; head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); head.ColumnDefinitions.Add(new ColumnDefinition());
-        head.Children.Add(new Border { Width = 44, Height = 44, CornerRadius = new CornerRadius(11), Background = SurfaceAltBrush(), BorderThickness = new Thickness(0), Child = SectionIcon("network", 32) });
+        head.Children.Add(new Border { Width = 44, Height = 44, CornerRadius = new CornerRadius(11), Background = _darkTheme ? DialogInnerSurfaceBrush() : SurfaceAltBrush(), BorderBrush = _darkTheme ? DialogNeutralBorderBrush() : null, BorderThickness = _darkTheme ? new Thickness(1) : new Thickness(0), Child = SectionIcon("network", 32) });
         var titles = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
         titles.Children.Add(new TextBlock { Text = "NIC Max Performance", FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
         titles.Children.Add(new TextBlock { Text = "Realtek / Intel síťový profil", FontSize = 12, Foreground = DialogSecondaryTextBrush() });
@@ -1029,7 +1269,7 @@ public sealed partial class MainWindow
         root.Children.Add(new Border { Background = SectionCardBackgroundBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.15 : 1), CornerRadius = new CornerRadius(10), Padding = new Thickness(13), Child = new TextBlock { Text = "Recommended profil vypne podporované úsporné funkce adaptéru, zapne RSS a vypne Selective Suspend. Interrupt Moderation, Flow Control ani Packet/DMA Coalescing nemění.", FontSize = 13.5, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, LineHeight = 20 } });
         var status = new TextBlock { Text = "Načítám síťový adaptér…", FontSize = 13, Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap }; root.Children.Add(status);
         var segments = new Grid { ColumnSpacing = 6, Height = 6 }; for (int x = 0; x < 4; x++) segments.ColumnDefinitions.Add(new ColumnDefinition());
-        var bars = new Border[4]; for (int x = 0; x < 4; x++) { bars[x] = new Border { CornerRadius = new CornerRadius(3), Background = SurfaceAltBrush() }; Grid.SetColumn(bars[x], x); segments.Children.Add(bars[x]); }
+        var bars = new Border[4]; for (int x = 0; x < 4; x++) { bars[x] = new Border { CornerRadius = new CornerRadius(3), Background = _darkTheme ? GlassTrackBrush() : SurfaceAltBrush() }; Grid.SetColumn(bars[x], x); segments.Children.Add(bars[x]); }
         root.Children.Add(segments);
         bool popupClosed = false;
         bool finished = false;
@@ -1048,7 +1288,7 @@ public sealed partial class MainWindow
         try
         {
             string[] steps = { "Načítám aktivní adaptér…", "Aplikuji Realtek / Intel vlastnosti…", "Restartuji síťový adaptér…", "Ověřuji dokončení profilu…" };
-            var applyTask = PerformanceProfilesService.ApplyNicPerformanceProfileAsync(cts.Token);
+            var applyTask = (applyWork ?? PerformanceProfilesService.ApplyNicPerformanceProfileAsync)(cts.Token);
             int step = 0;
             while (!applyTask.IsCompleted)
             {
@@ -1117,6 +1357,15 @@ public sealed partial class MainWindow
         {
             if (!autoClose) await Task.Delay(700);
             if (!popupClosed) UnmountDialog(overlay);
+
+            // UnmountDialog now performs the iOS 27 exit animation asynchronously.
+            // Progress operations must not report completion until their modal is actually gone.
+            if (RootGrid.Children.Contains(overlay))
+            {
+                for (int i = 0; i < 12 && RootGrid.Children.Contains(overlay); i++)
+                    await Task.Delay(20);
+            }
+
             return exitCode;
         }
 

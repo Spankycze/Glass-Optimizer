@@ -30,7 +30,8 @@ $obj=Join-Path $root 'src\SpankyhoOptimizer\obj\project.assets.json'
 $restoreState=Join-Path $script:SpankyCache 'dev-restore.sha256'
 $core=Join-Path $root 'src\SpankyhoOptimizer.Core\SpankyhoOptimizer.Core.csproj'
 $restoreHash=Get-SpankyRestoreInputHash @($app,$core,$nuget,$versionProps) $versionProps
-$oldRestore=(Get-Content $restoreState -Raw -ErrorAction SilentlyContinue).Trim()
+$restoreText=Get-Content -LiteralPath $restoreState -Raw -ErrorAction SilentlyContinue
+$oldRestore=if($null -eq $restoreText){''}else{$restoreText.Trim()} # Missing/empty cache is a cold start.
 $needsRestore=$ForceRestore -or -not(Test-Path $obj) -or ($oldRestore -ne $restoreHash)
 
 if($Rebuild){dotnet clean $app -c Debug -r win-x64 --nologo -v:q | Out-Host}
@@ -45,7 +46,14 @@ if($needsRestore){
 $sw=[Diagnostics.Stopwatch]::StartNew()
 $appOut=Split-Path $exe
 $coreDll=Join-Path $appOut 'SpankyhoOptimizer.Core.dll'
-$skipProjectRefs=(Test-SpankyCoreFresh) -and (Test-Path $coreDll) -and -not $Rebuild
+# A cached output DLL alone is insufficient: MSBuild's C# compiler resolves
+# the reference assembly from Core's active obj root. Switching Dev Drive
+# caches can remove that ref while preserving the old output + source hash.
+$coreObjBase=if($env:SPANKY_CORE_DEV_OBJ){$env:SPANKY_CORE_DEV_OBJ}else{Join-Path $root 'src\SpankyhoOptimizer.Core\obj'}
+$coreRef=Join-Path $coreObjBase 'Debug\net10.0-windows10.0.26100.0\ref\SpankyhoOptimizer.Core.dll'
+$skipProjectRefs=(Test-SpankyCoreFresh) -and (Test-SpankyCoreOutputFresh) -and (Test-Path $coreDll) -and
+    (Test-Path $coreRef) -and -not $Rebuild
+if(-not(Test-Path $coreRef)){Write-Host 'DEV_CORE_REFERENCE_REBUILD_REQUIRED'}
 $projectRefArg=$(if($skipProjectRefs){'-p:BuildProjectReferences=false'}else{'-p:BuildProjectReferences=true'})
 Write-Host ('DEV_BUILD_PROJECT_REFS ' + $(if($skipProjectRefs){'skip'}else{'build'}))
 $stagedDebugDir=Join-Path $root '.buildcache\staged-debug'
@@ -95,6 +103,6 @@ if($buildExit -ne 0 -and $buildText -match 'MSB3021|MSB3027'){
 }
 if($buildExit -ne 0){throw 'Dev build failed.'}
 Save-SpankyFullBuildState
+Save-SpankyCoreOutputState
 $sw.Stop(); Write-Host ('DEV_BUILD_OK {0:n2}s' -f $sw.Elapsed.TotalSeconds)
 if($Run -and (Test-Path $exe)){Start-Process $exe -WorkingDirectory (Split-Path $exe)}
-

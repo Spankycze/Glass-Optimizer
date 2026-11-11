@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -38,7 +39,18 @@ public static class AiCloudProfileService
     private const string FileName = "ai-maintenance-profile.json";
     private static readonly HttpClient Http = new();
     private static readonly SemaphoreSlim SyncGate = new(1, 1);
+    private sealed record PendingCloudUpload(
+        AiSystemRuntimeConfig Config, AiSystemRuntimeItemState[] Items, long AuthEpoch);
+    private static readonly LatestSnapshotBackgroundQueue<PendingCloudUpload> BackgroundUploads =
+        new(async pending =>
+        {
+            await SyncCoreAsync(pending.Config, pending.Items, CancellationToken.None, pending.AuthEpoch)
+                .ConfigureAwait(false);
+        });
     private static string _lastSnapshotFingerprint = string.Empty;
+    private static string _lastCredentialFingerprint = string.Empty;
+    private static DateTime _lastSuccessfulUploadUtc = DateTime.MinValue;
+    private static readonly TimeSpan UploadDedupWindow = TimeSpan.FromMinutes(3);
     private static readonly string StateDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "SpankyhoOptimizer");
@@ -47,9 +59,15 @@ public static class AiCloudProfileService
     private static AiCloudLocalStatus? CachedLocalStatus;
     private static DateTime CachedLocalStatusWriteUtc = DateTime.MinValue;
 
-    public static AiCloudProfileStatus ReadStatus()
+    public static AiCloudProfileStatus ReadStatus() =>
+        ReadStatus(GoogleDriveOAuthService.ReadStatus());
+
+    // The Runtime page already has a Google auth snapshot. Reuse the exact
+    // same result for the cloud badge, avoiding a second token/cache read and
+    // preventing two different login states from appearing in one render.
+    public static AiCloudProfileStatus ReadStatus(GoogleDriveAuthStatus auth)
     {
-        GoogleDriveAuthStatus auth = GoogleDriveOAuthService.ReadStatus();
+        ArgumentNullException.ThrowIfNull(auth);
         AiCloudLocalStatus local = ReadLocalStatus();
         return new(
             auth.SignedIn,
@@ -60,13 +78,24 @@ public static class AiCloudProfileService
             string.IsNullOrWhiteSpace(auth.LastError) ? local.LastError : auth.LastError);
     }
 
-    public static async Task<bool> SyncNowAsync(
+    public static Task<bool> SyncNowAsync(
         AiSystemRuntimeConfig config,
         IEnumerable<AiSystemRuntimeItemState> items,
-        CancellationToken token = default)
+        CancellationToken token = default) =>
+        SyncCoreAsync(config, items, token, GoogleDriveOAuthService.ReadSessionEpoch());
+
+    private static async Task<bool> SyncCoreAsync(
+        AiSystemRuntimeConfig config,
+        IEnumerable<AiSystemRuntimeItemState> items,
+        CancellationToken token,
+        long authEpoch)
     {
-        if (!config.CloudSyncEnabled) return false;
+        if (!config.CloudSyncEnabled ||
+            !IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
+            return false;
         string? accessToken = await GoogleDriveOAuthService.GetAccessTokenAsync(token).ConfigureAwait(false);
+        if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
+            return false;
         if (string.IsNullOrWhiteSpace(accessToken))
         {
             WriteLocalStatus(null, 0, "Google účet není přihlášený.");
@@ -80,18 +109,30 @@ public static class AiCloudProfileService
             cloudConfig,
             rows);
         string json = JsonSerializer.Serialize(envelope);
-        string fingerprintPayload = JsonSerializer.Serialize(new { config = cloudConfig, rows });
+        // The SHA-256 input stays byte-identical to the old UTF-8 JSON,
+        // without allocating a second UTF-16 JSON string and re-encoding it.
         string fingerprint = Convert.ToHexString(
-            System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintPayload)));
+            System.Security.Cryptography.SHA256.HashData(
+                JsonSerializer.SerializeToUtf8Bytes(new { config = cloudConfig, rows })));
+
+        string credentialFingerprint = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(accessToken)));
 
         await SyncGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            if (string.Equals(_lastSnapshotFingerprint, fingerprint, StringComparison.Ordinal))
+            if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
+                return false;
+            if (CanReuseRecentUpload(_lastSnapshotFingerprint, fingerprint,
+                    _lastCredentialFingerprint, credentialFingerprint, _lastSuccessfulUploadUtc, DateTime.UtcNow))
                 return true;
             string? fileId = await FindFileIdAsync(accessToken, token).ConfigureAwait(false);
+            if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
+                return false;
             if (string.IsNullOrWhiteSpace(fileId))
                 fileId = await CreateFileAsync(accessToken, token).ConfigureAwait(false);
+            if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
+                return false;
 
             if (string.IsNullOrWhiteSpace(fileId))
             {
@@ -105,7 +146,11 @@ public static class AiCloudProfileService
                 $"https://www.googleapis.com/upload/drive/v3/files/{Uri.EscapeDataString(fileId)}?uploadType=media");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
             request.Content = content;
+            if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
+                return false;
             using HttpResponseMessage response = await Http.SendAsync(request, token).ConfigureAwait(false);
+            if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
+                return false;
             if (!response.IsSuccessStatusCode)
             {
                 WriteLocalStatus(null, rows.Length, "Google Drive sync: " + response.StatusCode);
@@ -113,8 +158,14 @@ public static class AiCloudProfileService
             }
 
             _lastSnapshotFingerprint = fingerprint;
-            WriteLocalStatus(DateTime.UtcNow, rows.Length, string.Empty);
+            _lastCredentialFingerprint = credentialFingerprint;
+            _lastSuccessfulUploadUtc = DateTime.UtcNow;
+            WriteLocalStatus(_lastSuccessfulUploadUtc, rows.Length, string.Empty);
             return true;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -126,6 +177,16 @@ public static class AiCloudProfileService
             SyncGate.Release();
         }
     }
+    // Fingerprints represent SHA-256 digests; actual credentials are never persisted in this cache.
+    internal static bool CanReuseRecentUpload(
+        string lastPayload, string payload, string lastCredential, string credential,
+        DateTime lastUploadUtc, DateTime nowUtc)
+    {
+        TimeSpan age = nowUtc - lastUploadUtc;
+        return age >= TimeSpan.Zero && age < UploadDedupWindow &&
+               string.Equals(lastPayload, payload, StringComparison.Ordinal) &&
+               string.Equals(lastCredential, credential, StringComparison.Ordinal);
+    }
     public static void SyncBestEffort(
         AiSystemRuntimeConfig config,
         IEnumerable<AiSystemRuntimeItemState> items)
@@ -133,30 +194,80 @@ public static class AiCloudProfileService
         if (!config.CloudSyncEnabled || !GoogleDriveOAuthService.ReadStatus().SignedIn)
             return;
 
-        AiSystemRuntimeItemState[] snapshot = items.ToArray();
-        _ = Task.Run(async () =>
+        // Keep the newest immutable snapshot instead of queueing an unbounded
+        // number of Task.Run uploads while Google Drive is slow or offline.
+        BackgroundUploads.Enqueue(new PendingCloudUpload(
+            config, items.ToArray(), GoogleDriveOAuthService.ReadSessionEpoch()));
+    }
+
+    // A cloud request can outlive the Google account it was authorized for.
+    // Every async boundary before local restore or remote upload must verify
+    // that logout did not invalidate the original authorization generation.
+    private static bool IsCloudAuthEpochCurrent(long captured, long current) =>
+        captured == current;
+
+    internal static async Task<string> RunCloudAuthEpochSmokeAsync()
+    {
+        if (!IsCloudAuthEpochCurrent(7, 7))
+            throw new InvalidOperationException("Current Google session was rejected.");
+        if (IsCloudAuthEpochCurrent(7, 8))
+            throw new InvalidOperationException(
+                "An in-flight cloud restore could import into local settings after Google sign-out.");
+        if (IsCloudAuthEpochCurrent(8, 7))
+            throw new InvalidOperationException(
+                "An older cloud upload might be accepted by a different Google auth epoch.");
+
+        // Drive returns only after the user has signed out. No Google account,
+        // credential, local state file or HTTP connection is used by this test.
+        var networkWait = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int epoch = 7;
+        int localCommits = 0;
+        int cloudUploads = 0;
+        async Task SimulatedRestore()
         {
-            try { await SyncNowAsync(config, snapshot, CancellationToken.None).ConfigureAwait(false); }
-            catch { }
-        });
+            int captured = epoch;
+            await networkWait.Task.ConfigureAwait(false);
+            if (IsCloudAuthEpochCurrent(captured, epoch))
+                Interlocked.Increment(ref localCommits);
+        }
+        Task staleRestore = SimulatedRestore();
+        int pendingUploadEpoch = epoch;
+        epoch = 8; // Synthetic logout, NOT GoogleDriveOAuthService.SignOut().
+        networkWait.TrySetResult(true);
+        await staleRestore.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        if (IsCloudAuthEpochCurrent(pendingUploadEpoch, epoch))
+            Interlocked.Increment(ref cloudUploads);
+
+        if (localCommits != 0 || cloudUploads != 0)
+            throw new InvalidOperationException("Stale Google session committed restored or queued data.");
+        return "AI_CLOUD_AUTH_EPOCH_SMOKE_OK sameSessionAllowed=true " +
+               "staleRestoreRejected=true staleUploadRejected=true " +
+               "asyncLogoutFence=true networkCalls=0 userFilesTouched=0";
     }
 
     public static async Task<int> RestoreNowAsync(CancellationToken token = default)
     {
+        long authEpoch = GoogleDriveOAuthService.ReadSessionEpoch();
         string? accessToken = await GoogleDriveOAuthService.GetAccessTokenAsync(token).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(accessToken))
+        if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()) ||
+            string.IsNullOrWhiteSpace(accessToken))
             return 0;
 
         string? fileId = await FindFileIdAsync(accessToken, token).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(fileId))
+        if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()) ||
+            string.IsNullOrWhiteSpace(fileId))
             return 0;
 
         using var request = new HttpRequestMessage(
             HttpMethod.Get,
             $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}?alt=media");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
+            return 0;
         using HttpResponseMessage response = await Http.SendAsync(request, token).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
+        if (!response.IsSuccessStatusCode ||
+            !IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
             return 0;
 
         string json = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
@@ -165,6 +276,9 @@ public static class AiCloudProfileService
             return 0;
         AiSystemRuntimeConfig safeConfig = AiCloudProfilePolicy.SanitizeConfig(profile.Config);
         AiSystemRuntimeItemState[] safeItems = AiCloudProfilePolicy.SanitizeItems(profile.Items);
+        // Never import cloud preferences after a completed Google sign-out.
+        if (!IsCloudAuthEpochCurrent(authEpoch, GoogleDriveOAuthService.ReadSessionEpoch()))
+            return 0;
         AiSystemResourceManagerService.SaveConfig(safeConfig);
         int imported = AiSystemResourceManagerService.ImportCloudMemory(safeItems);
         WriteLocalStatus(DateTime.UtcNow, safeItems.Length, string.Empty);
@@ -202,10 +316,7 @@ public static class AiCloudProfileService
         string? aiId = await EnsureFolderAsync(accessToken, AiFolderName, rootId, token).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(aiId)) return null;
 
-        using var content = new StringContent(
-            JsonSerializer.Serialize(new { name = FileName, parents = new[] { aiId } }),
-            Encoding.UTF8,
-            "application/json");
+        using HttpContent content = JsonContent.Create(new { name = FileName, parents = new[] { aiId } });
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://www.googleapis.com/drive/v3/files?fields=id");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Content = content;
@@ -229,7 +340,7 @@ public static class AiCloudProfileService
             ? new { name, mimeType = "application/vnd.google-apps.folder" }
             : new { name, mimeType = "application/vnd.google-apps.folder", parents = new[] { parentId } };
 
-        using var content = new StringContent(JsonSerializer.Serialize(metadata), Encoding.UTF8, "application/json");
+        using HttpContent content = JsonContent.Create(metadata);
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://www.googleapis.com/drive/v3/files?fields=id");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Content = content;
@@ -274,14 +385,29 @@ public static class AiCloudProfileService
                 if (CachedLocalStatus != null && writeUtc == CachedLocalStatusWriteUtc)
                     return CachedLocalStatus;
 
+                // On a changed local status, reuse the established UTF-8
+                // snapshot decoder (including legacy Unicode BOM support)
+                // without materializing an intermediate JSON string.
                 CachedLocalStatus = writeUtc != DateTime.MinValue
-                    ? JsonSerializer.Deserialize<AiCloudLocalStatus>(File.ReadAllText(StatusPath))
+                    ? ObservedJsonSnapshotCache<AiCloudLocalStatus>.ReadSnapshotFromFile(StatusPath)
                       ?? new(null, 0, string.Empty)
                     : new(null, 0, string.Empty);
                 CachedLocalStatusWriteUtc = writeUtc;
                 return CachedLocalStatus;
             }
-            catch
+            catch (IOException)
+            {
+                return CachedLocalStatus ?? new(null, 0, string.Empty);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return CachedLocalStatus ?? new(null, 0, string.Empty);
+            }
+            catch (JsonException)
+            {
+                return CachedLocalStatus ?? new(null, 0, string.Empty);
+            }
+            catch (System.Security.SecurityException)
             {
                 return CachedLocalStatus ?? new(null, 0, string.Empty);
             }
@@ -290,17 +416,28 @@ public static class AiCloudProfileService
 
     private static void WriteLocalStatus(DateTime? syncUtc, int itemCount, string error)
     {
-        try
+        lock (StatusGate)
         {
-            Directory.CreateDirectory(StateDir);
-            var status = new AiCloudLocalStatus(syncUtc, itemCount, error);
-            File.WriteAllText(StatusPath, JsonSerializer.Serialize(status));
-            lock (StatusGate)
+            try
             {
+                Directory.CreateDirectory(StateDir);
+                var status = new AiCloudLocalStatus(syncUtc, itemCount, error);
+                AtomicFileService.WriteText(StatusPath, JsonSerializer.Serialize(status));
                 CachedLocalStatus = status;
                 CachedLocalStatusWriteUtc = File.GetLastWriteTimeUtc(StatusPath);
             }
+            catch (IOException ex)
+            {
+                LogService.Error("ai-cloud", "Cloud status persistence failed", ex);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                LogService.Error("ai-cloud", "Cloud status persistence denied", ex);
+            }
+            catch (System.Security.SecurityException ex)
+            {
+                LogService.Error("ai-cloud", "Cloud status persistence denied", ex);
+            }
         }
-        catch { }
     }
 }

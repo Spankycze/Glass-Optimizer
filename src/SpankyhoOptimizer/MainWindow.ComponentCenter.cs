@@ -28,7 +28,24 @@ public sealed partial class MainWindow
 
     private static DataTemplate TaskRowTemplate() => UiResourceService.Get<DataTemplate>("TaskRowTemplateV136");
 
-    internal void PrewarmServiceUi() { }
+    internal void PrewarmServiceUi()
+    {
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        _ = BuildModernSectionHero(
+            "components",
+            "Služby",
+            "Bezpečné doporučené nastavení služeb s následným ověřením.",
+            "SLUŽBY",
+            "4 řízené změny • stav se ověřuje proti Windows",
+            actions);
+        var statusHost = new StackPanel { Spacing = 8 };
+        statusHost.Children.Add(new TextBlock { Text = "Prewarm", Foreground = TextSecondaryBrush() });
+        _ = BuildSectionSurface(
+            "components",
+            "Skutečný stav služeb",
+            "CscService • DiagTrack • MapsBroker • StorSvc",
+            statusHost);
+    }
 
     private Button ComponentRecommendedCtaButton(string text, Func<Task> action)
     {
@@ -37,10 +54,9 @@ public sealed partial class MainWindow
         button.MinHeight = 34;
         button.Padding = new Thickness(13, 6, 13, 6);
         button.CornerRadius = new CornerRadius(10);
-        button.Background = AccentBrush();
-        button.BorderBrush = AccentBrush();
+        // Same primary blue-glass action used across every section.
+        ApplyMaterialButtonAppearance(button, primary: true);
         button.BorderThickness = new Thickness(1);
-        button.Foreground = OnAccentTextBrush();
         button.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         button.Content = new StackPanel
         {
@@ -58,53 +74,80 @@ public sealed partial class MainWindow
 
     private Task BuildServiceManagerPageAsync(CancellationToken token)
     {
-        var perf = System.Diagnostics.Stopwatch.StartNew();
         token.ThrowIfCancellationRequested();
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        actions.Children.Add(PrimaryQuickButton("Použít doporučené", ApplyWinUtilRecommendedServicesAsync));
-        actions.Children.Add(ComponentRecommendedCtaButton("Podle používání", ShowComponentsContextDialogAsync));
-        actions.Children.Add(QuickButton("Obnovit stav", async () =>
-        {
-            ServiceCatalogService.InvalidateCache();
-            InvalidateComponentsPageCache("Služby");
-            await ShowSectionAsync("components");
-        }));
-        ContentStack.Children.Add(BuildModernSectionHero(
-            "components",
-            "Služby",
-            "Bezpečné doporučené nastavení služeb s následným ověřením.",
-            "SLUŽBY",
-            "4 řízené změny • stav se ověřuje proti Windows",
-            actions));
-
-        var statusHost = new StackPanel { Spacing = 8 };
-        statusHost.Children.Add(new TextBlock
-        {
-            Text = "Načítám skutečný stav služeb…",
-            Foreground = TextSecondaryBrush()
-        });
-        ContentStack.Children.Add(BuildSectionSurface(
-            "components",
-            "Skutečný stav služeb",
-            "CscService • DiagTrack • MapsBroker • StorSvc",
-            statusHost));
+        int generation = _navigationGeneration;
+        // The deferred method does no UI work until its one low-priority
+        // dispatcher commit. Avoid queueing the delay itself to the UI thread.
         SafeTaskService.Forget(
-            LoadManagedServiceStatusAsync(statusHost, token),
+            CompleteServiceUiDeferredAsync(token, generation),
             "services",
-            "Managed service read-back");
-
-        LogService.Info("performance", $"COMPONENT_SERVICE_UI_PHASE totalMs={perf.ElapsedMilliseconds}");
+            "Deferred service UI");
         return Task.CompletedTask;
     }
 
-    private async Task LoadManagedServiceStatusAsync(StackPanel host, CancellationToken token)
+    private async Task CompleteServiceUiDeferredAsync(CancellationToken token, int generation)
+    {
+        var firstPaint = System.Diagnostics.Stopwatch.StartNew();
+        // One short deferred pass instead of two queued compositions
+        // separated by 75+35 ms of unavoidable first-paint waiting.
+        await Task.Delay(32, token).ConfigureAwait(false);
+        if (token.IsCancellationRequested || generation != _navigationGeneration) return;
+
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "components" || _sub != "Služby") return;
+
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+            actions.Children.Add(PrimaryQuickButton("Použít doporučené", ApplyWinUtilRecommendedServicesAsync));
+            actions.Children.Add(ComponentRecommendedCtaButton("Podle používání", ShowComponentsContextDialogAsync));
+            actions.Children.Add(QuickButton("Obnovit stav", async () =>
+            {
+                // This panel reads four live registry keys directly;
+                // no need to invalidate the expensive all-services catalog.
+                InvalidateComponentsPageCache("Služby");
+                await ShowSectionAsync("components");
+            }));
+
+            ContentStack.Children.Add(BuildModernSectionHero(
+                "components",
+                "Služby",
+                "Bezpečné doporučené nastavení služeb s následným ověřením.",
+                "SLUŽBY",
+                "4 řízené změny • stav se ověřuje proti Windows",
+                actions));
+
+            // Compose both surfaces in the same low-priority dispatcher pass.
+            // This preserves navigation cancellation and prevents a redundant
+            // second layout invalidation 35 ms later.
+            var statusHost = new StackPanel { Spacing = 8 };
+            statusHost.Children.Add(new TextBlock
+            {
+                Text = "Načítám skutečný stav služeb…",
+                Foreground = TextSecondaryBrush()
+            });
+            ContentStack.Children.Add(BuildSectionSurface(
+                "components",
+                "Skutečný stav služeb",
+                "CscService • DiagTrack • MapsBroker • StorSvc",
+                statusHost));
+            SafeTaskService.Forget(
+                LoadManagedServiceStatusAsync(statusHost, token, generation),
+                "services",
+                "Managed service read-back");
+            LogService.Info("performance",
+                $"SERVICES_FIRST_PAINT heroAndStatusShellMs={firstPaint.Elapsed.TotalMilliseconds:F2} passes=1 delayMs=32");
+        });
+    }
+
+    private async Task LoadManagedServiceStatusAsync(StackPanel host, CancellationToken token, int generation)
     {
         try
         {
-            var services = await new ServiceCatalogService().GetAsync(forceRefresh: false, token).ConfigureAwait(false);
-            if (token.IsCancellationRequested ||
+            var services = await Task.Run(ServiceCatalogService.ReadRecommendedStartTypes, token).ConfigureAwait(false);
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
                 !string.Equals(_section, "components", StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(_sub, "Služby", StringComparison.Ordinal))
+                !string.Equals(_sub, "Služby", StringComparison.Ordinal) || host.Parent == null)
                 return;
 
             var expected = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
@@ -114,13 +157,13 @@ public sealed partial class MainWindow
                 ["MapsBroker"] = 3,
                 ["StorSvc"] = 3
             };
-            var map = services.ToDictionary(x => x.Name, StringComparer.OrdinalIgnoreCase);
-            int matched = expected.Count(x => map.TryGetValue(x.Key, out var svc) && svc.StartType == x.Value);
-            int missing = expected.Count(x => !map.ContainsKey(x.Key));
+            int matched = expected.Count(x => services.TryGetValue(x.Key, out int mode) && mode == x.Value);
+            int missing = expected.Count(x => !services.ContainsKey(x.Key));
 
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "components" || _sub != "Služby") return;
+                if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                    _section != "components" || _sub != "Služby" || host.Parent == null) return;
                 host.Children.Clear();
                 host.Children.Add(BuildDashboardMetricGrid(
                     BuildDashboardMetric("Shoda", $"{matched}/{expected.Count}", "Doporučený Start", matched == expected.Count ? "SpankySuccessBrush" : "SpankyWarningBrush"),
@@ -130,14 +173,15 @@ public sealed partial class MainWindow
 
                 foreach (var item in expected)
                 {
-                    bool found = map.TryGetValue(item.Key, out var svc);
-                    string actual = found ? ServiceStartTypeLabel(svc!.StartType) : "Nenalezeno";
+                    bool found = services.TryGetValue(item.Key, out int mode);
+                    string actual = found ? ServiceStartTypeLabel(mode) : "Nenalezeno";
                     string wanted = ServiceStartTypeLabel(item.Value);
-                    bool ok = found && svc!.StartType == item.Value;
+                    bool ok = found && mode == item.Value;
                     host.Children.Add(InsightRow(
                         item.Key,
                         $"{actual} • očekáváno {wanted}{(ok ? " • OK" : " • ODCHYLKA")}"));
                 }
+
             });
         }
         catch (OperationCanceledException) { }
@@ -147,7 +191,8 @@ public sealed partial class MainWindow
             if (token.IsCancellationRequested) return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "components" || _sub != "Služby") return;
+                if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                    _section != "components" || _sub != "Služby" || host.Parent == null) return;
                 host.Children.Clear();
                 host.Children.Add(new TextBlock
                 {
@@ -156,7 +201,7 @@ public sealed partial class MainWindow
                     TextWrapping = TextWrapping.Wrap
                 });
                 host.Children.Add(QuickButton("Načíst znovu", () =>
-                    LoadManagedServiceStatusAsync(host, token)));
+                    LoadManagedServiceStatusAsync(host, token, generation)));
                 ShowActionFeedback("Služby", ActionFeedbackKind.Failed, ex.Message);
             });
         }
@@ -173,13 +218,9 @@ public sealed partial class MainWindow
     private async Task ApplyWinUtilRecommendedServicesAsync()
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var changes = new[]
-        {
-            new ServiceChangeRequest("CscService", 4),
-            new ServiceChangeRequest("DiagTrack", 4),
-            new ServiceChangeRequest("MapsBroker", 3),
-            new ServiceChangeRequest("StorSvc", 3)
-        };
+        // Read the validated WinUtil data adapter, not a disconnected downloaded archive.
+        // This retains our supported four-service scope and all native safety/read-back checks.
+        var changes = await Task.Run(WinUtilServicePolicy.ReadRecommended);
 
         var progressResult = await RunCancellableWithProgressAsync(
             "Služby — Recommended",
@@ -192,7 +233,7 @@ public sealed partial class MainWindow
                 {
                     localErrors.AddRange(await WorkerClientService.RunAsync<string[]>(
                         "service-set-batch",
-                        WorkerPayloads.Encode(new ServiceBatchRequest(changes)),
+                        WorkerPayloads.Encode(new ServiceBatchRequest(changes, SkipMissing: true)),
                         TimeSpan.FromMinutes(2),
                         token));
                 }
@@ -224,13 +265,18 @@ public sealed partial class MainWindow
         string[] errors = progressResult.Result;
 
         ServiceCatalogService.InvalidateCache();
+        InvalidateComponentsPageCache("Služby");
+        // The worker has finished applying/verifying changes. Immediately
+        // refresh the live read-back panel instead of leaving pre-apply labels.
+        if (_section == "components" && _sub == "Služby")
+            await ShowSectionAsync("components");
         LogService.Info("performance", $"SERVICES_RECOMMENDED_PHASE changes={changes.Length} errors={errors.Length} totalMs={sw.ElapsedMilliseconds}");
 
         if (errors.Length == 0)
         {
             ShowActionFeedback("Služby", ActionFeedbackKind.Verified, "Doporučené nastavení bylo aplikováno a ověřeno.");
             await ShowStyledInfoAsync("Služby — Doporučené",
-                "Doporučené nastavení služeb bylo aplikováno a následná kontrola proběhla úspěšně. Systémově spravované služby zůstaly beze změny.");
+                "Doporučené nastavení dostupných služeb bylo aplikováno a ověřeno. Neexistující služby byly přeskočeny; chráněné služby zůstaly beze změny.");
         }
         else
         {
@@ -326,8 +372,17 @@ public sealed partial class MainWindow
         return Task.CompletedTask;
     }
 
-    private static string TaskSummary(IReadOnlyCollection<TaskRowViewModel> source) =>
-        $"Aktivní {source.Count(x => x.Enabled)} • vypnuté {source.Count(x => !x.Enabled)} • chráněné {source.Count(x => !x.CanEdit)}";
+    private static string TaskSummary(IReadOnlyCollection<TaskRowViewModel> source)
+    {
+        int enabled = 0;
+        int protectedCount = 0;
+        foreach (var row in source)
+        {
+            if (row.Enabled) enabled++;
+            if (!row.CanEdit) protectedCount++;
+        }
+        return $"Aktivní {enabled} • vypnuté {source.Count - enabled} • chráněné {protectedCount}";
+    }
 
     private void QueueTaskRowsApply(ListView list, TextBlock info, IReadOnlyList<TaskInfo> tasks, CancellationToken token, int pageGeneration)
     {
@@ -353,13 +408,17 @@ public sealed partial class MainWindow
         {
             var service = new TaskSchedulerService();
             IReadOnlyList<TaskInfo>? tasks = null;
+            IReadOnlyList<TaskInfo>? queuedWarmSnapshot = null;
 
             if (!forceRefresh)
             {
                 bool hydrated = await TaskSchedulerService.TryWarmBasicDisplaySnapshotAsync(token).ConfigureAwait(false);
                 tasks = TaskSchedulerService.TryGetBasicFreshSnapshot();
                 if (hydrated && tasks != null)
+                {
+                    queuedWarmSnapshot = tasks;
                     QueueTaskRowsApply(list, info, tasks, token, pageGeneration);
+                }
 
                 if (TaskSchedulerService.NeedsBasicBackgroundRefresh)
                     tasks = await service.GetBasicAsync(forceRefresh: true, token).ConfigureAwait(false);
@@ -373,7 +432,10 @@ public sealed partial class MainWindow
             // in-memory cache is still usable before forcing another COM enumeration.
             tasks ??= await service.GetBasicAsync(forceRefresh: false, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
-            QueueTaskRowsApply(list, info, tasks, token, pageGeneration);
+            // Warm snapshot has already been queued: avoid a second identical UI
+            // ItemsSource rebind and summary traversal unless refresh changed it.
+            if (!ReferenceEquals(tasks, queuedWarmSnapshot))
+                QueueTaskRowsApply(list, info, tasks, token, pageGeneration);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -397,35 +459,63 @@ public sealed partial class MainWindow
     {
         var tweaks = CatalogService.GetTweaks("components", "Task Scheduler")
             .Where(x => x.Recommended && x.Risk != TweakRisk.Advanced).ToArray();
+        int appliedCount = 0;
+        int preservedPendingCount = 0;
         var progressResult = await RunCancellableWithProgressAsync(
             "Task Scheduler — Recommended",
-            $"Detekuji a aplikuji {tweaks.Length} Recommended úloh…",
+            "Zjišťuji stav a aplikuji pouze dosud nezměněné doporučené úlohy…",
             async token =>
             {
                 await _engine.DetectAsync(tweaks, token);
-                foreach (var tweak in tweaks) tweak.Pending = true;
-                return await _engine.ApplyAsync(tweaks, token);
+                // Native readback preserves user-staged Pending edits.
+                // Never override those choices with Recommended, and never
+                // re-apply an already-active or unreadable task.
+                preservedPendingCount = tweaks.Count(x => x.IsDirty);
+                var candidates = tweaks.Where(x =>
+                    x.IsLoaded && !x.IsBusy && !x.IsDirty && !x.Current).ToArray();
+                appliedCount = candidates.Length;
+                if (appliedCount == 0)
+                    return Array.Empty<string>();
+                foreach (var tweak in candidates) tweak.Pending = true;
+                return await _engine.ApplyAsync(candidates, token);
             },
             result => result.Count == 0,
             result => result.Count == 0 ? string.Empty : string.Join(" • ", result.Take(2)));
         if (!progressResult.Completed)
         {
             LogService.Info("tasks", "Task Scheduler Recommended cancelled by user.");
-            await ReconcileCancelledApplyAsync(tweaks, "components:Task Scheduler Recommended");
+            bool verified = await ReconcileCancelledApplyAsync(
+                tweaks, "components:Task Scheduler Recommended");
             TaskSchedulerService.InvalidateCache();
             InvalidateComponentsPageCache("Task Scheduler");
             RefreshCards(force: true);
             QueueDirtyStateRefresh();
-            await ShowSectionAsync("components");
+            if (!verified && _section == "components")
+                ShowActionFeedback("Task Scheduler", ActionFeedbackKind.Failed,
+                    "Dávka byla přerušena; stav naplánovaných úloh nelze spolehlivě potvrdit.");
+            if (_section == "components")
+                await ShowSectionAsync("components");
             return;
         }
         var errors = progressResult.Result;
-        TaskSchedulerService.InvalidateCache();
-        InvalidateComponentsPageCache("Task Scheduler");
+        if (appliedCount > 0)
+        {
+            // No-op Recommended must not throw away the cached task page
+            // or trigger a new native scheduler enumeration.
+            TaskSchedulerService.InvalidateCache();
+            InvalidateComponentsPageCache("Task Scheduler");
+        }
+        string resultMessage = appliedCount == 0
+            ? "Žádná nová doporučená úloha nevyžadovala změnu."
+            : $"Doporučené nastavení bylo ověřeno pro {appliedCount} úloh.";
+        if (preservedPendingCount > 0)
+            resultMessage += $" Rozpracovaných voleb ponecháno: {preservedPendingCount}.";
         ShowActionFeedback("Task Scheduler",
-            errors.Count == 0 ? ActionFeedbackKind.Verified : ActionFeedbackKind.Failed,
-            errors.Count == 0 ? "Doporučené nastavení bylo aplikováno." : string.Join(" • ", errors));
-        await ShowSectionAsync("components");
+            errors.Count != 0 ? ActionFeedbackKind.Failed
+                : appliedCount == 0 ? ActionFeedbackKind.Info : ActionFeedbackKind.Verified,
+            errors.Count == 0 ? resultMessage : string.Join(" • ", errors));
+        if (appliedCount > 0 && _section == "components")
+            await ShowSectionAsync("components");
     }
     private void OnTaskRowChanged(TaskRowViewModel vm, bool enabled) =>
         SafeTaskService.Forget(ChangeTaskRowAsync(vm, enabled), "tasks", "Virtual task change");

@@ -32,6 +32,39 @@ internal static class GTweakMaintenanceService
 
     public static bool HasWindowsOld => Directory.Exists(WindowsOldPath);
 
+    public sealed record EventLogCleanupReport(int Discovered, int Cleared, int Failed);
+
+    public static async Task<EventLogCleanupReport> ClearEventLogsAsync(CancellationToken token)
+    {
+        var listed = await ProcessRunner.RunAsync("wevtutil.exe", "el", TimeSpan.FromMinutes(2), token)
+            .ConfigureAwait(false);
+        if (!listed.Success)
+            throw new InvalidOperationException("Seznam Event Viewer logů se nepodařilo načíst. " + listed.StdErr + listed.StdOut);
+
+        var channels = listed.StdOut
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(static name => name.Trim())
+            .Where(IsSafeEventChannelName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        int cleared = 0;
+        int failed = 0;
+        foreach (string channel in channels)
+        {
+            token.ThrowIfCancellationRequested();
+            var result = await ProcessRunner.RunAsync("wevtutil.exe", $"cl \"{channel}\"", TimeSpan.FromSeconds(20), token)
+                .ConfigureAwait(false);
+            if (result.Success) cleared++;
+            else failed++;
+        }
+        return new EventLogCleanupReport(channels.Length, cleared, failed);
+    }
+
+    private static bool IsSafeEventChannelName(string name) =>
+        name.Length is > 0 and <= 256 &&
+        !name.Contains('"') &&
+        !name.Contains('\0');
+
     public static async Task RemoveWindowsOldAsync(CancellationToken token)
     {
         string path = WindowsOldPath;
@@ -57,24 +90,34 @@ internal static class GTweakMaintenanceService
         string explorerCache = Path.Combine(local, "Microsoft", "Windows", "Explorer");
 
         // Explorer keeps icon/thumb DB files mapped. Stop the shell before deleting them.
-        // Deleting first and restarting later leaves stale overlays in the mapped DB.
-        for (int attempt = 0; attempt < 3; attempt++)
+        // A cancellation must release ALL process handles and must not leave the shell stopped.
+        bool explorerStopped = false;
+        bool explorerRestarted = false;
+        try
         {
-            token.ThrowIfCancellationRequested();
-            foreach (var process in Process.GetProcessesByName("explorer"))
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                try
-                {
-                    process.Kill();
-                    using var exitCts = CancellationTokenSource.CreateLinkedTokenSource(token);
-                    exitCts.CancelAfter(TimeSpan.FromMilliseconds(1500));
-                    try { await process.WaitForExitAsync(exitCts.Token).ConfigureAwait(false); }
-                    catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-                catch { }
-                finally { process.Dispose(); }
-            }
+                token.ThrowIfCancellationRequested();
+                await ProcessSnapshotCleanup.InspectAsync(
+                    () => Process.GetProcessesByName("explorer"),
+                    async processes =>
+                    {
+                        foreach (Process process in processes)
+                        {
+                            token.ThrowIfCancellationRequested();
+                            try
+                            {
+                                process.Kill();
+                                explorerStopped = true;
+                                using var exitCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                                exitCts.CancelAfter(TimeSpan.FromMilliseconds(1500));
+                                try { await process.WaitForExitAsync(exitCts.Token).ConfigureAwait(false); }
+                                catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+                            }
+                            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                            catch { }
+                        }
+                    }).ConfigureAwait(false);
 
             await Task.Delay(120, token);
             await Task.Run(() =>
@@ -98,8 +141,36 @@ internal static class GTweakMaintenanceService
             if (!iconLeft && !thumbLeft) break;
         }
 
-        await WindowsActions.RestartExplorerAsync(token);
-        LogService.Info("storage", $"Explorer cache rebuilt icons={clearIconCache} thumbnails={clearThumbnailCache}");
+            await WindowsActions.RestartExplorerAsync(token).ConfigureAwait(false);
+            explorerRestarted = true;
+            LogService.Info("storage", $"Explorer cache rebuilt icons={clearIconCache} thumbnails={clearThumbnailCache}");
+        }
+        finally
+        {
+            if (explorerStopped && !explorerRestarted)
+            {
+                // Cancellation after Kill must not strand the user's desktop shell.
+                // Do not kill Explorer again: start it only if it is still absent.
+                try
+                {
+                    bool running = ProcessSnapshotCleanup.Inspect(
+                        () => Process.GetProcessesByName("explorer"), processes => processes.Length > 0);
+                    if (!running)
+                    {
+                        using Process? restored = Process.Start(new ProcessStartInfo("explorer.exe")
+                        {
+                            UseShellExecute = true
+                        });
+                        if (restored is null)
+                            LogService.Info("storage", "Explorer recovery returned no process handle.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogService.Error("storage", "Explorer recovery after cache cleanup interruption failed", ex);
+                }
+            }
+        }
     }
 
     private static void TryDelete(string path)

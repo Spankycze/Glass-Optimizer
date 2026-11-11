@@ -23,12 +23,12 @@ public sealed partial class MainWindow
         public required TextBlock Time { get; init; }
     }
 
-    private async Task RunAiModulesProgressAsync(AiChoice[] selected, bool revert, CancellationToken externalToken = default, bool dryRun = false)
+    private async Task RunAiModulesProgressAsync(AiChoice[] selected, bool revert, CancellationToken externalToken = default, bool dryRun = false, bool excludeOptions = false)
     {
         var totalSw = Stopwatch.StartNew();
         bool cancelled = false;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
-        var overlay = CreateDialogOverlay(13000, 155);
+        var overlay = CreateDialogOverlay(13000, 96);
         var card = CreateDialogCard(760, 680, z: 36);
         var root = CreateDialogLayout();
         var header = new StackPanel { Spacing = 8, Margin = new Thickness(0, 0, 48, 0) };
@@ -89,8 +89,9 @@ public sealed partial class MainWindow
         {
             if (popupClosed) return;
             popupClosed = true;
-            cts.Cancel();
-            UnmountDialog(overlay);
+            // Completed dialogs outlive the operation's disposed cancellation source.
+            try { cts.Cancel(); } catch (ObjectDisposedException) { }
+            finally { UnmountDialog(overlay); }
         }
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
@@ -99,26 +100,50 @@ public sealed partial class MainWindow
         card.Child = root;
         var topClose = MountDialog(overlay, card, ClosePopup);
         var lines = new Queue<string>(256);
+        var pendingLines = new System.Collections.Concurrent.ConcurrentQueue<(string Text, bool Error)>();
+        int appendUiQueued = 0;
         long lastScriptOutputTicks = DateTime.UtcNow.Ticks;
+        void SchedulePendingDrain()
+        {
+            if (popupClosed || Interlocked.Exchange(ref appendUiQueued, 1) != 0) return;
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                try
+                {
+                    if (popupClosed) return;
+                    string? latest = null;
+                    while (pendingLines.TryDequeue(out var pending))
+                    {
+                        string clean = pending.Text.Replace("\0", string.Empty).TrimEnd();
+                        if (clean.Length == 0) continue;
+                        lines.Enqueue((pending.Error ? "ERR  " : string.Empty) + clean);
+                        while (lines.Count > 240) lines.Dequeue();
+                        latest = clean;
+                    }
+                    if (latest == null) return;
+                    string consoleValue = string.Join(Environment.NewLine, lines);
+                    if (!string.Equals(consoleText.Text, consoleValue, StringComparison.Ordinal)) consoleText.Text = consoleValue;
+                    if (!string.Equals(current.Text, latest, StringComparison.Ordinal)) current.Text = latest;
+                    consoleScroll.ChangeView(null, consoleScroll.ScrollableHeight, null, true);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref appendUiQueued, 0);
+                    if (!popupClosed && !pendingLines.IsEmpty) SchedulePendingDrain();
+                }
+            });
+        }
         void AppendLine(string line, bool error = false)
         {
             if (popupClosed) return;
             Interlocked.Exchange(ref lastScriptOutputTicks, DateTime.UtcNow.Ticks);
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                if (popupClosed) return;
-                string clean = line.Replace("\0", string.Empty).TrimEnd();
-                if (clean.Length == 0) return;
-                lines.Enqueue((error ? "ERR  " : string.Empty) + clean);
-                while (lines.Count > 240) lines.Dequeue();
-                consoleText.Text = string.Join(Environment.NewLine, lines);
-                current.Text = clean;
-                consoleScroll.ChangeView(null, consoleScroll.ScrollableHeight, null, true);
-            });
+            pendingLines.Enqueue((line, error));
+            SchedulePendingDrain();
         }
 
         int completed = 0;
         int failed = 0;
+        bool fatalError = false;
         try
         {
             AppendLine("Připravuji RemoveWindowsAI…");
@@ -138,9 +163,10 @@ public sealed partial class MainWindow
                     heartbeatCts.Token);
                 try
                 {
+                    var request = BuildAiWorkerRequest(row.Choice, revert, excludeOptions);
                     var result = dryRun
                         ? await SimulateAiStepAsync(row.Choice, cts.Token, line => AppendLine(line))
-                        : await ZoicwareToolsService.RunAiOptionStreamingAsync(row.Choice.Key, revert, !revert,
+                        : await ZoicwareToolsService.RunAiOperationStreamingAsync(request,
                             cts.Token, line => AppendLine(line), line => AppendLine(line, true));
                     sw.Stop();
                     if (!result.Success) throw new InvalidOperationException($"Proces skončil kódem {result.ExitCode}.");
@@ -192,13 +218,24 @@ public sealed partial class MainWindow
             current.Text = "Operace byla zrušena.";
             AppendLine("Operace byla zrušena uživatelem.", true);
         }
+        catch (Exception ex)
+        {
+            fatalError = true;
+            LogService.Error("ai", "AI progress failed", ex);
+            if (!popupClosed)
+            {
+                current.Text = "Operace selhala: " + ex.Message;
+                AppendLine(current.Text, true);
+                ShowActionFeedback("Windows AI", ActionFeedbackKind.Failed, ex.Message);
+            }
+        }
         finally
         {
             totalSw.Stop();
             int processed = completed + failed;
             int pending = Math.Max(0, selected.Length - processed);
             _lastAiProgressFinalSummary =
-                $"AI FINAL | OK {completed} | Chyby {failed} | Zrušeno {(cancelled ? 1 : 0)} | Nezpracováno {pending} | {totalSw.Elapsed.TotalSeconds:0.0}s";
+                $"AI FINAL | OK {completed} | Chyby {failed} | Zrušeno {(cancelled ? 1 : 0)} | Nezpracováno {pending} | Fatální {(fatalError ? 1 : 0)} | {totalSw.Elapsed.TotalSeconds:0.0}s";
             AppendLine(_lastAiProgressFinalSummary, failed > 0 || cancelled);
             LogService.Info("ai", _lastAiProgressFinalSummary);
 
@@ -216,12 +253,33 @@ public sealed partial class MainWindow
             {
                 UnmountDialog(overlay);
             }
-            else if (!popupClosed && !cancelled && failed == 0)
+            else if (!popupClosed && !cancelled && !fatalError && failed == 0)
             {
-                await Task.Delay(800);
-                UnmountDialog(overlay);
+                try
+                {
+                    await Task.Delay(800, cts.Token);
+                }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                    // User closed the popup during the success linger.
+                }
+                if (!popupClosed)
+                    UnmountDialog(overlay);
             }
         }
+    }
+
+    private static AiWorkerRequest BuildAiWorkerRequest(AiChoice choice, bool revert, bool excludeOptions)
+    {
+        const string classicPrefix = "InstallClassicApps:";
+        if (choice.Key.StartsWith(classicPrefix, StringComparison.OrdinalIgnoreCase))
+            return new AiWorkerRequest(string.Empty, revert, !revert, new[] { choice.Key[classicPrefix.Length..] });
+        return choice.Key switch
+        {
+            "AllOptions" => new AiWorkerRequest(string.Empty, revert, !revert, AllOptions: true),
+            "RunWinUpdateRepair" => new AiWorkerRequest(string.Empty, revert, !revert, RunWinUpdateRepair: true),
+            _ => new AiWorkerRequest(choice.Key, revert, !revert, ExcludeOptions: excludeOptions)
+        };
     }
 
     private async Task RunAiHeartbeatAsync(AiChoice choice, Stopwatch sw, TextBlock current,

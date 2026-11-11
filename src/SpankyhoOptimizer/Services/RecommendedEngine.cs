@@ -52,12 +52,44 @@ public static class RecommendedEngine
         bool HasCamera,
         bool HasTouch);
 
+    internal static bool MustBlockRecommendations(SafePresetProfile preset) =>
+        preset.IsUntrusted || preset.ExcludedTweakIds == null ||
+        preset.ExcludedTweakIds.Any(string.IsNullOrWhiteSpace);
+
+    internal static bool MustBlockFeatureProfile(UserFeatureProfile profile) =>
+        profile.IsUntrusted || profile.KeepFeatures == null ||
+        profile.KeepFeatures.Any(string.IsNullOrWhiteSpace);
+
+    internal static RecommendationPlan BuildBlockedFeatureProfilePlan(IEnumerable<TweakDefinition> tweaks)
+    {
+        const string reason = "Uložené používané funkce nejsou bezpečně čitelné. " +
+                              "Recommended nemůže určit, co má chránit; změny jsou zablokované.";
+        return new RecommendationPlan(DateTime.UtcNow,
+            "Recommended blocked — used feature preferences unavailable",
+            tweaks.Select(t => new RecommendationDecision(t.Id, t.Current, false, reason, "Blocked")).ToArray());
+    }
+
+    internal static RecommendationPlan BuildBlockedPresetPlan(IEnumerable<TweakDefinition> tweaks)
+    {
+        // Never infer permission to alter a tweak from missing/garbled user
+        // exclusions. Preserve every current state without a hardware probe.
+        const string reason = "Nelze bezpečně načíst uložené výjimky Recommended. " +
+                              "Žádná změna nebude navržena, dokud se profil neopraví.";
+        return new RecommendationPlan(DateTime.UtcNow,
+            "Recommended blocked — saved exclusions unavailable",
+            tweaks.Select(t => new RecommendationDecision(t.Id, t.Current, false, reason, "Blocked")).ToArray());
+    }
+
     public static async Task<RecommendationPlan> BuildAsync(
         IEnumerable<TweakDefinition> tweaks, CancellationToken token = default)
     {
-        var hw = await HardwareSnapshotService.GetAsync(false, token);
-        var features = UserFeatureProfileService.Load();
         var preset = SafePresetProfileService.Load();
+        if (MustBlockRecommendations(preset))
+            return BuildBlockedPresetPlan(tweaks);
+        var features = UserFeatureProfileService.Load();
+        if (MustBlockFeatureProfile(features))
+            return BuildBlockedFeatureProfilePlan(tweaks);
+        var hw = await HardwareSnapshotService.GetAsync(false, token);
         var keepFeatures = features.KeepFeatures.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var excludedTweaks = preset.ExcludedTweakIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var flags = new HardwareFlags(

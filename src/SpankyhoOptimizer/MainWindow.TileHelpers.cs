@@ -28,7 +28,7 @@ public sealed partial class MainWindow
     {
         var root = new Grid { ColumnSpacing = 12 }; root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); root.ColumnDefinitions.Add(new ColumnDefinition());
         root.Children.Add(new Border { Width = 4, CornerRadius = new CornerRadius(2), Background = FeatureAccentBrush(tag), Margin = new Thickness(0, 2, 0, 2) });
-        var stack = new StackPanel { Spacing = 2 }; stack.Children.Add(new TextBlock { Text = title, FontSize = 9.5, FontWeight = FontWeights.SemiBold, Foreground = FeatureAccentBrush(tag), CharacterSpacing = 80 });
+        var stack = new StackPanel { Spacing = 2 }; stack.Children.Add(new TextBlock { Text = title, FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = FeatureAccentBrush(tag), CharacterSpacing = 80 });
         stack.Children.Add(new TextBlock { Text = value, FontSize = 17, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush(), TextTrimming = TextTrimming.CharacterEllipsis });
         stack.Children.Add(new TextBlock { Text = detail, FontSize = 10.5, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap, MaxLines = 2 }); Grid.SetColumn(stack, 1); root.Children.Add(stack);
         var tile = new Border { MinHeight = 86, Background = UseGlassChrome ? GlassPanelBrush() : SectionCardBackgroundBrush(), BorderBrush = UseGlassChrome ? GlassEdgeBrush() : SectionBorderBrush(), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(UseGlassChrome ? 18 : 8), Padding = new Thickness(13, 11, 13, 11), Child = root };

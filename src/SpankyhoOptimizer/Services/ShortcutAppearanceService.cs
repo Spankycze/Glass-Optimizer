@@ -78,16 +78,35 @@ public static class ShortcutAppearanceService
 
     public static async Task<bool> MigrateLegacyShortcutOverlayAsync(CancellationToken token = default)
     {
-        bool iconRepaired = EnsureTransparentIcon();
         using var machine = Registry.LocalMachine.OpenSubKey(ShellIconsPath, writable: true);
-        string current = Convert.ToString(machine?.GetValue("29", null, RegistryValueOptions.DoNotExpandEnvironmentNames)) ?? string.Empty;
-        bool targetCurrent = string.Equals(current, NoArrowIconRegistryValue, StringComparison.OrdinalIgnoreCase);
+        if (machine == null)
+        {
+            EnsureTransparentIcon();
+            return false;
+        }
+        using var backup = Registry.CurrentUser.CreateSubKey(BackupPath, true);
+        return await MigrateLegacyShortcutOverlayCoreAsync(machine, backup, NoArrowIconPath, applyShellChanges: true, token);
+    }
+
+    // Path/registry-key core shared by the production startup migration and the
+    // isolated persistence smoke. The smoke must never write the real HKLM shell
+    // icon value, the real HKCU backup, the user's legacy override or the
+    // ProgramData icon, and must never invoke a real shell/icon-cache refresh.
+    private static async Task<bool> MigrateLegacyShortcutOverlayCoreAsync(
+        RegistryKey machine,
+        RegistryKey backup,
+        string iconPath,
+        bool applyShellChanges,
+        CancellationToken token)
+    {
+        string iconRegistryValue = iconPath + ",0";
+        bool iconRepaired = EnsureTransparentIconAt(iconPath);
+        string current = Convert.ToString(machine.GetValue("29", null, RegistryValueOptions.DoNotExpandEnvironmentNames)) ?? string.Empty;
+        bool targetCurrent = string.Equals(current, iconRegistryValue, StringComparison.OrdinalIgnoreCase);
         bool legacy = current.Contains("shell32.dll,-50", StringComparison.OrdinalIgnoreCase) ||
                       current.Contains("shell32.dll,50", StringComparison.OrdinalIgnoreCase) ||
                       current.Contains("SpankyhoOptimizer\\blank-shortcut.ico", StringComparison.OrdinalIgnoreCase) ||
-                      string.Equals(current, NoArrowIconPath, StringComparison.OrdinalIgnoreCase);
-
-        using var backup = Registry.CurrentUser.CreateSubKey(BackupPath, true);
+                      string.Equals(current, iconPath, StringComparison.OrdinalIgnoreCase);
 
         // Current registry target is already correct. Upgrade/repair the icon file silently,
         // but never restart Explorer during application startup. Explicit tweak Apply performs
@@ -99,7 +118,7 @@ public static class ShortcutAppearanceService
             {
                 backup.SetValue("OverlayIconFormatVersion", OverlayIconFormatVersion, RegistryValueKind.DWord);
                 backup.SetValue("NeedsCacheRefresh", 1, RegistryValueKind.DWord);
-                await RefreshShellAsync(token);
+                if (applyShellChanges) await RefreshShellAsync(token);
                 LogService.Info("explorer", "Transparent shortcut overlay upgraded to multi-size format; full cache rebuild queued for explicit shortcut Apply.");
                 return true;
             }
@@ -111,13 +130,117 @@ public static class ShortcutAppearanceService
         backup.SetValue("Saved", 1, RegistryValueKind.DWord);
         backup.SetValue("Had29", 0, RegistryValueKind.DWord);
         backup.SetValue("OverlayIconFormatVersion", OverlayIconFormatVersion, RegistryValueKind.DWord);
-        machine!.SetValue("29", NoArrowIconRegistryValue, RegistryValueKind.String);
+        machine.SetValue("29", iconRegistryValue, RegistryValueKind.String);
         backup.SetValue("NeedsCacheRefresh", 1, RegistryValueKind.DWord);
-        CleanupLegacyOverride();
-        await RefreshShellAsync(token);
+        if (applyShellChanges)
+        {
+            CleanupLegacyOverride();
+            await RefreshShellAsync(token);
+        }
         LogService.Info("explorer", "Legacy shortcut overlay migrated without restarting Explorer; full cache rebuild deferred until explicit shortcut tweak apply.");
         return true;
     }
+
+    internal static async Task<string> RunIsolatedPersistenceSmokeAsync()
+    {
+        string root = @"Software\SpankyhoOptimizer\ShortcutOverlaySmoke-" + Guid.NewGuid().ToString("N");
+        string machinePath = root + @"\ShellIcons";
+        string backupPath = root + @"\Backup";
+        string tempDir = Path.Combine(Path.GetTempPath(), "SpankyhoShortcutOverlaySmoke-" + Guid.NewGuid().ToString("N"));
+        string iconPath = Path.Combine(tempDir, "blank-shortcut.ico");
+        string iconRegistryValue = iconPath + ",0";
+        try
+        {
+            Directory.CreateDirectory(tempDir);
+            using (var machine = Registry.CurrentUser.CreateSubKey(machinePath, true))
+            using (var backup = Registry.CurrentUser.CreateSubKey(backupPath, true))
+            {
+                if (!EnsureTransparentIconAt(iconPath))
+                    throw new InvalidOperationException("Shortcut overlay isolated icon was not created.");
+                byte[] firstIcon = await File.ReadAllBytesAsync(iconPath).ConfigureAwait(false);
+                if (EnsureTransparentIconAt(iconPath))
+                    throw new InvalidOperationException("Shortcut overlay isolated icon was rewritten although already current.");
+                byte[] secondIcon = await File.ReadAllBytesAsync(iconPath).ConfigureAwait(false);
+                if (!firstIcon.SequenceEqual(secondIcon))
+                    throw new InvalidOperationException("Shortcut overlay isolated icon read-back differs.");
+
+                // A user value that is neither ours nor a known legacy form must stay untouched.
+                machine.SetValue("29", "shell32.dll,42", RegistryValueKind.String);
+                if (await MigrateLegacyShortcutOverlayCoreAsync(machine, backup, iconPath, applyShellChanges: false, CancellationToken.None))
+                    throw new InvalidOperationException("Shortcut overlay isolated smoke claimed a foreign shell icon value.");
+                if (!string.Equals(Convert.ToString(machine.GetValue("29", null, RegistryValueOptions.DoNotExpandEnvironmentNames)),
+                        "shell32.dll,42", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Shortcut overlay isolated smoke changed a foreign shell icon value.");
+                if (backup.ValueCount != 0)
+                    throw new InvalidOperationException("Shortcut overlay isolated smoke wrote backup values before migration.");
+
+                machine.SetValue("29", "shell32.dll,-50", RegistryValueKind.String);
+                if (!await MigrateLegacyShortcutOverlayCoreAsync(machine, backup, iconPath, applyShellChanges: false, CancellationToken.None))
+                    throw new InvalidOperationException("Shortcut overlay isolated legacy migration did not report a change.");
+                if (!string.Equals(Convert.ToString(machine.GetValue("29", null, RegistryValueOptions.DoNotExpandEnvironmentNames)),
+                        iconRegistryValue, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Shortcut overlay isolated legacy shell icon read-back failed.");
+                if (Convert.ToInt32(backup.GetValue("Saved", 0)) != 1 ||
+                    Convert.ToInt32(backup.GetValue("Had29", 0)) != 0 ||
+                    Convert.ToInt32(backup.GetValue("OverlayIconFormatVersion", 0)) != OverlayIconFormatVersion ||
+                    Convert.ToInt32(backup.GetValue("NeedsCacheRefresh", 0)) != 1)
+                    throw new InvalidOperationException("Shortcut overlay isolated legacy backup values are incorrect.");
+
+                if (await MigrateLegacyShortcutOverlayCoreAsync(machine, backup, iconPath, applyShellChanges: false, CancellationToken.None))
+                    throw new InvalidOperationException("Shortcut overlay isolated repeat migration rewrote an already current overlay.");
+
+                backup.SetValue("OverlayIconFormatVersion", 1, RegistryValueKind.DWord);
+                backup.SetValue("NeedsCacheRefresh", 0, RegistryValueKind.DWord);
+                if (!await MigrateLegacyShortcutOverlayCoreAsync(machine, backup, iconPath, applyShellChanges: false, CancellationToken.None))
+                    throw new InvalidOperationException("Shortcut overlay isolated format upgrade was not reported.");
+                if (Convert.ToInt32(backup.GetValue("OverlayIconFormatVersion", 0)) != OverlayIconFormatVersion ||
+                    Convert.ToInt32(backup.GetValue("NeedsCacheRefresh", 0)) != 1)
+                    throw new InvalidOperationException("Shortcut overlay isolated format upgrade read-back failed.");
+            }
+        }
+        finally
+        {
+            try { Registry.CurrentUser.DeleteSubKeyTree(root, false); } catch { }
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch { }
+        }
+
+        using (var leftoverMachine = Registry.CurrentUser.OpenSubKey(machinePath))
+        using (var leftoverBackup = Registry.CurrentUser.OpenSubKey(backupPath))
+        {
+            if (leftoverMachine != null || leftoverBackup != null)
+                throw new InvalidOperationException("Shortcut overlay isolated smoke left real keys behind.");
+        }
+        if (Directory.Exists(tempDir) || File.Exists(iconPath))
+            throw new InvalidOperationException("Shortcut overlay isolated smoke left an icon file behind.");
+
+        return "SHORTCUT_OVERLAY_PERSISTENCE_ISOLATED_SMOKE_OK writeReadback=true cleanup=true actualUserSettingsTouched=false shellRefreshSkipped=true";
+    }
+
+    internal static string ReadRealOverlayFingerprintForSmoke()
+    {
+        using var machine = Registry.LocalMachine.OpenSubKey(ShellIconsPath);
+        using var backup = Registry.CurrentUser.OpenSubKey(BackupPath);
+        string Value(string name) => backup?.GetValue(name) is { } value
+            ? Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "<null>"
+            : "<missing>";
+        string iconHash = "missing";
+        try
+        {
+            if (File.Exists(NoArrowIconPath))
+                iconHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(NoArrowIconPath)));
+        }
+        catch { iconHash = "unreadable"; }
+        return string.Join('|',
+            "machine29=" + (Convert.ToString(machine?.GetValue("29", null, RegistryValueOptions.DoNotExpandEnvironmentNames)) ?? "<missing>"),
+            "saved=" + Value("Saved"),
+            "had29=" + Value("Had29"),
+            "original29=" + Value("Original29"),
+            "format=" + Value("OverlayIconFormatVersion"),
+            "needsCacheRefresh=" + Value("NeedsCacheRefresh"),
+            "icon=" + iconHash);
+    }
+
+    internal static byte[] BuildTransparentIconForSmoke() => BuildTransparentIcon();
 
     public static async Task SetShortcutSuffixDisabledAsync(bool disabled, CancellationToken token = default)
     {
@@ -125,9 +248,6 @@ public static class ShortcutAppearanceService
             key.SetValue("link", disabled ? new byte[] { 0, 0, 0, 0 } : new byte[] { 0x1E, 0, 0, 0 }, RegistryValueKind.Binary);
         await WindowsActions.RestartExplorerAsync(token);
     }
-
-    internal static bool EnsureTransparentIconForSmoke() => EnsureTransparentIcon();
-    internal static string TransparentIconPathForSmoke => NoArrowIconPath;
 
     internal static bool ManagedOverlayConfiguredForSmoke()
     {
@@ -154,9 +274,10 @@ public static class ShortcutAppearanceService
         try { if (File.Exists(old)) File.Delete(old); } catch { }
     }
 
-    private static bool EnsureTransparentIcon()
+    private static bool EnsureTransparentIcon() => EnsureTransparentIconAt(NoArrowIconPath);
+
+    private static bool EnsureTransparentIconAt(string path)
     {
-        string path = NoArrowIconPath;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         byte[] expected = BuildTransparentIcon();
         if (File.Exists(path))
@@ -260,6 +381,7 @@ public static class ShortcutAppearanceService
         return stream.ToArray();
     }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("shell32.dll")]
     private static extern void SHChangeNotify(uint wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
 

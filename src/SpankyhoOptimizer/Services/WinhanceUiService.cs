@@ -12,11 +12,19 @@ internal static class WinhanceUiService
     private const string NotifyIcons = @"Control Panel\NotifyIconSettings";
     private const string Intl = @"Control Panel\International";
 
+    // Preserve the Windows overflow menu. A newly registered icon can be
+    // hidden until promoted; removing the chevron makes it inaccessible.
+    internal static int DesiredChevronVisibility => 1;
+
+    internal static bool NeedsPromotionUpdate(int currentValue, bool showAll) =>
+        currentValue != (showAll ? 1 : 0);
+
     internal static Task<bool> AreAllTrayIconsShownAsync(CancellationToken token = default) => Task.Run(() =>
     {
         token.ThrowIfCancellationRequested();
-        using var tray = Registry.CurrentUser.OpenSubKey(TrayNotify);
-        if (Convert.ToInt32(tray?.GetValue("SystemTrayChevronVisibility") ?? 1) != 0) return false;
+        // Only per-icon promotion represents the requested tweak state.
+        // Do not require disabling the chevron: the overflow is a safety net
+        // for icons that register after this command runs.
         using var root = Registry.CurrentUser.OpenSubKey(NotifyIcons);
         if (root == null) return false;
         foreach (string sub in root.GetSubKeyNames())
@@ -30,13 +38,21 @@ internal static class WinhanceUiService
     {
         token.ThrowIfCancellationRequested();
         using (var tray = Registry.CurrentUser.CreateSubKey(TrayNotify, true))
-            tray.SetValue("SystemTrayChevronVisibility", showAll ? 0 : 1, RegistryValueKind.DWord);
+        {
+            // On/off never removes access to hidden/new icons.
+            if (Convert.ToInt32(tray.GetValue("SystemTrayChevronVisibility") ?? -1)
+                != DesiredChevronVisibility)
+                tray.SetValue("SystemTrayChevronVisibility",
+                    DesiredChevronVisibility, RegistryValueKind.DWord);
+        }
         using var root = Registry.CurrentUser.OpenSubKey(NotifyIcons, true);
         if (root != null)
             foreach (string sub in root.GetSubKeyNames())
             {
                 using var key = root.OpenSubKey(sub, true);
-                key?.SetValue("IsPromoted", showAll ? 1 : 0, RegistryValueKind.DWord);
+                if (key != null &&
+                    NeedsPromotionUpdate(Convert.ToInt32(key.GetValue("IsPromoted") ?? -1), showAll))
+                    key.SetValue("IsPromoted", showAll ? 1 : 0, RegistryValueKind.DWord);
             }
     }, token);
 

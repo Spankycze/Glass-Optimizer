@@ -10,12 +10,24 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // Pure, read-only launch probe for comparing framework-dependent
+        // publishing strategies. No fan mutex, tasks, registry or HID access.
+        if (HasArg(args, "--startup-probe"))
+        {
+            if (!RuntimeHostStartupPolicy.ShouldRunInSession(1,
+                watchdog: false, watchdogLoop: false, hardwareBridge: false))
+                return 40;
+            return typeof(FanProfileService).Assembly.GetName().Name is null ? 41 : 0;
+        }
+
         ConfigureLowOverheadProcess();
 
         bool watchdog = HasArg(args, "--fan-watchdog");
         bool watchdogLoop = HasArg(args, "--fan-watchdog-loop");
+        bool aiAgent = HasArg(args, "--ai-agent");
         bool hardwareBridge = HasArg(args, "--hardware-telemetry-bridge");
-        int sessionId = Process.GetCurrentProcess().SessionId;
+        using var currentProcess = Process.GetCurrentProcess();
+        int sessionId = currentProcess.SessionId;
 
         if (!RuntimeHostStartupPolicy.ShouldRunInSession(
                 sessionId,
@@ -36,25 +48,11 @@ internal static class Program
             return 0;
         }
 
-        if (RuntimeHostStartupPolicy.ShouldLogVoiceRuntime(
-            watchdog,
-            watchdogLoop,
-            hardwareBridge))
-        {
-            LogService.Info(
-                "voice",
-                "VOICE_RUNTIME version=" +
-                RuntimeVersionInfo.FromAssembly(typeof(Program).Assembly) +
-                " path=" +
-                (Environment.ProcessPath ?? string.Empty));
-        }
-
         try
         {
             if (hardwareBridge)
             {
-                HardwareTelemetryBridgeService.RunAsync().GetAwaiter().GetResult();
-                return 0;
+                return HardwareTelemetryBridgeService.RunAsync().GetAwaiter().GetResult() ? 0 : 1;
             }
 
             if (watchdogLoop)
@@ -70,7 +68,10 @@ internal static class Program
                 return 0;
             }
 
-            FanProfileService.RunAgentAsync().GetAwaiter().GetResult();
+            if (aiAgent)
+                FanProfileService.RunAiAgentAsync().GetAwaiter().GetResult();
+            else
+                FanProfileService.RunAgentAsync().GetAwaiter().GetResult();
             return 0;
         }
         catch (Exception ex)
@@ -78,11 +79,21 @@ internal static class Program
             try { LogService.Error("runtime-host", "Runtime host terminated unexpectedly", ex); } catch { }
             return 1;
         }
+        finally
+        {
+            // Also closes the read-only logical CPU PDH query on normal agent exit.
+            AiSystemSmoothnessGuardService.StopSampling();
+        }
     }
 
     private static void ConfigureLowOverheadProcess()
     {
-        try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
+        try
+        {
+            using var currentProcess = Process.GetCurrentProcess();
+            currentProcess.PriorityClass = ProcessPriorityClass.BelowNormal;
+        }
+        catch { }
         try { GCSettings.LatencyMode = GCLatencyMode.Batch; } catch { }
     }
 

@@ -22,6 +22,7 @@ public sealed partial class MainWindow
     private bool _appsShellQueued;
     private bool _appsDeferredQueued;
     private bool _appsLauncherCacheQueued;
+    private int _appsLauncherQueuedGeneration = -1;
     private DateTime _appsUiDataAt;
 
     private void BuildPrivacyActions()
@@ -76,7 +77,7 @@ public sealed partial class MainWindow
         _appsDeferredBody = new StackPanel { Spacing = 10 };
         ContentStack.Children.Add(_appsDeferredBody);
 
-        _appsPageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _appsPageCache = SnapshotChildren(ContentStack);
         _appsUiDataAt = DateTime.UtcNow;
         ScheduleAppsShell(token);
         ScheduleAppsDeferredBody(token);
@@ -102,7 +103,7 @@ public sealed partial class MainWindow
         var detectedHost = _appsDetectedHost;
         int appsGeneration = _navigationGeneration;
 
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             _appsShellQueued = false;
             if (token.IsCancellationRequested || appsGeneration != _navigationGeneration ||
@@ -116,7 +117,7 @@ public sealed partial class MainWindow
             if (heroHost.Children.Count == 0)
             {
                 var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                actions.Children.Add(PrimaryQuickButton("Software Updater", () => ShowSoftwareManagerAsync(CancellationToken.None)));
+                actions.Children.Add(PrimaryQuickButton("Software Updater", () => ShowSoftwareManagerAsync(_windowLifetimeCts.Token)));
                 actions.Children.Add(QuickButton("Autostart launcherů", ShowLauncherStartupDialogAsync));
                 heroHost.Children.Add(BuildModernSectionHero(
                     "apps",
@@ -143,14 +144,15 @@ public sealed partial class MainWindow
 
             LogService.Info("performance",
                 $"APPS_SHELL_DEFERRED ms={sw.ElapsedMilliseconds} hero={heroHost.Children.Count} winget={wingetSurfaceHost.Children.Count} detected={detectedSurfaceHost.Children.Count}");
-        });
+        })) _appsShellQueued = false;
     }
 
     private void ScheduleAppsBackgroundRefresh(TextBlock? winget, StackPanel? detected, CancellationToken token)
     {
+        int generation = _navigationGeneration;
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "apps") return;
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "apps") return;
             if (winget != null) SafeTaskService.Forget(UpdateAppsWingetStatusAsync(winget, token), "apps", "Winget status");
             if (detected != null) SafeTaskService.Forget(FillDetectedAppsPanelAsync(detected, token), "apps", "Detected apps inventory");
         });
@@ -159,44 +161,52 @@ public sealed partial class MainWindow
     private void ScheduleAppsDeferredBody(CancellationToken token)
     {
         if (_appsDeferredQueued || _appsDeferredBody == null || _appsDeferredBody.Children.Count > 0) return;
+        int generation = _navigationGeneration;
+        var body = _appsDeferredBody;
         _appsDeferredQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        bool queued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             _appsDeferredQueued = false;
-            if (token.IsCancellationRequested || _section != "apps" || _appsDeferredBody == null || _appsDeferredBody.Children.Count > 0) return;
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "apps" || !ReferenceEquals(_appsDeferredBody, body) || body == null || body.Parent == null || body.Children.Count > 0) return;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var launcherHost = new StackPanel { Spacing = 8 };
             _appsLauncherCacheHost = launcherHost;
             _appsDeferredBody.Children.Add(BuildSectionSurface("apps", "Cache launcherů", "Steam, Battle.net, Epic, EA, Ubisoft, Riot, GOG a Discord", launcherHost));
-            _appsDeferredBody.Children.Add(ActionCard("Windows temp", "Vyčistí jen dočasné Windows soubory. Shader cache se nemaže, aby se hry zbytečně nevracely ke kompilaci shaderů.", "Vyčistit temp", async () =>
-            {
-                await WindowsActions.ClearTempAsync();
-                ShowActionFeedback("Windows temp", ActionFeedbackKind.Verified, "Dočasné Windows soubory byly vyčištěny. Shader cache zůstala zachovaná.");
-                await ShowMessageAsync("Programy / Launchery", "Dočasné Windows soubory byly vyčištěny. Shader cache zůstala zachovaná.");
-            }));
             ScheduleLauncherCacheCards(launcherHost, token);
             LogService.Info("performance", $"APPS_DEFERRED_BODY ms={sw.ElapsedMilliseconds} cards={_appsDeferredBody.Children.Count} launcherShellOnly=true");
         });
+        // A rejected low-priority enqueue must release the pending bit, or the
+        // Apps deferred body can never be scheduled again in this session.
+        if (!queued) _appsDeferredQueued = false;
     }
 
     private void ScheduleLauncherCacheCards(StackPanel host, CancellationToken token)
     {
         if (_appsLauncherCacheQueued || host.Children.Count > 0) return;
+        int generation = _navigationGeneration;
         _appsLauncherCacheQueued = true;
+        _appsLauncherQueuedGeneration = generation;
         var catalog = LauncherCacheService.Catalog.ToArray();
 
         void QueueBatch(int start)
         {
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            // Eight single-card callbacks caused eight extra dispatcher hops
+            // and intermediate XAML layout passes. Four light cards per
+            // callback remain well below a frame on the measured warm path,
+            // while keeping the entire launcher panel off the first frame.
+            bool queued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                if (token.IsCancellationRequested || _section != "apps" || !ReferenceEquals(_appsLauncherCacheHost, host))
+                if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "apps" || !ReferenceEquals(_appsLauncherCacheHost, host) || host.Parent == null)
                 {
-                    _appsLauncherCacheQueued = false;
+                    // An obsolete dispatcher callback must not clear the
+                    // pending bit of a newer Apps page navigation.
+                    if (_appsLauncherQueuedGeneration == generation)
+                        _appsLauncherCacheQueued = false;
                     return;
                 }
 
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                int end = Math.Min(start + 1, catalog.Length);
+                int end = Math.Min(start + 4, catalog.Length);
                 for (int i = start; i < end; i++)
                 {
                     var pair = catalog[i];
@@ -223,6 +233,9 @@ public sealed partial class MainWindow
                 else
                     _appsLauncherCacheQueued = false;
             });
+            if (!queued && _appsLauncherQueuedGeneration == generation &&
+                ReferenceEquals(_appsLauncherCacheHost, host))
+                _appsLauncherCacheQueued = false;
         }
 
         if (catalog.Length == 0)
@@ -242,7 +255,7 @@ public sealed partial class MainWindow
              (((_appsHeroHost?.Children.Count ?? 0) == 0) ||
               ((_appsWingetSurfaceHost?.Children.Count ?? 0) == 0) ||
               ((_appsDetectedSurfaceHost?.Children.Count ?? 0) == 0) ||
-              ((_appsDeferredBody?.Children.Count ?? 0) < 2)); i++)
+              ((_appsDeferredBody?.Children.Count ?? 0) < 1)); i++)
             await Task.Delay(25);
 
         if ((_appsHeroHost?.Children.Count ?? 0) == 0 ||
@@ -251,8 +264,8 @@ public sealed partial class MainWindow
             throw new InvalidOperationException("Apps deferred shell incomplete.");
 
         int actual = _appsDeferredBody?.Children.Count ?? 0;
-        if (actual < 2)
-            throw new InvalidOperationException($"Apps deferred body incomplete: expected>=2 actual={actual}.");
+        if (actual < 1)
+            throw new InvalidOperationException($"Apps deferred body incomplete: expected>=1 actual={actual}.");
 
         int expectedLaunchers = LauncherCacheService.Catalog.Count;
         for (int i = 0; i < 80 && (_appsLauncherCacheHost?.Children.Count ?? 0) < expectedLaunchers; i++)
@@ -277,6 +290,7 @@ public sealed partial class MainWindow
         _appsShellQueued = false;
         _appsDeferredQueued = false;
         _appsLauncherCacheQueued = false;
+        _appsLauncherQueuedGeneration = -1;
         _appsUiDataAt = default;
     }
 
@@ -304,69 +318,5 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task ShowLauncherCacheDiagnosticsAsync()
-    {
-        var body = new StackPanel { Spacing = 7 };
-        long total = 0;
-        foreach (var pair in LauncherCacheService.Catalog)
-        {
-            long size = 0;
-            string value;
-            try
-            {
-                size = await LauncherCacheService.GetSizeAsync(pair.Value);
-                value = $"{size / 1048576d:0.0} MB";
-            }
-            catch (Exception ex)
-            {
-                value = "Nelze zjistit";
-                LogService.Error("apps", $"Launcher cache size failed: {pair.Key}", ex);
-            }
-            total += size;
-            body.Children.Add(DiagnosticLine(pair.Key, value));
-        }
-        body.Children.Insert(0, DiagnosticLine("Celkem cache", $"{total / 1048576d:0.0} MB"));
-        await ShowStyledContentAsync("Launcher cache diagnostics", "Read-only analýza bez mazání dat.", new ScrollViewer { Content = body, MaxHeight = 520 }, "Zavřít");
-    }
-
-    private async Task ShowPrivacyDiagnosticsAsync()
-    {
-        var tweaks = CatalogService.GetTweaks("privacy");
-        await _engine.DetectAsync(tweaks);
-        var body = new StackPanel { Spacing = 7 };
-        body.Children.Add(DiagnosticLine("Položky", tweaks.Count.ToString()));
-        body.Children.Add(DiagnosticLine("Aktivní", tweaks.Count(x => x.IsLoaded && x.Current).ToString()));
-        body.Children.Add(DiagnosticLine("Recommended", tweaks.Count(x => x.Recommended).ToString()));
-        body.Children.Add(DiagnosticLine("Advanced", tweaks.Count(x => x.Risk == Models.TweakRisk.Advanced).ToString()));
-        body.Children.Add(DiagnosticLine("Nelze zjistit", tweaks.Count(x => !x.IsLoaded).ToString()));
-        await ShowStyledContentAsync("Privacy diagnostics", "Read-only stav telemetry, oprávnění a privacy policy.", body, "Zavřít");
-    }
-
-    private async Task ShowAiDiagnosticsAsync()
-    {
-        var tweaks = CatalogService.GetTweaks("ai");
-        await _engine.DetectAsync(tweaks);
-        var body = new StackPanel { Spacing = 7 };
-        body.Children.Add(DiagnosticLine("AI tweak položky", tweaks.Count.ToString()));
-        body.Children.Add(DiagnosticLine("Aktivní zásahy", tweaks.Count(x => x.IsLoaded && x.Current).ToString()));
-        body.Children.Add(DiagnosticLine("Nezjištěno", tweaks.Count(x => !x.IsLoaded).ToString()));
-        body.Children.Add(DiagnosticLine("Volitelné moduly", AiChoices.Length.ToString()));
-        await ShowStyledContentAsync("AI / Recall diagnostics", "Read-only kontrola aktuálního stavu AI policy a modulů.", body, "Zavřít");
-    }
-    private async Task ShowDefenderDiagnosticsAsync()
-    {
-        var tweaks = CatalogService.GetDefenderTweaks();
-        await _engine.DetectAsync(tweaks);
-        bool tamper = false;
-        try { tamper = WindowsActions.IsTamperProtectionOn(); }
-        catch (Exception ex) { LogService.Error("defender", "Tamper Protection diagnostics failed", ex); }
-        var body = new StackPanel { Spacing = 7 };
-        body.Children.Add(DiagnosticLine("Tamper Protection", tamper ? "Zapnuto" : "Vypnuto / nezjištěno"));
-        body.Children.Add(DiagnosticLine("Moduly", tweaks.Count.ToString()));
-        body.Children.Add(DiagnosticLine("Aktivní zásahy", tweaks.Count(x => x.IsLoaded && x.Current).ToString()));
-        body.Children.Add(DiagnosticLine("Nezjištěno", tweaks.Count(x => !x.IsLoaded).ToString()));
-        await ShowStyledContentAsync("Defender diagnostics", "Read-only stav Defender modulů a Tamper Protection.", body, "Zavřít");
-    }
 
 }
-

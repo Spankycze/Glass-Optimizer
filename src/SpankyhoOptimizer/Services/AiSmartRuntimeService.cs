@@ -43,6 +43,7 @@ public sealed class AiSmartRuntimeService
 {
     private AiSmartRuntimeModel _model = LoadModel();
     private DateTime _lastPersistUtc = DateTime.MinValue;
+    private DateTime _lastPersistFailureUtc = DateTime.MinValue;
     private DateTime _lastModelSampleUtc = DateTime.MinValue;
     private AiWorkloadClass _lastModelSampleWorkload = AiWorkloadClass.Unknown;
     private bool _modelDirty;
@@ -55,8 +56,16 @@ public sealed class AiSmartRuntimeService
     private double _smoothedTrend;
     private double _smoothedAnomaly;
     private int _highAnomalyVotes;
+    private DateTime _lastAnomalyEvidenceUtc = DateTime.MinValue;
     private AiWorkloadClass _lastConfidenceWorkload = AiWorkloadClass.Unknown;
     private int _workloadStableSamples;
+    private DateTime _lastConfidenceSampleUtc = DateTime.MinValue;
+    // Baseline labels are shown every tick, while learned baselines change infrequently.
+    private AiSmartWorkloadBaseline? _lastBaselineLabelValue;
+    private string? _lastBaselineLabelSource;
+    private string? _lastBaselineLabelText;
+    private AiSmartRuntimeModel? _globalBaselineSourceModel;
+    private AiSmartWorkloadBaseline? _globalBaselineCache;
 
     public AiSmartRuntimeDecision Tick(
         bool enabled,
@@ -70,81 +79,203 @@ public sealed class AiSmartRuntimeService
         string blocker,
         AiWorkloadClass workload = AiWorkloadClass.Unknown)
     {
+        DateTime nowUtc = DateTime.UtcNow;
         if (!enabled)
         {
+            // A disabled interval is a gap in workload observation, not
+            // evidence that the previously classified workload stayed stable.
+            _lastConfidenceWorkload = AiWorkloadClass.Unknown;
+            _workloadStableSamples = 0;
+            _lastConfidenceSampleUtc = DateTime.MinValue;
+            // A disabled period also breaks thermal-trend continuity. Keep
+            // anomaly protection history intact; only discard stale velocity.
+            _previousTemp = null;
+            _previousTempUtc = DateTime.MinValue;
+            _smoothedTrend = 0;
+            // Preserve newly learned baselines when AI is switched off.
+            // A clean model does no I/O; failed writes still obey retry backoff.
+            PersistModelIfDue(workload, nowUtc, forceDue: true);
             return new AiSmartRuntimeDecision(
-                false, "OFF", gameActive ? "Detected" : "None", 0, 0, telemetry.Celsius ?? 0,
-                "AI Smart Runtime je vypnutý.", BaselineText(workload), _lastAction, 0, false, false);
+                false, "OFF", gameActive ? "Detected" : "None", 0, 0,
+                telemetry.Celsius is double offTemp && double.IsFinite(offTemp) ? offTemp : 0,
+                "AI Smart Runtime je vypnutý.", BaselineText(workload, nowUtc), _lastAction, 0, false, false);
         }
 
-        DateTime nowUtc = DateTime.UtcNow;
-        AiSmartWorkloadBaseline baseline = ResolveBaseline(workload);
+        AiSmartWorkloadBaseline baseline = ResolveBaseline(workload, nowUtc);
         double? liveTemp = telemetry.Celsius;
         bool temperatureAvailable =
             liveTemp.HasValue &&
             liveTemp.Value > 5 &&
             liveTemp.Value < 150;
-        bool powerAvailable = telemetry.PackagePowerW.HasValue;
+        // The optional CPU sensor data can contain NaN, infinity or an
+        // implausible value even when HasValue is true. Reuse the same
+        // conservative evidence thresholds as the AI power engine.
+        bool powerAvailable = AiPowerTelemetryEvidencePolicy.HasUsablePower(telemetry.PackagePowerW);
+        bool clockAvailable = AiPowerTelemetryEvidencePolicy.HasUsableClock(telemetry.EffectiveClockMHz);
+        bool loadAvailable = double.IsFinite(loadPercent) && loadPercent is >= 0 and <= 100;
 
         double temp = temperatureAvailable ? liveTemp!.Value : baseline.AvgTempC;
-        double power = telemetry.PackagePowerW ?? baseline.AvgPowerW;
-        double clock = telemetry.EffectiveClockMHz ?? baseline.AvgClockMHz;
-        double load = Math.Clamp(loadPercent, 0, 100);
+        double power = powerAvailable ? telemetry.PackagePowerW!.Value : baseline.AvgPowerW;
+        double clock = clockAvailable ? telemetry.EffectiveClockMHz!.Value : baseline.AvgClockMHz;
+        double load = loadAvailable ? loadPercent : baseline.AvgLoadPercent;
         double avgRpm = AverageActiveRpm(fanRpms);
         double trend = 0;
 
         if (temperatureAvailable)
         {
-            trend = _previousTemp.HasValue && _previousTempUtc != DateTime.MinValue
-                ? NormalizeTemperatureTrend(
-                    temp - _previousTemp.Value,
-                    Math.Max(0.1, (nowUtc - _previousTempUtc).TotalSeconds))
-                : 0;
-            _previousTemp = temp;
-            _previousTempUtc = nowUtc;
-            _smoothedTrend = _smoothedTrend == 0
-                ? trend
-                : _smoothedTrend * 0.72 + trend * 0.28;
+            // Only adjacent, continuously observed samples can establish a
+            // thermal velocity. A sensor outage, clock rollback or a long
+            // scheduling gap invalidates the previous derivative.
+            TimeSpan elapsed = nowUtc - _previousTempUtc;
+            bool contiguous = _previousTemp.HasValue &&
+                _previousTempUtc != DateTime.MinValue &&
+                elapsed >= TimeSpan.Zero &&
+                elapsed <= TimeSpan.FromSeconds(30);
+            if (!contiguous)
+                _smoothedTrend = 0;
+
+            // Two very fast ticks are not independent evidence of thermal
+            // velocity. Do not divide their sensor jitter by an invented
+            // 0.1-second interval, nor replace the previous valid sample.
+            // The absolute current temperature is still used for safety.
+            bool tooSoon = contiguous && elapsed < TimeSpan.FromMilliseconds(500);
+            if (!tooSoon)
+            {
+                trend = contiguous
+                    ? NormalizeTemperatureTrend(
+                        temp - _previousTemp!.Value, elapsed.TotalSeconds)
+                    : 0;
+                _previousTemp = temp;
+                _previousTempUtc = nowUtc;
+                _smoothedTrend = _smoothedTrend == 0
+                    ? trend
+                    : _smoothedTrend * 0.72 + trend * 0.28;
+            }
         }
         else
         {
-            _smoothedTrend *= 0.70;
+            // Never bridge a missing sensor interval with an old temperature.
+            // Reset velocity only; retain protective anomaly history.
+            _previousTemp = null;
+            _previousTempUtc = DateTime.MinValue;
+            _smoothedTrend = 0;
         }
 
-        string gamePhase = DetectGamePhase(gameActive, load, power, clock);
+        // A learned baseline is not evidence of current game load. Missing
+        // telemetry must not invent a Heavy/Gameplay phase or trigger its
+        // associated fan preboost; the game-active power guard stays intact.
+        string gamePhase = DetectGamePhase(gameActive,
+            loadAvailable ? load : 0,
+            powerAvailable ? power : 0,
+            clockAvailable ? clock : 0);
         double rawAnomaly = CalculateAnomaly(
-            temp, power, load, avgRpm, currentTargetRpm, hidOk, blocker, baseline);
-        _smoothedAnomaly = _smoothedAnomaly == 0
-            ? rawAnomaly
-            : _smoothedAnomaly * 0.70 + rawAnomaly * 0.30;
+            temp, power, load, avgRpm, currentTargetRpm, hidOk, blocker, baseline,
+            temperatureAvailable, powerAvailable, loadAvailable);
+        // Two calls in the same short sampling window are not two
+        // independent anomaly observations. Keep immediate raw temperature
+        // safety in AiFanBiasPolicy, but only advance the smoothed anomaly
+        // and its confirmation votes on genuinely separated evidence.
+        TimeSpan anomalyGap = nowUtc - _lastAnomalyEvidenceUtc;
+        // Missing CPU temperature is not an independent thermal observation.
+        // Do not promote baseline estimates into confirmed anomaly votes;
+        // the existing direct sensor and performance fallbacks stay active.
+        bool fanReadbackHealthy = avgRpm > 100 &&
+            (currentTargetRpm < 1000 || avgRpm >= currentTargetRpm - 220);
+        bool independentAnomalySample = hidOk && fanReadbackHealthy &&
+            temperatureAvailable && powerAvailable && loadAvailable &&
+            (_lastAnomalyEvidenceUtc == DateTime.MinValue ||
+             anomalyGap < TimeSpan.Zero ||
+             anomalyGap >= TimeSpan.FromMilliseconds(500));
+        // A telemetry outage breaks the chain of independent anomaly votes.
+        // Discard the old confirmation rather than carrying it across a gap.
+        if (!hidOk || !fanReadbackHealthy || !temperatureAvailable ||
+            !powerAvailable || !loadAvailable)
+        {
+            _smoothedAnomaly = 0;
+            _highAnomalyVotes = 0;
+            _lastAnomalyEvidenceUtc = DateTime.MinValue;
+        }
+        if (independentAnomalySample)
+        {
+            if (_lastAnomalyEvidenceUtc != DateTime.MinValue &&
+                (anomalyGap < TimeSpan.Zero || anomalyGap > TimeSpan.FromSeconds(30)))
+            {
+                _smoothedAnomaly = 0;
+                _highAnomalyVotes = 0;
+            }
+            _smoothedAnomaly = _smoothedAnomaly == 0
+                ? rawAnomaly
+                : _smoothedAnomaly * 0.70 + rawAnomaly * 0.30;
 
-        if (_smoothedAnomaly >= 65)
-            _highAnomalyVotes++;
-        else
-            _highAnomalyVotes = Math.Max(0, _highAnomalyVotes - 1);
+            if (_smoothedAnomaly >= 65)
+                _highAnomalyVotes = Math.Min(2, _highAnomalyVotes + 1);
+            else
+                _highAnomalyVotes = Math.Max(0, _highAnomalyVotes - 1);
+            _lastAnomalyEvidenceUtc = nowUtc;
+        }
 
         double anomaly = _highAnomalyVotes >= 2
             ? Math.Max(_smoothedAnomaly, rawAnomaly)
             : Math.Min(_smoothedAnomaly, 64);
+        // Current HID failure or measured fan RPM deficit is direct safety
+        // evidence, not a thermal trend awaiting two independent samples.
+        if (!hidOk || (currentTargetRpm >= 1000 && avgRpm > 100 &&
+                       avgRpm < currentTargetRpm - 220))
+            anomaly = Math.Max(anomaly, rawAnomaly);
 
         double confidence = CalculateConfidence(
             hidOk,
             temperatureAvailable,
             powerAvailable,
-            baseline);
+            baseline,
+            nowUtc);
+        // A valid workload label alone cannot justify full confidence
+        // without independent CPU clock and load evidence. This also
+        // applies to Game, whose stability factor intentionally stays 1.
+        if (!clockAvailable) confidence *= 0.70;
+        if (!loadAvailable) confidence *= 0.70;
+        // A current fan-speed deficit is not reliable cooling telemetry.
+        if (currentTargetRpm >= 1000 && avgRpm > 100 &&
+            avgRpm < currentTargetRpm - 220) confidence *= 0.70;
+        // A responding controller does not prove real fan feedback exists.
+        // Missing or stopped RPM readback must reduce AI confidence.
+        if (avgRpm <= 100) confidence *= 0.70;
 
-        if (workload == AiWorkloadClass.Unknown)
+        if (workload == AiWorkloadClass.Unknown || !hidOk || avgRpm <= 100 ||
+            (currentTargetRpm >= 1000 && avgRpm < currentTargetRpm - 220) ||
+            !temperatureAvailable || !powerAvailable || !clockAvailable || !loadAvailable)
         {
+            // A workload label observed without valid CPU evidence does not
+            // prove the workload stayed stable. Requalify confidence when
+            // telemetry returns, even if the label is unchanged.
+            _lastConfidenceWorkload = AiWorkloadClass.Unknown;
             _workloadStableSamples = 0;
+            _lastConfidenceSampleUtc = DateTime.MinValue;
         }
         else if (workload == _lastConfidenceWorkload)
         {
-            _workloadStableSamples = Math.Min(5, _workloadStableSamples + 1);
+            TimeSpan elapsed = nowUtc - _lastConfidenceSampleUtc;
+            if (_lastConfidenceSampleUtc == DateTime.MinValue ||
+                elapsed < TimeSpan.Zero || elapsed > TimeSpan.FromSeconds(30))
+            {
+                // A clock rollback or an unobserved interval cannot confirm
+                // that a workload stayed stable during the gap.
+                _workloadStableSamples = 0;
+                _lastConfidenceSampleUtc = nowUtc;
+            }
+            else if (elapsed >= TimeSpan.FromMilliseconds(500))
+            {
+                // Repeated immediate UI/runtime ticks are not independent
+                // samples and must not inflate the classifier confidence.
+                _workloadStableSamples = Math.Min(5, _workloadStableSamples + 1);
+                _lastConfidenceSampleUtc = nowUtc;
+            }
         }
         else
         {
             _lastConfidenceWorkload = workload;
             _workloadStableSamples = 0;
+            _lastConfidenceSampleUtc = nowUtc;
         }
 
         confidence = AdjustConfidenceForWorkloadStability(
@@ -160,14 +291,32 @@ public sealed class AiSmartRuntimeService
             _lastModelSampleWorkload,
             workload,
             nowUtc);
+        // An unknown workload cannot provide a classified learning example.
+        // Wait for a recognized workload before updating its baseline.
         if (learningSampleDue &&
+            workload != AiWorkloadClass.Unknown &&
             hidOk &&
             temperatureAvailable &&
             powerAvailable &&
-            telemetry.EffectiveClockMHz.HasValue &&
-            anomaly < 60)
+            clockAvailable &&
+            loadAvailable &&
+            avgRpm > 100 &&
+            (currentTargetRpm < 1000 || avgRpm >= currentTargetRpm - 220) &&
+            // Reject fresh anomalies and unconfirmed high thermal observations;
+            // only sustained, healthy measurements can update the baseline.
+            rawAnomaly < 60 && anomaly < 60 &&
+            _highAnomalyVotes == 0 &&
+            // Exclude both a rising trend and a predicted hot near-term state.
+            _smoothedTrend <= 0.5 &&
+            predictedTemp10s < 75 &&
+            // A hot current CPU reading or strong thermal prediction error
+            // is not a trustworthy steady-state learning baseline.
+            temp < 75 && Math.Abs(predictedTemp10s - temp) < 10 &&
+            // Require both decision confidence and independently confirmed
+            // workload stability before recording a classified baseline.
+            confidence >= 0.6 && _workloadStableSamples >= 2)
         {
-            UpdateModel(temp, power, load, avgRpm, clock, workload);
+            UpdateModel(temp, power, load, avgRpm, clock, workload, nowUtc);
             _lastModelSampleUtc = nowUtc;
             _lastModelSampleWorkload = workload;
         }
@@ -182,18 +331,47 @@ public sealed class AiSmartRuntimeService
             gamePhase,
             confidence,
             workload);
-        bool preferPerformance = AiPowerDemandPolicy.HasPerformanceDemand(
-            gameActive,
-            load,
-            powerAvailable ? power : null,
-            telemetry.EffectiveClockMHz,
-            anomaly,
-            workload,
-            confidence);
+        // A cooling (negative RPM) advisory requires current trustworthy
+        // sensor and fan-controller evidence. Baseline estimates are not
+        // proof that it is safe to reduce real fan speed.
+        // An observed RPM shortfall is not cooling headroom: do not lower
+        // the requested fan target while tachometry is below that target.
+        if (!temperatureAvailable || !hidOk || !clockAvailable ||
+            !powerAvailable || !loadAvailable || avgRpm <= 100 ||
+            (currentTargetRpm >= 1000 && avgRpm < currentTargetRpm - 220))
+            fanBias = Math.Max(0, fanBias);
+        // A missing CPU temperature must never be presented as evidence
+        // supporting a low-power preference. This is a conservative advisory
+        // decision; the adaptive power engine retains its own safety gates.
+        bool preferPerformance = !temperatureAvailable || !hidOk ||
+            !clockAvailable || !powerAvailable || !loadAvailable ||
+            avgRpm <= 100 ||
+            (currentTargetRpm >= 1000 && avgRpm < currentTargetRpm - 220) ||
+            AiPowerDemandPolicy.HasPerformanceDemand(
+                gameActive,
+                // Keep invalid raw load as an explicit fail-safe signal to
+                // the power policy. Fallback values serve calculations only.
+                loadAvailable ? load : loadPercent,
+                powerAvailable ? power : null,
+                clockAvailable ? telemetry.EffectiveClockMHz : null,
+                anomaly,
+                workload,
+                confidence);
 
+        // Idle is advisory only when fan control is healthy and there is
+        // actual thermal headroom. Low CPU load alone must not justify Idle
+        // while the CPU is hot, a temperature rise is predicted, or a
+        // competing performance demand has already been established.
         bool preferIdle =
+            hidOk &&
+            !preferPerformance &&
             temperatureAvailable &&
             powerAvailable &&
+            clockAvailable &&
+            loadAvailable &&
+            avgRpm > 100 &&
+            temp < 68 &&
+            predictedTemp10s < 70 &&
             !gameActive &&
             realIdle &&
             anomaly < 35 &&
@@ -206,10 +384,10 @@ public sealed class AiSmartRuntimeService
                 ? "Performance"
                 : preferIdle
                     ? "Idle"
-                    : workload == AiWorkloadClass.Background
-                        ? "BackgroundEfficient"
-                        : anomaly >= 55
-                            ? "Watch"
+                    : anomaly >= 55
+                        ? "Watch"
+                        : workload == AiWorkloadClass.Background
+                            ? "BackgroundEfficient"
                             : "Adaptive";
 
         string prediction = BuildPrediction(
@@ -229,8 +407,9 @@ public sealed class AiSmartRuntimeService
             temperatureAvailable,
             avgRpm,
             currentTargetRpm,
-            gamePhase);
-        PersistModelIfDue(workload);
+            gamePhase,
+            nowUtc);
+        PersistModelIfDue(workload, nowUtc);
 
         return new AiSmartRuntimeDecision(
             true,
@@ -240,7 +419,7 @@ public sealed class AiSmartRuntimeService
             Math.Round(confidence, 1),
             Math.Round(predictedTemp10s, 1),
             prediction,
-            BaselineText(workload),
+            BaselineText(workload, nowUtc),
             _lastAction,
             fanBias,
             preferPerformance,
@@ -252,11 +431,14 @@ public sealed class AiSmartRuntimeService
         if (!decision.Enabled)
             return Math.Clamp(baseTargetRpm, 1620, LianLiSlInfinityService.MaximumRpm);
 
-        int target = baseTargetRpm + decision.FanRpmBias;
+        // Stay in 64-bit arithmetic until the physical RPM bounds are
+        // applied. An out-of-range upstream base target must never overflow
+        // to a low (potentially minimum) fan setting.
+        long target = (long)baseTargetRpm + decision.FanRpmBias;
         if (decision.AnomalyScore >= 85)
-            target = Math.Max(target, 1950);
+            target = Math.Max(target, 1950L);
 
-        return Math.Clamp(target, 1620, LianLiSlInfinityService.MaximumRpm);
+        return (int)Math.Clamp(target, 1620L, LianLiSlInfinityService.MaximumRpm);
     }
 
     private static string DetectGamePhase(bool gameActive, double load, double power, double clock)
@@ -276,7 +458,10 @@ public sealed class AiSmartRuntimeService
         int targetRpm,
         bool hidOk,
         string blocker,
-        AiSmartWorkloadBaseline baseline)
+        AiSmartWorkloadBaseline baseline,
+        bool temperatureAvailable,
+        bool powerAvailable,
+        bool loadAvailable)
     {
         double score = 0;
 
@@ -286,7 +471,8 @@ public sealed class AiSmartRuntimeService
         if (targetRpm >= 1000 && avgRpm > 100 && avgRpm < targetRpm - 220)
             score += Math.Min(35, (targetRpm - avgRpm - 220) / 8d);
 
-        if (baseline.Samples >= 20)
+        if (baseline.Samples >= 20 && temperatureAvailable &&
+            powerAvailable && loadAvailable)
         {
             double expectedTemp = baseline.AvgTempC +
                                   Math.Max(0, power - baseline.AvgPowerW) * 0.18 +
@@ -307,8 +493,8 @@ public sealed class AiSmartRuntimeService
             else if (blockerPercent >= 9) score += 10;
         }
 
-        if (temp >= 78) score += 25;
-        else if (temp >= 70) score += 12;
+        if (temperatureAvailable && temp >= 78) score += 25;
+        else if (temperatureAvailable && temp >= 70) score += 12;
 
         return Math.Clamp(score, 0, 100);
     }
@@ -317,13 +503,15 @@ public sealed class AiSmartRuntimeService
         bool hidOk,
         bool temperatureAvailable,
         bool powerAvailable,
-        AiSmartWorkloadBaseline baseline)
+        AiSmartWorkloadBaseline baseline,
+        DateTime nowUtc)
     {
         double sampleConfidence = Math.Clamp(baseline.Samples / 250d * 100d, 0, 100);
+        // Reuse the exact tick timestamp for both freshness and classification.
         bool modelFresh =
             baseline.UpdatedUtc != DateTime.MinValue &&
-            DateTime.UtcNow >= baseline.UpdatedUtc &&
-            DateTime.UtcNow - baseline.UpdatedUtc <= TimeSpan.FromMinutes(10);
+            nowUtc >= baseline.UpdatedUtc &&
+            nowUtc - baseline.UpdatedUtc <= TimeSpan.FromMinutes(10);
 
         return AdjustConfidenceForTelemetry(
             sampleConfidence,
@@ -442,32 +630,65 @@ public sealed class AiSmartRuntimeService
         bool temperatureAvailable,
         double avgRpm,
         int targetRpm,
-        string gamePhase)
+        string gamePhase,
+        DateTime now)
     {
-        DateTime now = DateTime.UtcNow;
 
-        if (temperatureAvailable &&
-            string.Equals(_lastAction, "CPU telemetry fallback", StringComparison.Ordinal))
+        // Safety events are not normal advisory actions. When their kind
+        // changes, record them immediately instead of hiding a new HID,
+        // temperature or fan fault behind the ordinary 20-second cooldown.
+        // Repeated identical events remain rate-limited by the same cooldown.
+        string? safetyAction = null;
+        if (!hidOk)
+            safetyAction = "HID reconnect/watch";
+        else if (!temperatureAvailable)
+            safetyAction = "CPU telemetry fallback";
+        else if (targetRpm >= 1000 && avgRpm <= 100)
+            safetyAction = "fan feedback unavailable";
+        else if (targetRpm >= 1000 && avgRpm > 100 && avgRpm < targetRpm - 220)
+            safetyAction = "fan target self-heal";
+        else if (anomaly >= 75)
+            safetyAction = "thermal anomaly protection";
+
+        if (safetyAction != null &&
+            !string.Equals(_lastAction, safetyAction, StringComparison.Ordinal))
         {
-            SetAction("CPU telemetry restored", now, anomaly, fanBias);
+            SetAction(safetyAction, now, anomaly, fanBias);
             return;
         }
 
-        if (now - _lastActionUtc < TimeSpan.FromSeconds(20))
+        // A recovery is observable only after all higher-priority fault
+        // checks have cleared. Never report restored CPU telemetry while
+        // HID or measured fan feedback is still in failure.
+        if (safetyAction == null)
+        {
+            if (string.Equals(_lastAction, "HID reconnect/watch", StringComparison.Ordinal))
+            {
+                SetAction("HID telemetry restored", now, anomaly, fanBias);
+                return;
+            }
+            if (string.Equals(_lastAction, "CPU telemetry fallback", StringComparison.Ordinal))
+            {
+                SetAction("CPU telemetry restored", now, anomaly, fanBias);
+                return;
+            }
+            if (avgRpm > 100 &&
+                (string.Equals(_lastAction, "fan feedback unavailable", StringComparison.Ordinal) ||
+                 string.Equals(_lastAction, "fan target self-heal", StringComparison.Ordinal)))
+            {
+                SetAction("fan feedback restored", now, anomaly, fanBias);
+                return;
+            }
+        }
+
+        // A backwards wall-clock adjustment invalidates the old cooldown.
+        if (now >= _lastActionUtc && now - _lastActionUtc < TimeSpan.FromSeconds(20))
             return;
 
-        string? action = null;
-        if (!hidOk)
-            action = "HID reconnect/watch";
-        else if (!temperatureAvailable)
-            action = "CPU telemetry fallback";
-        else if (targetRpm > 1000 && avgRpm > 100 && avgRpm < targetRpm - 220)
-            action = "fan target self-heal";
-        else if (anomaly >= 75)
-            action = "thermal anomaly protection";
-        else if (fanBias >= 150)
+        string? action = safetyAction;
+        if (action == null && fanBias >= 150)
             action = "predictive fan preboost";
-        else if (gamePhase == "Loading/Heavy")
+        else if (action == null && gamePhase == "Loading/Heavy")
             action = "game load preboost";
 
         if (action != null)
@@ -484,7 +705,8 @@ public sealed class AiSmartRuntimeService
         _lastActionUtc = now;
 
         bool changed = !string.Equals(action, _lastLoggedAction, StringComparison.Ordinal);
-        if (changed || now - _lastActionLogUtc >= TimeSpan.FromMinutes(2))
+        if (changed || now < _lastActionLogUtc ||
+            now - _lastActionLogUtc >= TimeSpan.FromMinutes(2))
         {
             _lastLoggedAction = action;
             _lastActionLogUtc = now;
@@ -501,17 +723,37 @@ public sealed class AiSmartRuntimeService
         nowUtc >= updatedUtc &&
         nowUtc - updatedUtc <= TimeSpan.FromDays(7);
 
-    private AiSmartWorkloadBaseline ResolveBaseline(AiWorkloadClass workload)
+    // Canonical immutable keys avoid enum formatting and repeated allocations
+    // in the learning path while preserving the exact persisted JSON keys.
+    internal static string WorkloadKey(AiWorkloadClass workload) => workload switch
     {
+        AiWorkloadClass.Idle => "Idle",
+        AiWorkloadClass.Background => "Background",
+        AiWorkloadClass.Interactive => "Interactive",
+        AiWorkloadClass.Game => "Game",
+        _ => "Unknown"
+    };
+
+    private AiSmartWorkloadBaseline ResolveBaseline(AiWorkloadClass workload, DateTime nowUtc) =>
+        ResolveBaseline(workload, nowUtc, out _);
+
+    private AiSmartWorkloadBaseline ResolveBaseline(AiWorkloadClass workload, DateTime nowUtc, out bool specialized)
+    {
+        specialized = false;
         if (workload != AiWorkloadClass.Unknown &&
             _model.Workloads != null &&
-            _model.Workloads.TryGetValue(workload.ToString(), out AiSmartWorkloadBaseline? learned) &&
-            IsWorkloadBaselineEligible(learned.Samples, learned.UpdatedUtc, DateTime.UtcNow))
+            _model.Workloads.TryGetValue(WorkloadKey(workload), out AiSmartWorkloadBaseline? learned) &&
+            IsWorkloadBaselineEligible(learned.Samples, learned.UpdatedUtc, nowUtc))
         {
+            specialized = true;
             return learned;
         }
 
-        return new AiSmartWorkloadBaseline(
+        if (ReferenceEquals(_globalBaselineSourceModel, _model) && _globalBaselineCache != null)
+            return _globalBaselineCache;
+
+        _globalBaselineSourceModel = _model;
+        _globalBaselineCache = new AiSmartWorkloadBaseline(
             _model.Samples,
             _model.AvgTempC,
             _model.AvgPowerW,
@@ -519,6 +761,7 @@ public sealed class AiSmartRuntimeService
             _model.AvgRpm,
             _model.AvgClockMHz,
             _model.UpdatedUtc);
+        return _globalBaselineCache;
     }
 
     internal static AiSmartWorkloadBaseline LearnWorkloadBaseline(
@@ -564,11 +807,11 @@ public sealed class AiSmartRuntimeService
         double load,
         double rpm,
         double clock,
-        AiWorkloadClass workload)
+        AiWorkloadClass workload,
+        DateTime now)
     {
         const double alphaWarmup = 0.10;
         const double alphaStable = 0.025;
-        DateTime now = DateTime.UtcNow;
         double alpha = _model.Samples < 50 ? alphaWarmup : alphaStable;
 
         if (_model.Samples == 0)
@@ -601,13 +844,19 @@ public sealed class AiSmartRuntimeService
         if (workload == AiWorkloadClass.Unknown)
             return;
 
-        var workloads = _model.Workloads != null
-            ? new Dictionary<string, AiSmartWorkloadBaseline>(
-                _model.Workloads,
-                StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, AiSmartWorkloadBaseline>(StringComparer.OrdinalIgnoreCase);
+        // FanAgent owns this model on its serial tick. The saved JSON is a
+        // separate serialized copy, so recreating the whole workload dictionary
+        // on every 5–10 second learning sample only adds GC pressure.
+        // Preserve its case-insensitive key semantics and retain all baselines.
+        var workloads = _model.Workloads;
+        if (workloads == null)
+        {
+            workloads = new Dictionary<string, AiSmartWorkloadBaseline>(
+                StringComparer.OrdinalIgnoreCase);
+            _model = _model with { Workloads = workloads };
+        }
 
-        string key = workload.ToString();
+        string key = WorkloadKey(workload);
         workloads.TryGetValue(key, out AiSmartWorkloadBaseline? current);
         workloads[key] = LearnWorkloadBaseline(
             current,
@@ -617,32 +866,105 @@ public sealed class AiSmartRuntimeService
             rpm > 100 ? rpm : _model.AvgRpm,
             clock > 100 ? clock : _model.AvgClockMHz,
             now);
-
-        _model = _model with { Workloads = workloads };
     }
 
-    private void PersistModelIfDue(AiWorkloadClass workload)
+    // Read-only training microbenchmark: same EWMA, same dictionary/JSON after
+    // all samples. Avoid rebuilding the complete map for one changed key.
+    internal static string RunWorkloadDictionaryReuseSmoke()
     {
-        DateTime now = DateTime.UtcNow;
-        if (!AiSmartLearningPolicy.IsPersistenceDue(
-                _modelDirty,
-                _lastPersistUtc,
-                workload,
-                now))
+        const int rounds = 8192;
+        static Dictionary<string, AiSmartWorkloadBaseline> Seed()
+        {
+            var now = new DateTime(2026, 10, 12, 8, 0, 0, DateTimeKind.Utc);
+            var result = new Dictionary<string, AiSmartWorkloadBaseline>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (string key in new[] { "Game", "Interactive", "Background", "Idle" })
+                result[key] = new AiSmartWorkloadBaseline(
+                    30, 60, 57, 25, 1700, 3600, now);
+            return result;
+        }
+
+        var beforeMap = Seed();
+        var afterMap = Seed();
+        var identity = afterMap;
+        var startUtc = new DateTime(2026, 10, 12, 8, 0, 0, DateTimeKind.Utc);
+        // Warm the same numeric/JIT code without changing either measured map.
+        var warm = Seed();
+        for (int i = 0; i < 100; i++)
+            warm["Game"] = LearnWorkloadBaseline(
+                warm["Game"], 65, 72, 48, 1850, 3900, startUtc.AddSeconds(i));
+
+        long startBytes = GC.GetAllocatedBytesForCurrentThread();
+        long startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int i = 0; i < rounds; i++)
+        {
+            var next = new Dictionary<string, AiSmartWorkloadBaseline>(
+                beforeMap, StringComparer.OrdinalIgnoreCase);
+            next["Game"] = LearnWorkloadBaseline(
+                next["Game"], 65, 72, 48, 1850, 3900, startUtc.AddSeconds(i));
+            beforeMap = next;
+        }
+        double oldMs = System.Diagnostics.Stopwatch.GetElapsedTime(startTicks).TotalMilliseconds;
+        long oldBytes = GC.GetAllocatedBytesForCurrentThread() - startBytes;
+
+        startBytes = GC.GetAllocatedBytesForCurrentThread();
+        startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int i = 0; i < rounds; i++)
+        {
+            afterMap["Game"] = LearnWorkloadBaseline(
+                afterMap["Game"], 65, 72, 48, 1850, 3900, startUtc.AddSeconds(i));
+        }
+        double newMs = System.Diagnostics.Stopwatch.GetElapsedTime(startTicks).TotalMilliseconds;
+        long newBytes = GC.GetAllocatedBytesForCurrentThread() - startBytes;
+
+        if (!ReferenceEquals(identity, afterMap) ||
+            beforeMap.Count != afterMap.Count ||
+            !beforeMap["Game"].Equals(afterMap["Game"]) ||
+            JsonSerializer.Serialize(beforeMap) != JsonSerializer.Serialize(afterMap) ||
+            oldBytes <= newBytes ||
+            afterMap.Comparer != StringComparer.OrdinalIgnoreCase)
+            throw new InvalidOperationException("AI workload memory or persisted baselines changed.");
+
+        return $"AI_SMART_WORKLOAD_MAP_REUSE_OK samples={rounds} " +
+            $"oldAllocB={oldBytes} newAllocB={newBytes} " +
+            $"oldMs={oldMs:F3} newMs={newMs:F3} " +
+            "learningIdentical=true jsonIdentical=true caseInsensitive=true writes=0";
+    }
+
+    private void PersistModelIfDue(AiWorkloadClass workload, DateTime now, bool forceDue = false)
+    {
+        if (!_modelDirty) return;
+        if (_lastPersistFailureUtc != DateTime.MinValue)
+        {
+            TimeSpan elapsed = now - _lastPersistFailureUtc;
+            if (elapsed >= TimeSpan.Zero && elapsed < TimeSpan.FromSeconds(30))
+                return;
+        }
+        else if (!forceDue && !AiSmartLearningPolicy.IsPersistenceDue(
+                     _modelDirty,
+                     _lastPersistUtc,
+                     workload,
+                     now))
             return;
 
-        _lastPersistUtc = now;
         try
         {
             string modelPath = AiSmartModelPathPolicy.WritablePath;
-            _model = SanitizeModel(_model);
+            _model = SanitizeModel(_model, now);
             AtomicFileService.WriteText(
                 modelPath,
                 JsonSerializer.Serialize(_model));
+            _lastPersistUtc = now;
+            _lastPersistFailureUtc = DateTime.MinValue;
             _modelDirty = false;
         }
         catch (Exception ex)
         {
+            // A failed write did not persist any learning. Keep the model dirty
+            // and retry after a bounded 30-second delay on the normal FanAgent
+            // tick; the usual 1-5 minute cadence applies only after success.
+            // Do not spin, create a timer or repeatedly write on every tick.
+            _lastPersistFailureUtc = now;
             LogService.Error("hardware", "AI Smart model persist failed", ex);
         }
     }
@@ -678,6 +1000,14 @@ public sealed class AiSmartRuntimeService
             {
                 if (!Enum.TryParse(key, true, out AiWorkloadClass workload) ||
                     workload == AiWorkloadClass.Unknown ||
+                    // Enum.TryParse also accepts numeric or unknown enum
+                    // values: only canonical named workload keys belong in
+                    // the persisted learning model.
+                    !string.Equals(key, WorkloadKey(workload), StringComparison.OrdinalIgnoreCase) ||
+                    // Invalid JSON can contain a null workload value even
+                    // though the record type declares baselines non-null.
+                    // Discard that one entry, not every other valid profile.
+                    baseline is null ||
                     baseline.Samples <= 0 ||
                     baseline.UpdatedUtc == DateTime.MinValue ||
                     baseline.UpdatedUtc > now.AddMinutes(5) ||
@@ -726,8 +1056,13 @@ public sealed class AiSmartRuntimeService
             if (!File.Exists(loadPath))
                 return EmptyModel();
 
-            var model = JsonSerializer.Deserialize<AiSmartRuntimeModel>(
-                File.ReadAllText(loadPath));
+            // The model contains one global baseline and at most four named
+            // workloads. Reject an implausibly large/corrupt JSON file before
+            // deserializing; do not read, truncate or modify its contents.
+            using var modelStream = new FileStream(loadPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (modelStream.Length > 1024 * 1024)
+                return EmptyModel();
+            var model = JsonSerializer.Deserialize<AiSmartRuntimeModel>(modelStream);
             return model == null ? EmptyModel() : SanitizeModel(model);
         }
         catch
@@ -739,30 +1074,88 @@ public sealed class AiSmartRuntimeService
     private static AiSmartRuntimeModel EmptyModel() =>
         new(0, 55, 55, 20, 1620, 2800, DateTime.MinValue);
 
-    private string BaselineText(AiWorkloadClass workload)
+    private string BaselineText(AiWorkloadClass workload, DateTime nowUtc)
     {
-        AiSmartWorkloadBaseline baseline = ResolveBaseline(workload);
-        bool specialized =
-            workload != AiWorkloadClass.Unknown &&
-            _model.Workloads != null &&
-            _model.Workloads.TryGetValue(workload.ToString(), out AiSmartWorkloadBaseline? learned) &&
-            IsWorkloadBaselineEligible(learned.Samples, learned.UpdatedUtc, DateTime.UtcNow);
+        AiSmartWorkloadBaseline baseline = ResolveBaseline(workload, nowUtc, out bool specialized);
 
-        string source = specialized ? workload.ToString() : "global";
-        return $"{source} n={baseline.Samples} • {baseline.AvgTempC:0.0}°C • {baseline.AvgPowerW:0}W • {baseline.AvgLoadPercent:0}% • {baseline.AvgRpm:0}RPM";
+        string source = specialized ? WorkloadKey(workload) : "global";
+        if (_lastBaselineLabelText != null &&
+            source == _lastBaselineLabelSource &&
+            baseline == _lastBaselineLabelValue)
+            return _lastBaselineLabelText;
+
+        string label = $"{source} n={baseline.Samples} • {baseline.AvgTempC:0.0}°C • {baseline.AvgPowerW:0}W • {baseline.AvgLoadPercent:0}% • {baseline.AvgRpm:0}RPM";
+        _lastBaselineLabelValue = baseline;
+        _lastBaselineLabelSource = source;
+        _lastBaselineLabelText = label;
+        return label;
     }
 
+    // Called each FanAgent RPM cycle: calculating the mean of at most four
+    // channels should not materialize a Where iterator and a new int[].
+    // Use a wide integral accumulator, matching LINQ Average(int)'s arithmetic.
     private static double AverageActiveRpm(int[]? rpms)
     {
         if (rpms == null) return 0;
-        int[] active = rpms.Where(x => x > 100).ToArray();
-        return active.Length == 0 ? 0 : active.Average();
+        long sum = 0;
+        int count = 0;
+        foreach (int rpm in rpms)
+        {
+            if (rpm <= 100) continue;
+            sum += rpm;
+            count++;
+        }
+        return count == 0 ? 0 : (double)sum / count;
+    }
+
+    internal static string RunAverageRpmNoAllocationSmoke()
+    {
+        static double Legacy(int[]? rpms)
+        {
+            if (rpms == null) return 0;
+            int[] active = rpms.Where(x => x > 100).ToArray();
+            return active.Length == 0 ? 0 : active.Average();
+        }
+        if (AverageActiveRpm(null) != Legacy(null))
+            throw new InvalidOperationException("Null RPM parity.");
+        for (int count = 0; count <= 8; count++)
+        {
+            for (int variation = 0; variation < 64; variation++)
+            {
+                var values = new int[count];
+                for (int i = 0; i < count; i++)
+                    values[i] = (variation + i) % 7 == 0 ? 0 :
+                                (variation + i) % 7 == 1 ? 100 :
+                                520 + (i * 371 + variation * 41) % 5000;
+                if (AverageActiveRpm(values) != Legacy(values))
+                    throw new InvalidOperationException("Average RPM parity regression.");
+            }
+        }
+        int[] live = { 1620, 0, 1790, 2140 };
+        const int rounds = 16384;
+        double oldCheck = 0, newCheck = 0;
+        long bytesStart = GC.GetAllocatedBytesForCurrentThread();
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int i = 0; i < rounds; i++) oldCheck += Legacy(live);
+        double oldMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        long oldBytes = GC.GetAllocatedBytesForCurrentThread() - bytesStart;
+        bytesStart = GC.GetAllocatedBytesForCurrentThread();
+        start = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int i = 0; i < rounds; i++) newCheck += AverageActiveRpm(live);
+        double newMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        long newBytes = GC.GetAllocatedBytesForCurrentThread() - bytesStart;
+        if (oldCheck != newCheck || newBytes >= oldBytes)
+            throw new InvalidOperationException("Average RPM allocation regression.");
+        return $"AI_SMART_AVG_RPM_NO_ALLOC_OK samples={rounds} " +
+            $"oldAllocB={oldBytes} newAllocB={newBytes} " +
+            $"oldMs={oldMs:F3} newMs={newMs:F3} " +
+            "parityCases=577 identical=true writes=0";
     }
 
     private static double Ewma(double current, double next, double alpha) =>
         current + (next - current) * alpha;
 
-    private static bool TryParseBlockerPercent(string blocker, out double percent)
+    internal static bool TryParseBlockerPercent(string blocker, out double percent)
     {
         percent = 0;
         if (string.IsNullOrWhiteSpace(blocker))
@@ -773,11 +1166,20 @@ public sealed class AiSmartRuntimeService
         int start = pct - 1;
         while (start >= 0 && (char.IsDigit(blocker[start]) || blocker[start] == '.' || blocker[start] == ','))
             start--;
-        string text = blocker[(start + 1)..pct].Replace(',', '.');
-        return double.TryParse(
-            text,
+        ReadOnlySpan<char> digits = blocker.AsSpan(start + 1, pct - start - 1);
+        if (digits.IndexOf(',') < 0)
+            return double.TryParse(digits,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out percent);
+
+        // Preserve decimal-comma normalization, but avoid Substring and
+        // Replace allocations on the recurring fan-pressure assessment.
+        Span<char> normalized = digits.Length <= 64
+            ? stackalloc char[digits.Length] : new char[digits.Length];
+        digits.CopyTo(normalized);
+        normalized.Replace(',', '.');
+        return double.TryParse(normalized,
             System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out percent);
+            System.Globalization.CultureInfo.InvariantCulture, out percent);
     }
 }

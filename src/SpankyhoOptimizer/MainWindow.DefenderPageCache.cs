@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.UI.Xaml;
@@ -32,7 +32,7 @@ public sealed partial class MainWindow
 
     private void CaptureDefenderPageCache()
     {
-        _defenderPageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _defenderPageCache = SnapshotChildren(ContentStack);
         _defenderPageCacheAt = DateTime.UtcNow;
         _defenderPageRevisionStamp = CurrentTweakRevisionStamp();
     }

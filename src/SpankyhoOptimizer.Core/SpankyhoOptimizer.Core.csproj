@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
@@ -10,23 +10,52 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(ExtendedAnalyzerAudit)'=='true'">
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-all</AnalysisLevel>
+    <RunAnalyzersDuringBuild>true</RunAnalyzersDuringBuild>
+    <ReportAnalyzer>true</ReportAnalyzer>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ExtendedAnalyzerAudit)'=='true'">
+    <GlobalAnalyzerConfigFiles Include="$(MSBuildProjectDirectory)\..\..\extended-analyzers.globalconfig" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="System.Management" Version="11.0.0-rc.1.26425.128" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="11.0.0-rc.1.26425.128" />
     <PackageReference Include="System.Diagnostics.EventLog" Version="11.0.0-rc.1.26425.128" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="11.0.0-rc.1.26425.128" />
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre749" />
-    <PackageReference Include="NAudio" Version="3.1.1-preview.2" />
-    <PackageReference Include="Microsoft.SemanticKernel" Version="1.80.1" />
-    <PackageReference Include="Microsoft.SemanticKernel.Connectors.OpenAI" Version="1.80.1" />
-    <PackageReference Include="Meziantou.Analyzer" Version="3.0.290" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerMeziantou)'=='true'" />
+    <PackageReference Include="Meziantou.Analyzer" Version="3.0.292" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerMeziantou)'=='true'" />
     <PackageReference Include="Microsoft.VisualStudio.Threading.Analyzers" Version="18.7.23" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerThreading)'=='true'" />
     <PackageReference Include="AsyncFixer" Version="2.1.0" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerAsyncFixer)'=='true'" />
     <PackageReference Include="Philips.CodeAnalysis.MaintainabilityAnalyzers" Version="2.0.0" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerPhilips)'=='true'" />
+    <PackageReference Include="Roslynator.Analyzers" Version="4.16.1" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerRoslynator)'=='true'" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\SpankyhoOptimizer\Models\*.cs" Link="Models\%(Filename)%(Extension)" />
     <Compile Include="..\SpankyhoOptimizer\Services\*.cs" Exclude="..\SpankyhoOptimizer\Services\UiResourceService.cs" Link="Services\%(Filename)%(Extension)" />
     <Compile Include="AssemblyInfo.cs" />
+  </ItemGroup>
+  <!-- Transitive dependency updates 2026-10-09; pinned to verified NuGet releases -->
+  <ItemGroup>
+    <PackageReference Include="Azure.Core" Version="1.63.0" />
+    <PackageReference Include="BlackSharp.Core" Version="1.2.2" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Bcl.HashCode" Version="6.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.FileProviders.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
+    <PackageReference Include="System.ClientModel" Version="1.16.0" />
+    <PackageReference Include="System.Memory.Data" Version="10.0.12" />
+  </ItemGroup>
+  <!-- Identity dependency updates 2026-10-09 -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.90.1" />
+    <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" Version="4.90.1" />
+    <PackageReference Include="Microsoft.IdentityModel.Abstractions" Version="8.23.0" />
   </ItemGroup>
 </Project>

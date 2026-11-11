@@ -26,25 +26,27 @@ public static class FanPlatformHealthService
         }
         catch { }
 
-        string[] names;
+        var matches = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            names = Process.GetProcesses()
-                .Select(p =>
+            ProcessSnapshotCleanup.Inspect(Process.GetProcesses, processes =>
+            {
+                foreach (Process process in processes)
                 {
-                    try { return p.ProcessName; }
-                    catch { return string.Empty; }
-                    finally { try { p.Dispose(); } catch { } }
-                })
-                .Where(n => n.Contains("L-Connect", StringComparison.OrdinalIgnoreCase) ||
-                            n.Contains("LConnect", StringComparison.OrdinalIgnoreCase))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+                    try
+                    {
+                        string name = process.ProcessName;
+                        if (name.Contains("L-Connect", StringComparison.OrdinalIgnoreCase) ||
+                            name.Contains("LConnect", StringComparison.OrdinalIgnoreCase))
+                            matches.Add(name);
+                    }
+                    catch { }
+                }
+                return true;
+            });
         }
-        catch
-        {
-            names = Array.Empty<string>();
-        }
+        catch { }
+        string[] names = matches.ToArray();
 
         bool serviceRunning = IsServiceRunning("LConnectService") || IsServiceRunning("LConnectServiceWatcher");
         bool lconnect = names.Length > 0 || serviceRunning;
@@ -56,19 +58,23 @@ public static class FanPlatformHealthService
     public static string StopLConnectBestEffort()
     {
         int killed = 0;
-        foreach (Process process in Process.GetProcesses())
+        ProcessSnapshotCleanup.Inspect(Process.GetProcesses, processes =>
         {
-            try
+            foreach (Process process in processes)
             {
-                if (!process.ProcessName.Contains("L-Connect", StringComparison.OrdinalIgnoreCase) &&
-                    !process.ProcessName.Contains("LConnect", StringComparison.OrdinalIgnoreCase))
-                    continue;
-                process.Kill(true);
-                killed++;
+                try
+                {
+                    string name = process.ProcessName;
+                    if (!name.Contains("L-Connect", StringComparison.OrdinalIgnoreCase) &&
+                        !name.Contains("LConnect", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    process.Kill(true);
+                    killed++;
+                }
+                catch { }
             }
-            catch { }
-            finally { process.Dispose(); }
-        }
+            return true;
+        });
 
         int stopped = 0;
         foreach (string serviceName in new[] { "LConnectServiceWatcher", "LConnectService" })

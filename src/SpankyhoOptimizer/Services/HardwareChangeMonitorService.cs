@@ -19,9 +19,11 @@ public static class HardwareChangeMonitorService
             if (_started) return;
             try
             {
-                _watcher = new ManagementEventWatcher(new WqlEventQuery("SELECT * FROM Win32_DeviceChangeEvent"));
-                _watcher.EventArrived += OnDeviceChanged;
-                _watcher.Start();
+                _watcher = WatcherStartupGuard.Start(
+                    () => new ManagementEventWatcher(new WqlEventQuery("SELECT * FROM Win32_DeviceChangeEvent")),
+                    watcher => watcher.EventArrived += OnDeviceChanged,
+                    watcher => watcher.Start(),
+                    watcher => watcher.EventArrived -= OnDeviceChanged);
                 _startedTick = Environment.TickCount64;
                 if (!_exitHooked)
                 {
@@ -39,8 +41,7 @@ public static class HardwareChangeMonitorService
     private static void OnDeviceChanged(object sender, EventArrivedEventArgs e)
     {
         long now = Environment.TickCount64;
-        long previous = System.Threading.Interlocked.Exchange(ref _lastInvalidationTick, now);
-        if (previous != 0 && now - previous < 500) return;
+        if (!HardwareInvalidationDebounce.TryAcquire(now, ref _lastInvalidationTick)) return;
         try
         {
             GpuDriverService.InvalidateDetectionCache();
@@ -69,6 +70,7 @@ public static class HardwareChangeMonitorService
             try { _watcher?.Dispose(); } catch { }
             _watcher = null;
             _started = false;
+            System.Threading.Interlocked.Exchange(ref _lastInvalidationTick, 0);
         }
     }
 }

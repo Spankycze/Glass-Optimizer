@@ -10,19 +10,25 @@ namespace SpankyhoOptimizer;
 
 public sealed partial class MainWindow
 {
-    private static AppThemePreference _themePreference = AppThemePreference.System;
-    private static bool _darkTheme;
-    private static AppThemePalette _themePalette = AppThemeEngine.Resolve(AppThemePreference.System, false);
+    private static AppThemePreference _themePreference = AppThemePreference.Dark;
+    private static bool _darkTheme = true;
+    private static AppThemePalette _themePalette = AppThemeEngine.Resolve(AppThemePreference.Dark, true);
     private static string _themeSection = "overview";
     private static readonly Dictionary<int, SolidColorBrush> BrushCache = new();
     private static readonly Dictionary<uint, SolidColorBrush> AlphaBrushCache = new();
 
     private static SolidColorBrush PaletteBrush(ThemeRgb color) => ThemeColor(color.R, color.G, color.B);
     private static SolidColorBrush TextPrimaryBrush() => PaletteBrush(SectionPalette.TextPrimary);
-    private static SolidColorBrush TextSecondaryBrush() => PaletteBrush(SectionPalette.TextSecondary);
-    private static SolidColorBrush SurfaceBrush() => UseGlassChrome ? ThemeColor(16,12,25,38) : PaletteBrush(SectionPalette.Surface);
-    private static SolidColorBrush SurfaceElevatedBrush() => UseGlassChrome ? ThemeColor(26,34,48,63) : PaletteBrush(SectionPalette.SurfaceElevated);
-    private static SolidColorBrush SurfaceAltBrush() => UseGlassChrome ? ThemeColor(12,13,26,40) : PaletteBrush(SectionPalette.SurfaceAlt);
+    // Dark acrylic cards need readable secondary labels regardless of the selected palette.
+    // Reuse the cached solid brush; no per-row brush allocations or extra layout passes.
+    private static SolidColorBrush TextSecondaryBrush() => _darkTheme
+        ? ThemeColor(222, 234, 246)
+        : PaletteBrush(SectionPalette.TextSecondary);
+    private static SolidColorBrush SurfaceBrush() => IsSolidDarkTheme ? ThemeColor(224, 9, 18, 29) : UseGlassChrome ? ThemeColor(16,12,25,38) : PaletteBrush(SectionPalette.Surface);
+    private static SolidColorBrush SurfaceElevatedBrush() => IsSolidDarkTheme ? ThemeColor(232, 16, 28, 42) : UseGlassChrome ? ThemeColor(26,34,48,63) : PaletteBrush(SectionPalette.SurfaceElevated);
+    private static SolidColorBrush SurfaceAltBrush() => IsSolidDarkTheme
+        ? ThemeColor(216, 13, 26, 40)
+        : UseGlassChrome ? ThemeColor(12, 13, 26, 40) : PaletteBrush(SectionPalette.SurfaceAlt);
     private static SolidColorBrush BorderThemeBrush() => PaletteBrush(SectionPalette.Border);
     private static SolidColorBrush ThemeColor(byte r, byte g, byte b)
     {
@@ -45,20 +51,20 @@ public sealed partial class MainWindow
 
     private static (byte R, byte G, byte B) AccentRgb() => (_themePalette.Accent.R, _themePalette.Accent.G, _themePalette.Accent.B);
     private static SolidColorBrush ButtonVioletBrush() => PaletteBrush(SectionPalette.PrimaryButton);
-    private static SolidColorBrush ButtonVioletSoftBrush() => PaletteBrush(SectionPalette.PrimaryButtonSoft);
+    private static SolidColorBrush ButtonVioletSoftBrush() => UseGlassChrome ? GlassAccentTintBrush() : PaletteBrush(SectionPalette.PrimaryButtonSoft);
     private static SolidColorBrush ButtonVioletBorderBrush() => PaletteBrush(SectionPalette.PrimaryButtonBorder);
     private static SolidColorBrush AccentBrush() => PaletteBrush(SectionPalette.Accent);
-    private static SolidColorBrush AccentSoftBrush() => PaletteBrush(SectionPalette.AccentSoft);
+    private static SolidColorBrush AccentSoftBrush() => UseGlassChrome ? GlassAccentTintBrush() : PaletteBrush(SectionPalette.AccentSoft);
     private static SolidColorBrush SuccessBrush() => PaletteBrush(_themePalette.Success);
     private static SolidColorBrush WarningBrush() => PaletteBrush(_themePalette.Warning);
     private static SolidColorBrush InfoBrush() => PaletteBrush(SectionPalette.Info);
     private static SolidColorBrush ProgressBrush() => PaletteBrush(SectionPalette.Info);
     private static SolidColorBrush OnAccentTextBrush() => ThemeColor(255, 255, 255);
     private static SolidColorBrush ControlKnobBrush() => _darkTheme ? ThemeColor(248, 248, 252) : SurfaceElevatedBrush();
-    private static SolidColorBrush DialogOverlayBrush(byte alpha = 150) =>
+    private static SolidColorBrush DialogOverlayBrush(byte alpha = 118) =>
         _darkTheme
-            ? ThemeColor((byte)Math.Min(124, (int)alpha), 4, 10, 18)
-            : ThemeColor((byte)Math.Min(118, (int)alpha), 16, 24, 40);
+            ? ThemeColor((byte)Math.Min(104, (int)alpha), 8, 28, 44)
+            : ThemeColor((byte)Math.Min(108, (int)alpha), 16, 24, 40);
     private static SolidColorBrush NetworkAccentBrush() => UseNeutralSectionChrome ? ThemeColor(192,192,192) : _themePreference switch
     {
         AppThemePreference.RedPerformance => ThemeColor(190, 108, 112),
@@ -77,6 +83,10 @@ public sealed partial class MainWindow
     private static SolidColorBrush DiskHardwareBrush() => DiskMetricBrush();
     private static void ResetThemeBrushCaches()
     {
+        GlassGradientCache.Clear();
+        ReferenceSurfaceCache.Clear();
+        ReferenceIconChipCache.Clear();
+        _referenceRimBrush = null;
         _sectionDarkCardBackground = null;
         _sectionDarkBorder = null;
         _sectionDarkHeaderBackground = null;
@@ -87,6 +97,14 @@ public sealed partial class MainWindow
         _sidebarHoverBackground = null;
         _sidebarActiveBorder = null;
         _sidebarInactiveBorder = null;
+        _glassPanel = null;
+        _glassEdge = null;
+        _glassBlue = null;
+        _glassBlueEdge = null;
+        _sidebarGlass = null;
+        _glassNavigation = null;
+        _dialogModalCardBrush = null;
+        _dialogModalBodyBrush = null;
     }
 
     private static void ApplyThemeResources()
@@ -98,27 +116,60 @@ public sealed partial class MainWindow
         ApplyAccentThemeResources(resources);
     }
 
+    // One visual language for all native WinUI toggles and the NIC custom track.
+    // The screenshot reference is a vivid sky-blue 44x22 capsule with a white knob;
+    // the ON/OFF text remains managed by each existing section.
+    private static Brush? _unifiedToggleOnTrack, _unifiedToggleOnHover,
+        _unifiedToggleOnPressed, _unifiedToggleOffTrack;
+
+    private static Brush UnifiedToggleOnTrack() => _unifiedToggleOnTrack ??= GlassGradient(
+        Windows.UI.Color.FromArgb(244, 102, 207, 249),
+        Windows.UI.Color.FromArgb(237, 37, 156, 229));
+
+    private static Brush UnifiedToggleOnHover() => _unifiedToggleOnHover ??= GlassGradient(
+        Windows.UI.Color.FromArgb(250, 124, 219, 252),
+        Windows.UI.Color.FromArgb(244, 49, 173, 238));
+
+    private static Brush UnifiedToggleOnPressed() => _unifiedToggleOnPressed ??= GlassGradient(
+        Windows.UI.Color.FromArgb(245, 70, 183, 237),
+        Windows.UI.Color.FromArgb(238, 23, 138, 214));
+
+    private static Brush UnifiedToggleOffTrack() => _unifiedToggleOffTrack ??= GlassGradient(
+        Windows.UI.Color.FromArgb(67, 91, 127, 160),
+        Windows.UI.Color.FromArgb(48, 35, 71, 108));
+
     private static void ApplyToggleOnThemeResources(ResourceDictionary resources)
     {
-        SetOwnedThemeBrush(resources, "ToggleSwitchFillOn", ButtonVioletBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchFillOnPointerOver", AccentBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchFillOnPressed", ButtonVioletBorderBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchFillOnDisabled", ThemeColor(102, _themePalette.PrimaryButton.R, _themePalette.PrimaryButton.G, _themePalette.PrimaryButton.B));
-        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOn", ButtonVioletBorderBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOnPointerOver", AccentBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOnPressed", ButtonVioletBorderBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOnDisabled", ThemeColor(102, _themePalette.PrimaryButtonBorder.R, _themePalette.PrimaryButtonBorder.G, _themePalette.PrimaryButtonBorder.B));
+        // Native WinUI ToggleSwitch style requires SolidColorBrush values for
+        // its theme resources; assigning LinearGradientBrush crashes XAML's
+        // visual-size smoke with STATUS_STOWED_EXCEPTION (0xC000027B).
+        // The custom NIC switch may still use the gradient from the screenshot.
+        SetOwnedThemeBrush(resources, "ToggleSwitchFillOn", ThemeColor(62, 183, 237));
+        SetOwnedThemeBrush(resources, "ToggleSwitchFillOnPointerOver", ThemeColor(82, 199, 247));
+        SetOwnedThemeBrush(resources, "ToggleSwitchFillOnPressed", ThemeColor(38, 160, 224));
+        SetOwnedThemeBrush(resources, "ToggleSwitchFillOnDisabled", ThemeColor(112, 85, 168, 207));
+        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOn", ThemeColor(158, 116, 207, 250));
+        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOnPointerOver", ThemeColor(190, 150, 225, 253));
+        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOnPressed", ThemeColor(168, 94, 184, 244));
+        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOnDisabled", ThemeColor(75, 112, 188, 225));
+        SetOwnedThemeBrush(resources, "ToggleSwitchKnobFillOn", ThemeColor(255, 255, 255));
+        SetOwnedThemeBrush(resources, "ToggleSwitchKnobFillOnPointerOver", ThemeColor(255, 255, 255));
+        SetOwnedThemeBrush(resources, "ToggleSwitchKnobFillOnPressed", ThemeColor(255, 255, 255));
+        SetOwnedThemeBrush(resources, "ToggleSwitchKnobFillOnDisabled", ThemeColor(211, 227, 239));
     }
 
     private static void ApplyToggleOffThemeResources(ResourceDictionary resources)
     {
-        SetOwnedThemeBrush(resources, "ToggleSwitchFillOff", SurfaceAltBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchFillOffPointerOver", SurfaceElevatedBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchFillOffPressed", SurfaceBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOff", BorderThemeBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOffPointerOver", TextSecondaryBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOffPressed", BorderThemeBrush());
-        SetOwnedThemeBrush(resources, "ToggleSwitchKnobFillOff", TextPrimaryBrush());
+        SetOwnedThemeBrush(resources, "ToggleSwitchFillOff", ThemeColor(64, 66, 102, 137));
+        SetOwnedThemeBrush(resources, "ToggleSwitchFillOffPointerOver", ThemeColor(83, 82, 123, 157));
+        SetOwnedThemeBrush(resources, "ToggleSwitchFillOffPressed", ThemeColor(97, 72, 112, 152));
+        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOff", ThemeColor(96, 130, 171, 209));
+        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOffPointerOver", ThemeColor(135, 145, 196, 228));
+        SetOwnedThemeBrush(resources, "ToggleSwitchStrokeOffPressed", ThemeColor(115, 122, 180, 214));
+        SetOwnedThemeBrush(resources, "ToggleSwitchKnobFillOff", ThemeColor(255, 255, 255));
+        SetOwnedThemeBrush(resources, "ToggleSwitchKnobFillOffPointerOver", ThemeColor(255, 255, 255));
+        SetOwnedThemeBrush(resources, "ToggleSwitchKnobFillOffPressed", ThemeColor(255, 255, 255));
+        SetOwnedThemeBrush(resources, "ToggleSwitchKnobFillOffDisabled", ThemeColor(211, 227, 239));
     }
 
     private static void ApplySelectionThemeResources(ResourceDictionary resources)
@@ -146,30 +197,48 @@ public sealed partial class MainWindow
 
     private async Task ApplyStartupThemeResourcesAfterFirstRenderAsync()
     {
-        await Task.Delay(850).ConfigureAwait(false);
-
-        long idleWaitMs = 0;
-        for (int i = 0; i < 4; i++)
+        System.Threading.CancellationToken token = _windowLifetimeCts.Token;
+        try
         {
-            TimeSpan sinceNavigation = DateTime.UtcNow - _lastNavigationUtc;
-            if (sinceNavigation >= TimeSpan.FromMilliseconds(300)) break;
-            int delay = Math.Clamp(320 - (int)sinceNavigation.TotalMilliseconds, 50, 320);
-            await Task.Delay(delay).ConfigureAwait(false);
-            idleWaitMs += delay;
-        }
+            await Task.Delay(850, token).ConfigureAwait(false);
 
-        await RunStartupThemeResourceStageAsync("toggle-on", ApplyToggleOnThemeResources).ConfigureAwait(false);
-        await RunStartupThemeResourceStageAsync("toggle-off", ApplyToggleOffThemeResources).ConfigureAwait(false);
-        await RunStartupThemeResourceStageAsync("selection", ApplySelectionThemeResources).ConfigureAwait(false);
-        await RunStartupThemeResourceStageAsync("accent", ApplyAccentThemeResources).ConfigureAwait(false);
-        LogService.Info("performance", $"THEME_STARTUP_RESOURCES_DEFERRED_OK stages=4 idleWaitMs={idleWaitMs}");
+            long idleWaitMs = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                token.ThrowIfCancellationRequested();
+                TimeSpan sinceNavigation = DateTime.UtcNow - _lastNavigationUtc;
+                if (sinceNavigation >= TimeSpan.FromMilliseconds(300)) break;
+                int delay = Math.Clamp(320 - (int)sinceNavigation.TotalMilliseconds, 50, 320);
+                await Task.Delay(delay, token).ConfigureAwait(false);
+                idleWaitMs += delay;
+            }
+
+            if (!await RunStartupThemeResourceStageAsync("toggle-on", ApplyToggleOnThemeResources, token).ConfigureAwait(false)) return;
+            if (!await RunStartupThemeResourceStageAsync("toggle-off", ApplyToggleOffThemeResources, token).ConfigureAwait(false)) return;
+            if (!await RunStartupThemeResourceStageAsync("selection", ApplySelectionThemeResources, token).ConfigureAwait(false)) return;
+            if (!await RunStartupThemeResourceStageAsync("accent", ApplyAccentThemeResources, token).ConfigureAwait(false)) return;
+            LogService.Info("performance", $"THEME_STARTUP_RESOURCES_DEFERRED_OK stages=4 idleWaitMs={idleWaitMs}");
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Normal window shutdown.
+        }
     }
 
-    private Task RunStartupThemeResourceStageAsync(string stage, Action<ResourceDictionary> apply)
+    private Task<bool> RunStartupThemeResourceStageAsync(string stage, Action<ResourceDictionary> apply, System.Threading.CancellationToken token)
     {
+        if (token.IsCancellationRequested)
+            return Task.FromResult(false);
+
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
+            if (token.IsCancellationRequested)
+            {
+                tcs.TrySetResult(false);
+                return;
+            }
+
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
@@ -195,15 +264,15 @@ public sealed partial class MainWindow
     private static Brush? _sectionDarkHeaderBackground;
 
     private static Brush SectionCardBackgroundBrush()
-        => UseGlassChrome ? GlassPanelBrush() : UseNeutralSectionChrome ? NeutralCardSurface() : (_darkTheme ? (_sectionDarkCardBackground ??= OverviewCardBackgroundBrush()) : SurfaceElevatedBrush());
+        => UseGlassChrome ? GlassSurfaceBrush() : UseNeutralSectionChrome ? NeutralCardSurface() : (_darkTheme ? (_sectionDarkCardBackground ??= OverviewCardBackgroundBrush()) : SurfaceElevatedBrush());
 
     private static Brush SectionBorderBrush()
-        => UseGlassChrome ? GlassEdgeBrush() : UseNeutralSectionChrome ? NeutralCardEdge() : (_darkTheme ? (_sectionDarkBorder ??= OverviewNeonBorderBrush()) : BorderThemeBrush());
+        => UseGlassChrome ? GlassBorderBrush() : UseNeutralSectionChrome ? NeutralCardEdge() : (_darkTheme ? (_sectionDarkBorder ??= OverviewNeonBorderBrush()) : BorderThemeBrush());
 
     private static Brush SectionHeaderBackgroundBrush()
     {
-        if (UseGlassChrome) return ThemeColor(0,0,0,0);
-        if (UseNeutralSectionChrome) return ThemeColor(8,8,8);
+        if (UseGlassChrome) return GlassSurfaceLowBrush();
+        if (UseNeutralSectionChrome) return GlassSurfaceLowBrush();
         if (!_darkTheme) return SurfaceElevatedBrush();
         if (_sectionDarkHeaderBackground != null) return _sectionDarkHeaderBackground;
 
@@ -242,29 +311,62 @@ public sealed partial class MainWindow
         string? originalSub = _sub;
         try
         {
+            // This checks an actual eight-second inactive-cache deadline.
+            // Record it separately so release profiling never attributes the
+            // intentional memory-lifetime wait to slow theme switching.
+            var cacheLifetimeSmokeSw = System.Diagnostics.Stopwatch.StartNew();
+            await RunThemesPageCacheSmokeAsync();
+            LogService.Info("release-ui-smoke", $"THEMES_CACHE_LIFETIME_SMOKE_OK ms={cacheLifetimeSmokeSw.ElapsedMilliseconds} ttlMs={ThemesPageCacheTtl.TotalMilliseconds:0}");
+            var themeVariantSmokeSw = System.Diagnostics.Stopwatch.StartNew();
             AppThemePreference[] themes =
             {
-                AppThemePreference.Light,
                 AppThemePreference.Dark,
-                AppThemePreference.MidnightBlue,
-                AppThemePreference.PurpleAccent,
-                AppThemePreference.CyanTech,
-                AppThemePreference.RedPerformance
+                AppThemePreference.SolidDark
             };
 
             foreach (var theme in themes)
             {
                 await ChangeThemeAsync(theme);
-                if (_startupTitlebarNativeApplied)
-                    throw new InvalidOperationException($"{theme} theme unexpectedly restored the opaque native DWM titlebar path.");
-                if (!_customTitleBarPrimed || AppTitleBar.Visibility != Visibility.Visible ||
-                    AppTitleBar.Children.Count == 0 || _titleBarLogoImage == null)
-                    throw new InvalidOperationException($"{theme} theme did not restore the custom transparent titlebar shell.");
+                if (theme == AppThemePreference.SolidDark)
+                {
+                    if (_startupTitlebarNativeApplied || UseGlassChrome ||
+                        !UseDarkAcrylicBackdrop || !MainWindow.IsSolidDarkTheme ||
+                        AppTitleBar.Visibility != Visibility.Visible ||
+                        AppTitleBar.Children.Count == 0 || _titleBarLogoImage == null ||
+                        SolidDarkTintOpacity <= GlassTintOpacity ||
+                        SolidDarkLuminosityOpacity <= GlassLuminosityOpacity ||
+                        SurfaceAltBrush().Color.A <= 12 || SurfaceAltBrush().Color.A >= 255)
+                        throw new InvalidOperationException("SolidDark theme did not preserve its translucent custom titlebar or weaker Glass backdrop.");
+                }
+                else
+                {
+                    if (_startupTitlebarNativeApplied)
+                        throw new InvalidOperationException($"{theme} theme unexpectedly restored the opaque native DWM titlebar path.");
+                    if (!_customTitleBarPrimed || AppTitleBar.Visibility != Visibility.Visible ||
+                        AppTitleBar.Children.Count == 0 || _titleBarLogoImage == null)
+                        throw new InvalidOperationException($"{theme} theme did not restore the custom transparent titlebar shell.");
+                }
+
+                // Reselecting an already active user palette is a no-op, not a
+                // second expensive BuildShell/cache invalidation. Check the
+                // exact titlebar child reference to catch accidental rebuilds.
+                int titlebarChildCountBeforeReselect = AppTitleBar.Children.Count;
+                var titlebarBeforeReselect = titlebarChildCountBeforeReselect > 0 ? AppTitleBar.Children[0] : null;
+                int generationBeforeReselect = _navigationGeneration;
+                await SelectThemePreviewAsync(theme);
+                bool titlebarReferenceStable = titlebarBeforeReselect == null ||
+                    (AppTitleBar.Children.Count > 0 && ReferenceEquals(AppTitleBar.Children[0], titlebarBeforeReselect));
+                if (_themePreference != theme ||
+                    _navigationGeneration != generationBeforeReselect ||
+                    AppTitleBar.Children.Count == 0 || !titlebarReferenceStable)
+                    throw new InvalidOperationException($"{theme} active theme selection rebuilt the shell or navigated. preference={_themePreference} expected={theme} generation={_navigationGeneration} before={generationBeforeReselect} visibility={AppTitleBar.Visibility} children={AppTitleBar.Children.Count} beforeChildren={titlebarChildCountBeforeReselect} referenceStable={titlebarReferenceStable}.");
+                LogService.Info("release-ui-smoke", $"THEME_PREVIEW_RESELECT_NOOP_OK theme={theme}");
 
                 // Native shape can be checked only after the replacement tree is connected/measured.
                 for (int frame = 0; frame < 40 && (RootGrid.XamlRoot == null || RootGrid.ActualWidth < 50); frame++)
                     await Task.Delay(25);
-                VerifyGlassBackdropLifecycle();
+                if (theme != AppThemePreference.SolidDark)
+                    VerifyGlassBackdropLifecycle();
                 ValidateNeutralUiRegressionSmoke();
                 await ShowSectionAsync("overview");
                 await ShowSectionAsync("settings");
@@ -275,7 +377,6 @@ public sealed partial class MainWindow
                 LogService.Info("theme", $"THEME_VARIANT_SMOKE_OK theme={theme} dark={_darkTheme}");
             }
 
-            _sub = "Firefox"; await ShowSectionAsync("browsers");
             await ShowSectionAsync("update");
             await ShowSectionAsync("fixer");
             await ShowSectionAsync("power");
@@ -285,6 +386,7 @@ public sealed partial class MainWindow
             _sub = "Task Scheduler"; await ShowSectionAsync("components");
             await ShowSectionAsync("debloat");
             await RunNeutralStartupTitlebarSmokeAsync();
+            LogService.Info("release-ui-smoke", $"THEME_VARIANTS_AND_NAVIGATION_OK ms={themeVariantSmokeSw.ElapsedMilliseconds} themes={themes.Length}");
             LogService.Info("THEME_RENDER_SMOKE_OK");
         }
         finally
@@ -298,6 +400,7 @@ public sealed partial class MainWindow
     {
         InvalidateOverviewPageCache(forceRelease: true);
         InvalidateSettingsPageCache();
+        InvalidateThemesPageCache();
         InvalidateContextMenuUiCache();
         InvalidateAppsPageCache();
         InvalidateAiPageCache();
@@ -312,7 +415,6 @@ public sealed partial class MainWindow
         InvalidateComponentsPageCache();
         InvalidateStartupPageCache();
         InvalidateUpdatePageCache();
-        InvalidateBrowserPageCache();
         InvalidateSpicetifyPageCache();
         InvalidateSystemPageCache();
         InvalidatePrivacyPageCache();
@@ -323,9 +425,10 @@ public sealed partial class MainWindow
         _themePalette = AppThemeEngine.Resolve(preference, _darkTheme);
         ResetThemeBrushCaches();
         ApplyThemeResources();
-        AppThemeService.SavePreference(preference);
+        // Palette transitions are kept for internal visual regression only.
+        // The production UI uses fixed Dark Glass; never persist test palettes
+        // or rewrite the user's old theme setting during a QA run.
         string current = _section;
-        _navButtons.Clear();
         _subSelectorCache.Clear();
 
         // BuildShell creates a brand-new titlebar tree. Never carry primed/content references
@@ -337,7 +440,6 @@ public sealed partial class MainWindow
         RunWithOverviewPalette(() =>
         {
             BuildShell();
-            CompleteDeferredHero();
             CompleteDeferredMainTabs();
             ActivateCustomTitleBarNow();
             // Finish the replacement header before navigation restores the section palette.

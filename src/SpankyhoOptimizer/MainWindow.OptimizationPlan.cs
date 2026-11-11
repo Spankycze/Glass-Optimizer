@@ -15,6 +15,30 @@ public sealed partial class MainWindow
 {
     internal async Task RunOptimizationPlanSmokeAsync(CancellationToken token = default)
     {
+        // Exercise the actual Recommended staging guard without registry or
+        // service changes. A later manual choice must win over an old plan.
+        var staged = new TweakDefinition
+        {
+            Id = "smoke.recommended.staging",
+            Section = "smoke",
+            Group = "Recommended",
+            Name = "Recommended staging",
+            Description = "In-memory recommendation race"
+        };
+        staged.IsLoaded = true;
+        int queuedRevision = staged.Revision;
+        staged.Pending = true;
+        if (TryStageComponentRecommendation(staged, queuedRevision,
+                new RecommendationDecision(staged.Id, false, true, "Test", "Safe")) ||
+            !staged.Pending)
+            throw new InvalidOperationException("Delayed Recommended overwrote newer Pending.");
+        staged.Pending = false;
+        if (!TryStageComponentRecommendation(staged, staged.Revision,
+                new RecommendationDecision(staged.Id, true, true, "Test", "Safe")) ||
+            !staged.Pending)
+            throw new InvalidOperationException("Current Recommended selection did not stage.");
+        LogService.Info("regression", "RECOMMENDED_STAGING_REVISION_SMOKE_OK newerPendingPreserved=true currentApplied=true");
+
         var phase = System.Diagnostics.Stopwatch.StartNew();
         var all = new List<TweakDefinition>();
         foreach (string section in new[] { "system", "gpu", "memory", "storage", "network", "ui", "update", "privacy" })

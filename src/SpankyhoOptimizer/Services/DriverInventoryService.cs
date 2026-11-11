@@ -85,22 +85,14 @@ public static class DriverInventoryService
     }
     private static DriverInventoryItem[] Scan(CancellationToken token)
     {
-        var errors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        using (var entity = new ManagementObjectSearcher("SELECT DeviceID, ConfigManagerErrorCode FROM Win32_PnPEntity"))
-            foreach (ManagementObject x in entity.Get())
-            {
-                token.ThrowIfCancellationRequested();
-                string id = x["DeviceID"]?.ToString() ?? string.Empty;
-                if (id.Length == 0) continue;
-                int code = Convert.ToInt32(x["ConfigManagerErrorCode"] ?? 0, CultureInfo.InvariantCulture);
-                errors[id] = code;
-            }
+        // Independent WMI providers run concurrently; COM objects remain thread-local.
+        Task<Dictionary<string, int>> errorTask = Task.Run(() => ReadDeviceErrorCodes(token), token);
 
         var result = new List<DriverInventoryItem>();
         using var searcher = new ManagementObjectSearcher("SELECT DeviceID, DeviceName, DeviceClass, Manufacturer, DriverProviderName, DriverVersion, DriverDate, InfName, IsSigned FROM Win32_PnPSignedDriver");
-        foreach (ManagementObject x in searcher.Get())
+        var driverRows = searcher.Get();
+        WmiEnumerationScope.ForEach<ManagementObject>(driverRows, driverRows, token, x =>
         {
-            token.ThrowIfCancellationRequested();
             string id = x["DeviceID"]?.ToString() ?? string.Empty;
             string name = x["DeviceName"]?.ToString() ?? id;
             string cls = x["DeviceClass"]?.ToString() ?? "Other";
@@ -110,9 +102,25 @@ public static class DriverInventoryService
             string inf = x["InfName"]?.ToString() ?? string.Empty;
             bool signed = Convert.ToBoolean(x["IsSigned"] ?? false, CultureInfo.InvariantCulture);
             DateTime? date = ParseWmiDate(x["DriverDate"]?.ToString());
-            result.Add(new DriverInventoryItem(id, name, cls, Classify(cls, name), manufacturer, provider, version, date, inf, signed, errors.GetValueOrDefault(id)));
-        }
-        return result.OrderBy(x => x.Category).ThenBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
+            result.Add(new DriverInventoryItem(id, name, cls, Classify(cls, name), manufacturer, provider, version, date, inf, signed, 0));
+        });
+        var errors = errorTask.GetAwaiter().GetResult();
+        return result.Select(x => x with { ErrorCode = errors.GetValueOrDefault(x.DeviceId) })
+            .OrderBy(x => x.Category).ThenBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
+    }
+
+    private static Dictionary<string, int> ReadDeviceErrorCodes(CancellationToken token)
+    {
+        var errors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        using var entity = new ManagementObjectSearcher("SELECT DeviceID, ConfigManagerErrorCode FROM Win32_PnPEntity");
+        var rows = entity.Get();
+        WmiEnumerationScope.ForEach<ManagementObject>(rows, rows, token, x =>
+        {
+            string id = x["DeviceID"]?.ToString() ?? string.Empty;
+            if (id.Length == 0) return;
+            errors[id] = Convert.ToInt32(x["ConfigManagerErrorCode"] ?? 0, CultureInfo.InvariantCulture);
+        });
+        return errors;
     }
 
     private static DateTime? ParseWmiDate(string? value)
@@ -136,6 +144,6 @@ public static class DriverInventoryService
     public static async Task<ProcessResult> ExportAsync(string infName, string destination, CancellationToken token = default)
     {
         if (string.IsNullOrWhiteSpace(infName)) throw new InvalidOperationException("Zařízení nemá dostupný INF název.");
-        return await ProcessRunner.RunAsync("pnputil.exe", $"/export-driver \"{infName}\" \"{destination}\"", TimeSpan.FromMinutes(2), token);
+        return await PrivilegedProcessRunner.RunAsync("pnputil.exe", $"/export-driver \"{infName}\" \"{destination}\"", TimeSpan.FromMinutes(2), token);
     }
 }

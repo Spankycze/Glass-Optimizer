@@ -5,11 +5,19 @@ namespace SpankyhoOptimizer.Services;
 
 public static class SafeTaskService
 {
-    public static void Forget(Task task, string module, string operation) =>
+    // The fast path is important for repeated successful UI/background operations:
+    // no observer state machine, error correlation ID, or logging scope is needed.
+    public static void Forget(Task task, string module, string operation)
+    {
+        if (task.IsCompletedSuccessfully) return;
         _ = ObserveAsync(task, module, operation);
+    }
 
-    public static void ForgetDeferred(Task task, string module, string operation) =>
+    public static void ForgetDeferred(Task task, string module, string operation)
+    {
+        if (task.IsCompletedSuccessfully) return;
         _ = ObserveDeferredAsync(task, module, operation);
+    }
 
     private static async Task ObserveAsync(Task task, string module, string operation)
     {

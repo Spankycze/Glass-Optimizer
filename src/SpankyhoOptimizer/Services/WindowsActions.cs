@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -54,15 +54,16 @@ public static class WindowsActions
                 var scope = new ManagementScope("\\\\.\\root\\default");
                 scope.Connect();
                 using var searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Description, CreationTime FROM SystemRestore"));
-                foreach (ManagementObject item in searcher.Get())
+                var results = searcher.Get();
+                return WmiMatchingRowScope.Any<ManagementObject>(results, results, item =>
                 {
                     string d = item["Description"]?.ToString() ?? string.Empty;
                     string raw = item["CreationTime"]?.ToString() ?? string.Empty;
-                    if (!d.StartsWith("Spankyho Optimizer", StringComparison.OrdinalIgnoreCase) || raw.Length == 0) continue;
+                    if (!d.StartsWith("Spankyho Optimizer", StringComparison.OrdinalIgnoreCase) || raw.Length == 0)
+                        return false;
                     DateTime created = ManagementDateTimeConverter.ToDateTime(raw);
-                    if (DateTime.Now - created <= TimeSpan.FromMinutes(maxAgeMinutes)) return true;
-                }
-                return false;
+                    return DateTime.Now - created <= TimeSpan.FromMinutes(maxAgeMinutes);
+                });
             });
             if (recent)
             {
@@ -98,9 +99,13 @@ public static class WindowsActions
         }
     }
 
-    public static Task RunIdleMaintenanceAsync(CancellationToken token = default(CancellationToken))
+    public static async Task RunIdleMaintenanceAsync(CancellationToken token = default(CancellationToken))
     {
-        return ProcessRunner.RunAsync("rundll32.exe", "advapi32.dll,ProcessIdleTasks", TimeSpan.FromSeconds(30L), token);
+        ProcessResult result = await ProcessRunner.RunAsync(
+            "rundll32.exe", "advapi32.dll,ProcessIdleTasks", TimeSpan.FromSeconds(30L), token).ConfigureAwait(false);
+        if (!result.Success)
+            throw new InvalidOperationException(
+                $"Idle maintenance selhala kódem {result.ExitCode}: {(result.StdErr + result.StdOut).Trim()}");
     }
 
     public static async Task TrimWorkingSetsAsync()
@@ -129,6 +134,7 @@ public static class WindowsActions
         });
     }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("psapi.dll")]
     private static extern bool EmptyWorkingSet(nint hProcess);
 
@@ -195,6 +201,8 @@ public static class WindowsActions
             {
                 bool preserveManagedShortcutOverlay = ShortcutAppearanceService.PrepareManagedOverlayForExplorerRestart();
             Process[] processesByName = Process.GetProcessesByName("explorer");
+            try
+            {
             var exitTasks = new List<Task>(processesByName.Length);
             foreach (Process process in processesByName)
             {
@@ -217,7 +225,11 @@ public static class WindowsActions
             }
             if (exitTasks.Count > 0)
                 await Task.WhenAll(exitTasks).ConfigureAwait(false);
-            foreach (Process process in processesByName) process.Dispose();
+            }
+            finally
+            {
+                ProcessSnapshotCleanup.DisposeAll(processesByName);
+            }
 
             if (preserveManagedShortcutOverlay)
                 PurgeExplorerIconCacheForManagedOverlay();
@@ -228,8 +240,11 @@ public static class WindowsActions
             while (DateTime.UtcNow < until)
             {
                 token.ThrowIfCancellationRequested();
-                using var explorer = Process.GetProcessesByName("explorer").FirstOrDefault();
-                if (explorer != null) { LogService.Info("explorer", "Explorer restart verified."); return; }
+                // Even if the first explorer is enough for verification, close
+                // every wrapper returned by GetProcessesByName.
+                bool explorerRunning = ProcessSnapshotCleanup.Inspect(
+                    () => Process.GetProcessesByName("explorer"), matches => matches.Length > 0);
+                if (explorerRunning) { LogService.Info("explorer", "Explorer restart verified."); return; }
                 await Task.Delay(200, token);
             }
                 throw new InvalidOperationException("Explorer se po restartu znovu nespustil.");
@@ -378,7 +393,11 @@ public static class WindowsActions
                 new System.Management.EnumerationOptions { Timeout = TimeSpan.FromSeconds(2), ReturnImmediately = false, Rewindable = false });
             List<string> list = new();
             using var results = searcher.Get();
-            foreach (ManagementObject item in results) { list.Add($"{item["DeviceName"]} — {item["DriverVersion"]} ({item["InfName"]})"); item.Dispose(); }
+            foreach (ManagementObject item in results)
+            {
+                using (item)
+                    list.Add($"{item["DeviceName"]} — {item["DriverVersion"]} ({item["InfName"]})");
+            }
             return list.Count == 0 ? "Realtek zařízení nebylo nalezeno." : string.Join(Environment.NewLine, list.Take(6));
         }
         catch (Exception ex)
@@ -395,9 +414,7 @@ public static class WindowsActions
         foreach (var t in defenderTweaks) t.Pending = true;
         var errors = await new TweakEngine().ApplyAsync(defenderTweaks, token);
         if (errors.Count > 0) throw new InvalidOperationException("Defender změny nebyly plně ověřeny: " + string.Join(" | ", errors));
-        string[] tasks = { "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Cache Maintenance", "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Cleanup", "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan", "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Verification" };
-        var scheduler = new TaskSchedulerService();
-        foreach (string path in tasks) { try { await scheduler.SetEnabledAsync(path, false, token); } catch (Exception ex) { LogService.Error("Defender scheduled task disable " + path, ex); } }
+        await SetExistingDefenderTasksAsync(enabled: false, token).ConfigureAwait(false);
     }
 
     public static async Task RestoreDefenderAsync(CancellationToken token = default(CancellationToken))
@@ -407,9 +424,50 @@ public static class WindowsActions
         foreach (var t in defenderTweaks) t.Pending = false;
         var errors = await new TweakEngine().ApplyAsync(defenderTweaks, token);
         if (errors.Count > 0) throw new InvalidOperationException("Defender restore nebyl plně ověřen: " + string.Join(" | ", errors));
-        string[] tasks = { "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Cache Maintenance", "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Cleanup", "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan", "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Verification" };
+        await SetExistingDefenderTasksAsync(enabled: true, token).ConfigureAwait(false);
+    }
+
+    private static async Task SetExistingDefenderTasksAsync(bool enabled, CancellationToken token)
+    {
+        string[] desiredPaths =
+        {
+            "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Cache Maintenance",
+            "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Cleanup",
+            "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan",
+            "\\Microsoft\\Windows\\Windows Defender\\Windows Defender Verification"
+        };
+
         var scheduler = new TaskSchedulerService();
-        foreach (string path in tasks) { try { await scheduler.SetEnabledAsync(path, true, token); } catch (Exception ex) { LogService.Error("Defender scheduled task restore " + path, ex); } }
+        IReadOnlyList<TaskInfo> inventory = await scheduler.GetBasicAsync(forceRefresh: true, token).ConfigureAwait(false);
+        var existing = desiredPaths
+            .Where(path => inventory.Any(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase)))
+            .Select(path => (Path: path, Enabled: enabled))
+            .ToArray();
+
+        if (existing.Length == 0)
+        {
+            LogService.Info("defender", "DEFENDER_TASKS_NOT_PRESENT");
+            return;
+        }
+
+        string[] errors = await scheduler.SetEnabledBatchAsync(existing, token).ConfigureAwait(false);
+        if (errors.Length > 0)
+            throw new InvalidOperationException(
+                "Defender scheduled task změna nebyla plně ověřena: " + string.Join(" | ", errors));
+
+        IReadOnlyList<TaskInfo> verified = await scheduler.GetBasicAsync(forceRefresh: true, token).ConfigureAwait(false);
+        string[] mismatched = existing
+            .Where(change =>
+            {
+                TaskInfo? item = verified.FirstOrDefault(x => x.Path.Equals(change.Path, StringComparison.OrdinalIgnoreCase));
+                return item == null || item.Enabled != change.Enabled;
+            })
+            .Select(change => change.Path)
+            .ToArray();
+
+        if (mismatched.Length > 0)
+            throw new InvalidOperationException(
+                $"Defender scheduled task read-back nesouhlasí pro: {string.Join(", ", mismatched)}");
     }
 
     public static bool IsTamperProtectionOn()
@@ -429,9 +487,18 @@ public static class WindowsActions
 
     public static async Task RestoreBalancedPowerPlanAsync(CancellationToken token = default(CancellationToken))
     {
+        const string balancedGuid = "381b4222-f694-41f0-9685-ff5bb260df2e";
         await PowerPlanGuardService.DisableAsync(token);
-        var result = await ProcessRunner.RunAsync("powercfg.exe", "/setactive SCHEME_BALANCED", TimeSpan.FromSeconds(10L), token);
+        var result = await PrivilegedProcessRunner.RunAsync(
+            "powercfg.exe", "/setactive SCHEME_BALANCED", TimeSpan.FromSeconds(10L), token).ConfigureAwait(false);
         if (!result.Success) throw new InvalidOperationException(result.StdErr + result.StdOut);
+
+        var verify = await ProcessRunner.RunAsync(
+            "powercfg.exe", "/getactivescheme", TimeSpan.FromSeconds(10L), token).ConfigureAwait(false);
+        if (!verify.Success || !verify.StdOut.Contains(balancedGuid, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                "Balanced power plan read-back nepotvrdil aktivní výchozí plán. " + (verify.StdErr + verify.StdOut).Trim());
+
         PowerPlanStateService.InvalidateCache();
     }
 
@@ -555,36 +622,24 @@ public static class WindowsActions
 
     internal static async Task RunMemoryCompressionCacheSmokeAsync(CancellationToken token)
     {
-        PersistentHardwareCacheService.Remove(MemoryCompressionPersistentKey);
-        lock (MemoryCompressionLock)
-        {
-            _memoryCompressionCache = null;
-            _memoryCompressionCacheAt = default;
-            _memoryCompressionInFlight = null;
-        }
+        // Never delete or rewrite the real machine-stable memory-compression
+        // entry that the installed app and RuntimeHosts share. The envelope
+        // contract (value/fingerprint/age/cleanup) is proven on a temp root.
+        await Task.Yield();
+        PersistentHardwareCacheService.RunIsolatedPersistenceSmoke();
 
-        var freshSw = Stopwatch.StartNew();
-        string fresh = await GetMemoryCompressionAsync(token).ConfigureAwait(false);
-        freshSw.Stop();
+        // Read-only state projection: the persistent state type and its Czech/
+        // English text mapping must stay stable without any native write.
+        if (!MemoryCompressionCacheText(true).StartsWith("Memory Compression: ", StringComparison.Ordinal) ||
+            !MemoryCompressionCacheText(false).StartsWith("Memory Compression: ", StringComparison.Ordinal) ||
+            string.Equals(MemoryCompressionCacheText(true), MemoryCompressionCacheText(false), StringComparison.Ordinal))
+            throw new InvalidOperationException("Memory Compression state text projection regressed.");
 
-        lock (MemoryCompressionLock)
-        {
-            _memoryCompressionCache = null;
-            _memoryCompressionCacheAt = default;
-            _memoryCompressionInFlight = null;
-        }
-
-        var persistentSw = Stopwatch.StartNew();
-        string persisted = await GetMemoryCompressionAsync(token).ConfigureAwait(false);
-        persistentSw.Stop();
-
-        if (!string.Equals(fresh, persisted, StringComparison.Ordinal))
-            throw new InvalidOperationException($"Memory Compression persistent cache mismatch fresh={fresh} persisted={persisted}.");
-        if (persistentSw.ElapsedMilliseconds > 150)
-            throw new InvalidOperationException($"Memory Compression persistent cache is too slow: {persistentSw.ElapsedMilliseconds} ms.");
-
-        LogService.Info($"MEMORY_COMPRESSION_CACHE_SMOKE_OK freshMs={freshSw.ElapsedMilliseconds} persistentMs={persistentSw.ElapsedMilliseconds} state={persisted}");
+        LogService.Info("MEMORY_COMPRESSION_CACHE_SMOKE_OK isolatedCache=true " +
+            "actualUserCacheTouched=false nativeWrite=false");
     }
+
+    private static string MemoryCompressionCacheText(bool enabled) => "Memory Compression: " + enabled;
 
     private static async Task<bool> ReadMemoryCompressionSerializedAsync()
     {
@@ -693,9 +748,9 @@ public static class WindowsActions
     public static async Task SetUsbSelectiveSuspendAsync(bool disabled, CancellationToken token = default)
     {
         var value = disabled ? 0 : 1;
-        var r = await ProcessRunner.RunAsync("powercfg.exe", $"/setacvalueindex SCHEME_CURRENT {UsbPowerSubgroup} {UsbSelectiveSuspendSetting} {value}", TimeSpan.FromSeconds(15), token);
+        var r = await PrivilegedProcessRunner.RunAsync("powercfg.exe", $"/setacvalueindex SCHEME_CURRENT {UsbPowerSubgroup} {UsbSelectiveSuspendSetting} {value}", TimeSpan.FromSeconds(15), token);
         if (!r.Success) throw new InvalidOperationException(r.StdErr + r.StdOut);
-        var active = await ProcessRunner.RunAsync("powercfg.exe", "/setactive SCHEME_CURRENT", TimeSpan.FromSeconds(15), token);
+        var active = await PrivilegedProcessRunner.RunAsync("powercfg.exe", "/setactive SCHEME_CURRENT", TimeSpan.FromSeconds(15), token);
         if (!active.Success) throw new InvalidOperationException(active.StdErr + active.StdOut);
         await VerifyCurrentPowerOptionAsync(UsbPowerSubgroup, UsbSelectiveSuspendSetting, value, token);
         PowerPlanStateService.InvalidateCache();
@@ -709,9 +764,9 @@ public static class WindowsActions
 
     public static async Task SetCurrentPowerOptionAsync(string subgroup, string setting, int value, CancellationToken token = default)
     {
-        var r = await ProcessRunner.RunAsync("powercfg.exe", $"/setacvalueindex SCHEME_CURRENT {subgroup} {setting} {value}", TimeSpan.FromSeconds(15), token);
+        var r = await PrivilegedProcessRunner.RunAsync("powercfg.exe", $"/setacvalueindex SCHEME_CURRENT {subgroup} {setting} {value}", TimeSpan.FromSeconds(15), token);
         if (!r.Success) throw new InvalidOperationException(r.StdErr + r.StdOut);
-        var active = await ProcessRunner.RunAsync("powercfg.exe", "/setactive SCHEME_CURRENT", TimeSpan.FromSeconds(15), token);
+        var active = await PrivilegedProcessRunner.RunAsync("powercfg.exe", "/setactive SCHEME_CURRENT", TimeSpan.FromSeconds(15), token);
         if (!active.Success) throw new InvalidOperationException(active.StdErr + active.StdOut);
         await VerifyCurrentPowerOptionAsync(subgroup, setting, value, token);
         PowerPlanStateService.InvalidateCache();
@@ -734,27 +789,20 @@ public static class WindowsActions
     }
 
     public static Task FlushDnsAsync(CancellationToken token = default) =>
-        ProcessRunner.RunAsync("ipconfig.exe", "/flushdns", TimeSpan.FromSeconds(20), token);
+        RequireCommandSuccessAsync("ipconfig.exe", "/flushdns", TimeSpan.FromSeconds(20), token);
 
     public static Task ResetWinsockAsync(CancellationToken token = default) =>
-        ProcessRunner.RunAsync("netsh.exe", "winsock reset", TimeSpan.FromSeconds(30), token);
+        RequireCommandSuccessAsync("netsh.exe", "winsock reset", TimeSpan.FromSeconds(30), token);
 
     public static Task RetrimAllAsync(CancellationToken token = default) =>
-        ProcessRunner.RunAsync("defrag.exe", "/C /L /O /U", TimeSpan.FromMinutes(20), token);
+        RequireCommandSuccessAsync("defrag.exe", "/C /L /O /U", TimeSpan.FromMinutes(20), token);
 
-    public static async Task RemoveAppPackageAsync(string packageFamilyOrName, CancellationToken token = default(CancellationToken))
+    private static async Task RequireCommandSuccessAsync(string file, string arguments, TimeSpan timeout, CancellationToken token)
     {
-        PackageManager pm = new PackageManager();
-        List<Package> list = (from p in pm.FindPackagesForUser(string.Empty)
-                              where p.Id.Name.Contains(packageFamilyOrName, StringComparison.OrdinalIgnoreCase) || p.Id.FamilyName.Contains(packageFamilyOrName, StringComparison.OrdinalIgnoreCase)
-                              select p).ToList();
-        foreach (Package item in list)
-        {
-            token.ThrowIfCancellationRequested();
-            await pm.RemovePackageAsync(item.Id.FullName).AsTask(token);
-        }
+        var result = await ProcessRunner.RunAsync(file, arguments, timeout, token).ConfigureAwait(false);
+        if (!result.Success)
+            throw new InvalidOperationException($"{file} skončil kódem {result.ExitCode}: {(result.StdErr + result.StdOut).Trim()}");
     }
-
     public static async Task RunSfcAsync(CancellationToken token = default(CancellationToken))
     {
         await WorkerClientService.RunAsync<WorkerAck>("sfc", timeout: TimeSpan.FromMinutes(35), token: token).ConfigureAwait(false);

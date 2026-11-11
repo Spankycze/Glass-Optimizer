@@ -14,11 +14,13 @@ public sealed partial class MainWindow
 {
     private StackPanel? _networkDnsPanelHost;
     private bool _networkDnsPanelQueued;
+    private int _networkDnsPanelQueuedGeneration = -1;
     private StackPanel? _networkDnsChartHost;
     private TextBlock? _networkDnsStatus;
     private TextBlock? _networkHeroState;
     private Grid? _networkHeroArtHost;
     private bool _networkHeroArtQueued;
+    private int _networkHeroArtQueuedGeneration = -1;
     private TextBlock? _networkMtuStatus;
     private IReadOnlyList<DnsBenchmarkResult>? _lastDnsDashboardResults;
 
@@ -94,13 +96,17 @@ public sealed partial class MainWindow
         if (!UseCompactSectionChrome) ScheduleNetworkHeroIllustration(token);
         long artScheduleMs = perf.ElapsedMilliseconds;
 
-        var hydrateTask = Task.Run(() => HydrateNetworkHeroAsync(token), token);
+        // Network cache deserialization and the first service calls can run
+        // synchronously before their first await (observed 29-44ms on the UI
+        // thread). HydrateNetworkHeroAsync offloads only data collection; the
+        // final TextBlock update is still guarded and dispatched to the UI.
+        var hydrateTask = HydrateNetworkHeroAsync(token);
         long hydrateTaskRunMs = perf.ElapsedMilliseconds;
         SafeTaskService.ForgetDeferred(
             hydrateTask,
             "network", "Network dashboard hero status");
         long deferredKickoffMs = perf.ElapsedMilliseconds;
-        var card = UseCompactSectionChrome ? new Border { Tag = "workspace-intro", Padding = new Thickness(0,8,0,14), Margin = new Thickness(0,0,0,12), BorderBrush = _darkTheme ? ThemeColor(34,34,34) : SectionBorderBrush(), BorderThickness = new Thickness(0,0,0,1), Child = root } : BuildDashboardCard(root, new Thickness(20, 17, 20, 17));
+        var card = UseCompactSectionChrome ? new Border { Tag = "workspace-intro", Padding = new Thickness(0,8,0,14), Margin = new Thickness(0,0,0,12), BorderBrush = _darkTheme ? GlassBorderBrush() : SectionBorderBrush(), BorderThickness = new Thickness(0,0,0,1), Child = root } : BuildDashboardCard(root, new Thickness(20, 17, 20, 17));
         long cardMs = perf.ElapsedMilliseconds;
         LogService.Info("performance",
             $"NETWORK_HERO_BUILD shellMs={shellMs} badgesMs={badgesMs - shellMs} actionsMs={actionsMs - badgesMs} artHostMs={artHostMs - actionsMs} artScheduleMs={artScheduleMs - artHostMs} taskRunMs={hydrateTaskRunMs - artScheduleMs} observeMs={deferredKickoffMs - hydrateTaskRunMs} kickoffMs={deferredKickoffMs - artHostMs} cardMs={cardMs - deferredKickoffMs} totalMs={cardMs}");
@@ -109,17 +115,32 @@ public sealed partial class MainWindow
 
     private void ScheduleNetworkHeroIllustration(CancellationToken token)
     {
-        if (_networkHeroArtQueued || _networkHeroArtHost == null || _networkHeroArtHost.Children.Count > 0) return;
+        Grid? host = _networkHeroArtHost;
+        int generation = _navigationGeneration;
+        if (host == null || host.Children.Count > 0 ||
+            (_networkHeroArtQueued && _networkHeroArtQueuedGeneration == generation)) return;
         _networkHeroArtQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        _networkHeroArtQueuedGeneration = generation;
+        bool accepted = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
+            if (generation != _navigationGeneration ||
+                _networkHeroArtQueuedGeneration != generation ||
+                !ReferenceEquals(_networkHeroArtHost, host)) return;
             _networkHeroArtQueued = false;
-            if (token.IsCancellationRequested || _section != "network" || _networkHeroArtHost == null || _networkHeroArtHost.Children.Count > 0) return;
+            _networkHeroArtQueuedGeneration = -1;
+            if (token.IsCancellationRequested || _section != "network" ||
+                host.Children.Count > 0) return;
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            _networkHeroArtHost.Children.Add(BuildNetworkHeroIllustration());
+            host.Children.Add(BuildNetworkHeroIllustration());
             LogService.Info("performance", $"NETWORK_HERO_ART_DEFERRED ms={sw.ElapsedMilliseconds}");
         });
+        if (!accepted && _networkHeroArtQueuedGeneration == generation &&
+            ReferenceEquals(_networkHeroArtHost, host))
+        {
+            _networkHeroArtQueued = false;
+            _networkHeroArtQueuedGeneration = -1;
+        }
     }
 
     private FrameworkElement BuildNetworkHeroIllustration()
@@ -136,7 +157,7 @@ public sealed partial class MainWindow
             var stack = new StackPanel { Spacing = 4, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             stack.Children.Add(OverviewGlowIcon("network", 20, NetworkAccentBrush()));
             stack.Children.Add(new TextBlock { Text = label, FontWeight = FontWeights.SemiBold, FontSize = 11, Foreground = TextPrimaryBrush(), HorizontalAlignment = HorizontalAlignment.Center });
-            stack.Children.Add(new TextBlock { Text = detail, FontSize = 9.5, Foreground = TextSecondaryBrush(), HorizontalAlignment = HorizontalAlignment.Center });
+            stack.Children.Add(new TextBlock { Text = detail, FontSize = 10.5, Foreground = TextSecondaryBrush(), HorizontalAlignment = HorizontalAlignment.Center });
             return new Border
             {
                 Background = SectionCardBackgroundBrush(),
@@ -173,21 +194,34 @@ public sealed partial class MainWindow
 
     private async Task HydrateNetworkHeroAsync(CancellationToken token)
     {
+        int generation = _navigationGeneration;
+        var heroState = _networkHeroState;
         try
         {
-            var nicTask = SystemInsightService.GetActiveNetworkAsync(token);
-            var latencyTask = NetworkDiagnosticsService.MeasureAsync(samples: 3, token: token);
-            await Task.WhenAll(nicTask, latencyTask).ConfigureAwait(false);
-            var nic = await nicTask.ConfigureAwait(false);
-            var latency = await latencyTask.ConfigureAwait(false);
-            if (token.IsCancellationRequested) return;
+            // These services may deserialize a persisted cache or perform
+            // native probe setup synchronously before returning a Task. Keep
+            // those initial synchronous costs off the WinUI dispatcher.
+            var (nic, latency) = await Task.Run(async () =>
+            {
+                var nicTask = SystemInsightService.GetActiveNetworkAsync(token);
+                // Share the existing four-sample ICMP measurement cache with live panels.
+                var latencyTask = NetworkDiagnosticsService.MeasureAsync(samples: 4, token: token);
+                await Task.WhenAll(nicTask, latencyTask).ConfigureAwait(false);
+                return (await nicTask.ConfigureAwait(false),
+                    await latencyTask.ConfigureAwait(false));
+            }, token).ConfigureAwait(false);
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "network" || heroState == null || !ReferenceEquals(_networkHeroState, heroState)) return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "network" || _networkHeroState == null) return;
-                _networkHeroState.Text = nic == null
+                if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                    _section != "network" || heroState == null || !ReferenceEquals(_networkHeroState, heroState)) return;
+                string nextText = nic == null
                     ? "Aktivní adaptér nenalezen."
                     : $"{nic.Description} • {nic.SpeedMbps:0} Mb/s • MTU {nic.Mtu}" +
                       (latency.Received > 0 ? $" • {latency.AvgMs:0.0} ms" : string.Empty);
+                if (!string.Equals(heroState.Text, nextText, StringComparison.Ordinal))
+                    heroState.Text = nextText;
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -199,7 +233,7 @@ public sealed partial class MainWindow
     private FrameworkElement BuildNetworkMetricTile(string label, string value, string detail, string brushKey = "SpankyInfoBrush")
     {
         var stack = new StackPanel { Spacing = 3 };
-        stack.Children.Add(new TextBlock { Text = label.ToUpperInvariant(), FontSize = 9.5, FontWeight = FontWeights.SemiBold, Foreground = TextSecondaryBrush(), CharacterSpacing = 70 });
+        stack.Children.Add(new TextBlock { Text = label.ToUpperInvariant(), FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = TextSecondaryBrush(), CharacterSpacing = 70 });
         stack.Children.Add(new TextBlock { Text = value, FontSize = 18, FontWeight = FontWeights.SemiBold, Foreground = UiBrush(brushKey), TextWrapping = TextWrapping.Wrap });
         stack.Children.Add(new TextBlock { Text = detail, FontSize = 10.5, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap });
         return new Border
@@ -242,7 +276,7 @@ public sealed partial class MainWindow
                 packetRow.Children.Add(new Border { Width = width, Height = 10, CornerRadius = new CornerRadius(4), Background = accent ? AccentBrush() : AccentSoftBrush() });
             }
             stack.Children.Add(packetRow);
-            stack.Children.Add(new TextBlock { Text = detail, FontSize = 9.8, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap });
+            stack.Children.Add(new TextBlock { Text = detail, FontSize = 10.5, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap });
             var card = new Border
             {
                 Background = SectionCardBackgroundBrush(),
@@ -268,20 +302,30 @@ public sealed partial class MainWindow
         host.Children.Add(new TextBlock
         {
             Text = "TOP 5 RESOLVERŮ",
-            FontSize = 10,
+            FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
             CharacterSpacing = 80,
             Foreground = TextSecondaryBrush()
         });
 
-        var top = results?
-            .Where(x => x.IsAlive && string.IsNullOrWhiteSpace(x.Error) && !x.RedirectsNxDomain)
-            .OrderByDescending(x => x.OverallScore)
-            .ThenBy(x => x.AverageMs)
-            .Take(5)
-            .ToArray() ?? Array.Empty<DnsBenchmarkResult>();
+        var top = new List<DnsBenchmarkResult>(5);
+        if (results != null)
+        {
+            foreach (DnsBenchmarkResult item in results)
+            {
+                if (item.IsAlive && string.IsNullOrWhiteSpace(item.Error) && !item.RedirectsNxDomain)
+                    top.Add(item);
+            }
+            top.Sort(static (a, b) =>
+            {
+                int score = b.OverallScore.CompareTo(a.OverallScore);
+                return score != 0 ? score : a.AverageMs.CompareTo(b.AverageMs);
+            });
+            if (top.Count > 5)
+                top.RemoveRange(5, top.Count - 5);
+        }
 
-        if (top.Length == 0)
+        if (top.Count == 0)
         {
             host.Children.Add(new TextBlock
             {
@@ -303,7 +347,7 @@ public sealed partial class MainWindow
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             row.Children.Add(new TextBlock { Text = item.Name, FontSize = 10.5, Foreground = TextPrimaryBrush(), TextTrimming = TextTrimming.CharacterEllipsis });
-            var track = new Border { Height = 8, CornerRadius = new CornerRadius(4), Background = SurfaceElevatedBrush(), VerticalAlignment = VerticalAlignment.Center };
+            var track = new Border { Height = 8, CornerRadius = new CornerRadius(4), Background = _darkTheme ? GlassSurfaceElevatedBrush() : SurfaceElevatedBrush(), VerticalAlignment = VerticalAlignment.Center };
             var fill = new Border
             {
                 Width = Math.Max(18, Math.Min(170, item.OverallScore * 1.7)),

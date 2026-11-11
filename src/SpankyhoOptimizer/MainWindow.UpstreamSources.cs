@@ -41,7 +41,7 @@ public sealed partial class MainWindow
         int ready = current.Count - missing - failed;
         root.Children.Add(new TextBlock
         {
-            Text = $"Aktuální snapshoty: {ready}/{current.Count}  •  chybí: {missing}  •  chyby: {failed}",
+            Text = $"Ověřené archivy: {ready}/{current.Count}  •  neověřeno/chybí: {missing}  •  chyby: {failed}",
             FontSize = 13,
             FontWeight = FontWeights.SemiBold,
             Foreground = failed > 0 ? WarningBrush() : SuccessBrush(),
@@ -49,6 +49,7 @@ public sealed partial class MainWindow
         });
 
         var autoCheck = new ToggleSwitch { Header = "Automaticky kontrolovat aktualizace zdrojů", IsOn = UpstreamSourceUpdateService.AutoCheckEnabled, OnContent = "Zapnuto", OffContent = "Vypnuto" };
+        NormalizeToggleAppearance(autoCheck);
         autoCheck.Toggled += (_, _) => SafeTaskService.Forget(
             ApplyVerifiedImmediateToggleAsync(autoCheck, UpstreamSourceUpdateService.SetAutoCheckEnabled,
                 () => UpstreamSourceUpdateService.AutoCheckEnabled, "upstream", "Automatická kontrola zdrojů"),
@@ -60,10 +61,13 @@ public sealed partial class MainWindow
             string checkedAt = item.LastCheckedUtc?.ToLocalTime().ToString("dd.MM.yyyy HH:mm") ?? "nikdy";
             string updatedAt = item.LastUpdatedUtc?.ToLocalTime().ToString("dd.MM.yyyy HH:mm") ?? "nikdy";
             string? error = statuses.FirstOrDefault(x => x.StartsWith(item.Name + ":", StringComparison.OrdinalIgnoreCase));
-            string state = error != null ? "CHYBA" : !item.UpdateDownloaded || item.Commit == "-" ? "BEZ SNAPSHOTU" : "AKTUÁLNÍ";
+            string state = error != null ? "CHYBA" : item.NewerSourceAvailable ? "NOVĚJŠÍ ZDROJE" : !item.UpdateDownloaded ? "KOPIE NEOVĚŘENA / CHYBÍ" : "ARCHIV OVĚŘEN";
             string detail = error != null
                 ? error
-                : $"Commit {sha}  •  kontrola {checkedAt}  •  snapshot {updatedAt}\nDiff: {UpstreamSourceUpdateService.GetDiffSummary(item.Id)}";
+                                : $"Stažený commit {sha}  •  kontrola {checkedAt}  •  archiv {updatedAt}\n" +
+                  $"Poslední zjištěný commit: {item.LatestCommit}\n" +
+                  $"Způsob integrace: {item.IntegrationMode}\n{UpstreamUpdatePolicy.IntegrationDetail(item.Id)}\n" +
+                  $"Aktivní verze: {UpstreamUpdatePolicy.ActiveRevision(item.Id)}";
             root.Children.Add(new TextBlock
             {
                 Text = $"{item.Name}  •  {state}\n{detail}",
@@ -72,7 +76,7 @@ public sealed partial class MainWindow
                 TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap
             });
         }
-        await ShowStyledContentAsync("Source Auto-Updater", $"Sleduji {current.Count} skutečně integrovaných GitHub zdrojů používaných funkcemi Optimizeru. Volitelné nástroje z Toolsetu se při startu nekontrolují. Aktualizace se stahují bezpečně do staging cache; upstream kód se automaticky nespouští.", root, "Zavřít");
+        await ShowStyledContentAsync("Source Auto-Updater", $"Sleduji {current.Count} GitHub zdrojů. Stažený archiv není nainstalovaný program. WinUtil poskytuje ověřená data pro podporované služby; ostatní komponenty mají vlastní integrační cestu popsanou níže. Automatická kontrola při startu má hodinový odstup; ruční kontrola je okamžitá. Upstream kód se při kontrole nespouští.", root, "Zavřít");
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -82,10 +86,11 @@ public sealed partial class MainWindow
 
     private async Task CheckUpstreamUpdatesOnStartupAsync()
     {
+        if (_windowLifetimeCts.IsCancellationRequested) return;
         if (Interlocked.Exchange(ref _startupUpstreamCheckStarted, 1) != 0) return;
         _upstreamUpdateCts?.Cancel();
         _upstreamUpdateCts?.Dispose();
-        _upstreamUpdateCts = new CancellationTokenSource();
+        _upstreamUpdateCts = CancellationTokenSource.CreateLinkedTokenSource(_windowLifetimeCts.Token);
         CancellationToken token = _upstreamUpdateCts.Token;
 
         try

@@ -75,8 +75,8 @@ public sealed partial class MainWindow
                     ? $"{x.Name}: {Math.Round(x.Milliseconds, 1)} ms"
                     : $"{x.Name}: Missing / probe failed"));
 
-            double normal = await PowerShellTweakerService.BenchmarkAsync(false, 5, token);
-            double bare = await PowerShellTweakerService.BenchmarkAsync(true, 5, token);
+            double normal = await BenchmarkPowerShellStartupAsync(false, 5, token);
+            double bare = await BenchmarkPowerShellStartupAsync(true, 5, token);
             double overhead = normal >= 0 && bare >= 0 ? Math.Max(0, normal - bare) : -1;
 
             if (_shellHealthStatus != null)
@@ -93,8 +93,8 @@ public sealed partial class MainWindow
         actions.Children.Add(QuickButton("FAST PROFILE", async () =>
         {
             int removed = PowerShellCenterService.ApplyFastStartupProfile();
-            double normal = await PowerShellTweakerService.BenchmarkAsync(false, 5, token);
-            double bare = await PowerShellTweakerService.BenchmarkAsync(true, 5, token);
+            double normal = await BenchmarkPowerShellStartupAsync(false, 5, token);
+            double bare = await BenchmarkPowerShellStartupAsync(true, 5, token);
             double overhead = normal >= 0 && bare >= 0 ? Math.Max(0, normal - bare) : -1;
             if (_shellHealthStatus != null)
                 _shellHealthStatus.Text =
@@ -131,5 +131,36 @@ public sealed partial class MainWindow
             "Shell Health & Startup Cost",
             "PATH • PowerShell profile parser • CMD AutoRun • Terminal JSON • per-module startup timing",
             root));
+    }
+
+    private static async Task<double> BenchmarkPowerShellStartupAsync(bool noProfile, int repeats, CancellationToken token)
+    {
+        const string exe = @"C:\Program Files\PowerShell\7\pwsh.exe";
+        if (!System.IO.File.Exists(exe)) return -1;
+
+        double total = 0;
+        int completed = 0;
+        for (int i = 0; i < Math.Max(1, repeats); i++)
+        {
+            token.ThrowIfCancellationRequested();
+            using var process = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo(exe)
+                {
+                    Arguments = noProfile ? "-NoLogo -NoProfile -NonInteractive -Command exit" : "-NoLogo -NonInteractive -Command exit",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            if (!process.Start()) continue;
+            await process.WaitForExitAsync(token);
+            sw.Stop();
+            if (process.ExitCode != 0) continue;
+            total += sw.Elapsed.TotalMilliseconds;
+            completed++;
+        }
+
+        return completed == 0 ? -1 : total / completed;
     }
 }

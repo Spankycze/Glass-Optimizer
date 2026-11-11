@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -73,17 +73,41 @@ public sealed partial class MainWindow
         long shellMs = phase.ElapsedMilliseconds - tamperMs;
 
         _defenderModulesHost = new StackPanel { Spacing = 6 };
-        ContentStack.Children.Add(BuildDashboardExpander(
-            "Ochranné moduly",
-            "Real-time • behavior • cloud • PUA • Network Protection • CFA • SmartScreen • Firewall",
-            _defenderModulesHost));
+        var defenderModulesShellHost = new StackPanel();
+        ContentStack.Children.Add(defenderModulesShellHost);
+        int modulesGeneration = _navigationGeneration;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (token.IsCancellationRequested ||
+                modulesGeneration != _navigationGeneration ||
+                _section != "defender" ||
+                defenderModulesShellHost.Children.Count > 0)
+                return;
+
+            defenderModulesShellHost.Children.Add(BuildDashboardExpander(
+                "Ochranné moduly",
+                "Real-time • behavior • cloud • PUA • Network Protection • CFA • SmartScreen • Firewall",
+                _defenderModulesHost));
+        });
         long modulesMs = phase.ElapsedMilliseconds - tamperMs - shellMs;
 
         _defenderActionsHost = new StackPanel { Spacing = 10 };
-        ContentStack.Children.Add(BuildDashboardExpander(
-            "Disable / Restore",
-            "Vratné akce • bod obnovení • následná kontrola",
-            _defenderActionsHost));
+        var defenderActionsShellHost = new StackPanel();
+        ContentStack.Children.Add(defenderActionsShellHost);
+        int actionsGeneration = _navigationGeneration;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (token.IsCancellationRequested ||
+                actionsGeneration != _navigationGeneration ||
+                _section != "defender" ||
+                defenderActionsShellHost.Children.Count > 0)
+                return;
+
+            defenderActionsShellHost.Children.Add(BuildDashboardExpander(
+                "Disable / Restore",
+                "Vratné akce • bod obnovení • následná kontrola",
+                _defenderActionsHost));
+        });
         long actionsMs = phase.ElapsedMilliseconds - tamperMs - shellMs - modulesMs;
         long tailStartMs = phase.ElapsedMilliseconds;
         UpdateDirtyState();
@@ -99,17 +123,20 @@ public sealed partial class MainWindow
         if (defenderStale)
         {
             var detectSnapshot = _tweaks.ToArray();
+            int detectGeneration = _navigationGeneration;
             if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                if (token.IsCancellationRequested || _section != "defender") return;
+                if (token.IsCancellationRequested ||
+                    detectGeneration != _navigationGeneration ||
+                    _section != "defender") return;
                 SafeTaskService.Forget(
-                    DetectDefenderAndRefreshAsync(detectSnapshot, token),
+                    DetectDefenderAndRefreshAsync(detectSnapshot, detectGeneration, token),
                     "defender",
                     "Background Defender detect");
             }))
             {
                 SafeTaskService.Forget(
-                    DetectDefenderAndRefreshAsync(detectSnapshot, token),
+                    DetectDefenderAndRefreshAsync(detectSnapshot, detectGeneration, token),
                     "defender",
                     "Background Defender detect fallback");
             }
@@ -123,6 +150,8 @@ public sealed partial class MainWindow
     {
         if (_defenderStaticHero == null || _defenderStaticTamper != tamper)
         {
+            if (_defenderStaticHero?.Parent is Panel p1) p1.Children.Remove(_defenderStaticHero);
+            if (_defenderStaticMetrics?.Parent is Panel p2) p2.Children.Remove(_defenderStaticMetrics);
             _defenderStaticHero = null;
             _defenderStaticMetrics = null;
             _defenderTamperValue = null;
@@ -241,23 +270,30 @@ public sealed partial class MainWindow
 
     private void ScheduleDefenderModules(CancellationToken token)
     {
-        if (_defenderModulesQueued || _defenderModulesHost == null || _defenderModulesHost.Children.Count >= _tweaks.Count) return;
-        _defenderModulesIndex = Math.Max(_defenderModulesIndex, _defenderModulesHost.Children.Count);
+        StackPanel? host = _defenderModulesHost;
+        if (_defenderModulesQueued || host == null || host.Children.Count >= _tweaks.Count) return;
+        int generation = _navigationGeneration;
+        _defenderModulesIndex = Math.Max(_defenderModulesIndex, host.Children.Count);
         _defenderModulesQueued = true;
-        QueueDefenderModuleBatch(token);
+        QueueDefenderModuleBatch(token, generation, host);
     }
 
-    private void QueueDefenderModuleBatch(CancellationToken token)
+    private void QueueDefenderModuleBatch(CancellationToken token, int generation, StackPanel host)
     {
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        // A rejected low-priority enqueue must release the queued flag, or the
+        // deferred module list can never be scheduled again in this session.
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "defender" || _defenderModulesHost == null)
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "defender" ||
+                !ReferenceEquals(_defenderModulesHost, host))
             {
                 _defenderModulesQueued = false;
                 return;
             }
 
-            _defenderModulesIndex = Math.Max(_defenderModulesIndex, _defenderModulesHost.Children.Count);
+            _defenderModulesIndex = Math.Max(_defenderModulesIndex, host.Children.Count);
             if (_defenderModulesIndex >= _tweaks.Count)
             {
                 _defenderModulesQueued = false;
@@ -268,46 +304,61 @@ public sealed partial class MainWindow
             int start = _defenderModulesIndex;
             int end = Math.Min(start + 1, _tweaks.Count);
             for (int i = start; i < end; i++)
-                _defenderModulesHost.Children.Add(CreateTweakCard(_tweaks[i]));
+                host.Children.Add(CreateTweakCard(_tweaks[i]));
             _defenderModulesIndex = end;
 
             LogService.Info("performance",
-                $"DEFENDER_MODULES_BATCH start={start} added={end - start} ms={sw.ElapsedMilliseconds} count={_defenderModulesHost.Children.Count}");
+                $"DEFENDER_MODULES_BATCH start={start} added={end - start} ms={sw.ElapsedMilliseconds} count={host.Children.Count}");
 
             if (_defenderModulesIndex < _tweaks.Count)
-                SafeTaskService.Forget(QueueNextDefenderModuleBatchAsync(token), "defender", "Deferred Defender module pacing");
+                SafeTaskService.Forget(
+                    QueueNextDefenderModuleBatchAsync(token, generation, host),
+                    "defender",
+                    "Deferred Defender module pacing");
             else
                 _defenderModulesQueued = false;
-        });
+        })) _defenderModulesQueued = false;
     }
 
-    private async Task QueueNextDefenderModuleBatchAsync(CancellationToken token)
+    private async Task QueueNextDefenderModuleBatchAsync(CancellationToken token, int generation, StackPanel host)
     {
         try
         {
             await Task.Delay(8, token).ConfigureAwait(false);
-            if (token.IsCancellationRequested) return;
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "defender" ||
+                !ReferenceEquals(_defenderModulesHost, host))
+                return;
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
-                () => QueueDefenderModuleBatch(token));
+                () => QueueDefenderModuleBatch(token, generation, host));
         }
         catch (OperationCanceledException) { }
     }
 
     private void ScheduleDefenderActions(bool tamper, CancellationToken token)
     {
-        if (_defenderActionsQueued || _defenderActionsHost == null || _defenderActionsHost.Children.Count > 0) return;
+        StackPanel? host = _defenderActionsHost;
+        if (_defenderActionsQueued || host == null || host.Children.Count > 0) return;
+        int generation = _navigationGeneration;
         _defenderActionsQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             _defenderActionsQueued = false;
-            if (token.IsCancellationRequested || _defenderActionsHost == null || _defenderActionsHost.Children.Count > 0) return;
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "defender" ||
+                !ReferenceEquals(_defenderActionsHost, host) ||
+                host.Children.Count > 0)
+                return;
+
             var sw = System.Diagnostics.Stopwatch.StartNew();
             if (tamper)
-                _defenderActionsHost.Children.Add(ActionCard("Tamper Protection je zapnutý", "Windows blokuje část změn Defenderu. Otevři Windows Security a vypni Tamper Protection ručně, pokud to systém dovolí.", "Otevřít Windows Security", () => { ProcessRunner.Open("windowsdefender://threatsettings"); return Task.CompletedTask; }));
-            _defenderActionsHost.Children.Add(ActionCard("Vypnout Defender AV", "Vytvoří bod obnovení a použije podporované policy/service/task změny. Tamper Protection může část změn odmítnout.", "Vypnout", RunDefenderDisableAsync));
-            _defenderActionsHost.Children.Add(ActionCard("Obnovit Defender", "Vrátí policy, služby a naplánované úlohy Defenderu.", "Obnovit", RunDefenderRestoreAsync));
+                host.Children.Add(ActionCard("Tamper Protection je zapnutý", "Windows blokuje část změn Defenderu. Otevři Windows Security a vypni Tamper Protection ručně, pokud to systém dovolí.", "Otevřít Windows Security", () => { ProcessRunner.Open("windowsdefender://threatsettings"); return Task.CompletedTask; }));
+            host.Children.Add(ActionCard("Vypnout Defender AV", "Vytvoří bod obnovení a použije podporované policy/service/task změny. Tamper Protection může část změn odmítnout.", "Vypnout", RunDefenderDisableAsync));
+            host.Children.Add(ActionCard("Obnovit Defender", "Vrátí policy, služby a naplánované úlohy Defenderu.", "Obnovit", RunDefenderRestoreAsync));
             LogService.Info("performance", $"DEFENDER_ACTIONS_DEFERRED ms={sw.ElapsedMilliseconds} tamper={tamper}");
-        });
+        })) _defenderActionsQueued = false;
     }
 
     internal async Task RunDefenderDeferredActionsSmokeAsync()
@@ -331,15 +382,22 @@ public sealed partial class MainWindow
             $"DEFENDER_DEFERRED_ACTIONS_SMOKE_OK actions={actualActions} modules={actualModules}");
     }
 
-    private async Task DetectDefenderAndRefreshAsync(Models.TweakDefinition[] tweaks, CancellationToken token)
+    private async Task DetectDefenderAndRefreshAsync(
+        Models.TweakDefinition[] tweaks,
+        int generation,
+        CancellationToken token)
     {
         try
         {
             await _engine.DetectFreshAsync(tweaks, TimeSpan.FromSeconds(20), token);
-            if (token.IsCancellationRequested || _section != "defender") return;
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "defender") return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "defender") return;
+                if (token.IsCancellationRequested ||
+                    generation != _navigationGeneration ||
+                    _section != "defender") return;
                 RefreshCards();
                 if (_defenderPageCache != null)
                     _defenderPageRevisionStamp = CurrentTweakRevisionStamp();
@@ -349,10 +407,12 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             LogService.Error("Background Defender detect failed", ex);
-            if (token.IsCancellationRequested) return;
+            if (token.IsCancellationRequested || generation != _navigationGeneration) return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "defender") return;
+                if (token.IsCancellationRequested ||
+                    generation != _navigationGeneration ||
+                    _section != "defender") return;
                 ShowActionFeedback(
                     "Defender — ověření stavu",
                     ActionFeedbackKind.Failed,

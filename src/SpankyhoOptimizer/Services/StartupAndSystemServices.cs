@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Management;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -43,6 +44,14 @@ public static class StartupManagerService
     private static StartupInventoryDelta _lastDelta = new(0, 0, 0);
     private static StartupEntry[]? _deltaBaselineCache;
     private static bool _deltaBaselineLoaded;
+    // The delta baseline is persisted off the inventory critical path.
+    // Serialize commits and skip identical snapshots; otherwise queued writes
+    // can finish out of order and leave a stale baseline on disk.
+    private static readonly object DeltaWriteGate = new();
+    private static StartupEntry[]? _lastCommittedDeltaBaseline;
+    private static DateTime _lastCommittedDeltaUtc;
+    private static int _deltaWriteRevision;
+    private static readonly TimeSpan DeltaBaselineRefreshInterval = TimeSpan.FromHours(12);
     private static readonly Dictionary<string, string> PublisherCache = new(StringComparer.OrdinalIgnoreCase);
     private const string DisabledSuffix = "\\SpankyhoDisabled";
     private static readonly string[] RunPaths =
@@ -51,19 +60,36 @@ public static class StartupManagerService
         "Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
     };
 
+    // Dedicated small AI inventory: automatic writes are intentionally
+    // limited to HKCU Run + our reversible disabled partner, in both views.
+    // Do not enumerate Task Scheduler, HKLM, folders or publisher caches of
+    // unrelated startup entries on every AI evaluation.
+    internal static Task<IReadOnlyList<StartupEntry>> GetAiUserRunAsync(
+        CancellationToken token) =>
+        Task.Run<IReadOnlyList<StartupEntry>>(() =>
+        {
+            var rows = new List<StartupEntry>();
+            foreach (RegistryView view in new[]
+                { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                token.ThrowIfCancellationRequested();
+                ReadKey(rows, RegistryHive.CurrentUser, view, RunPaths[0],
+                    true, includePublisher: false);
+                ReadKey(rows, RegistryHive.CurrentUser, view,
+                    RunPaths[0] + DisabledSuffix, false, includePublisher: false);
+            }
+            return rows;
+        }, token);
+
     public static Task<IReadOnlyList<StartupEntry>> GetAsync(
         bool forceRefresh = false,
         bool forceTaskSchedulerRefresh = false)
     {
-        if (!forceRefresh)
-        {
-            var snapshot = TryGetFreshSnapshot();
-            if (snapshot != null)
-                return Task.FromResult(snapshot);
-        }
-
         lock (CacheLock)
         {
+            // The caller, potentially the WinUI dispatcher, must only touch
+            // the in-memory cache. JSON disk hydration belongs to the shared
+            // worker flight, not the synchronous GetAsync prelude.
             if (!forceRefresh && _cache != null && DateTime.UtcNow - _cacheAt < TimeSpan.FromMinutes(2))
                 return Task.FromResult(_cache);
             if (_flight != null && !_flight.IsCompleted && _flightGeneration == _cacheGeneration)
@@ -71,7 +97,35 @@ public static class StartupManagerService
 
             int generation = _cacheGeneration;
             _flightGeneration = generation;
-            _flight = LoadAsync(forceTaskSchedulerRefresh, generation);
+            _flight = Task.Run(async () =>
+            {
+                if (!forceRefresh)
+                {
+                    var persisted = TryReadPersistentSnapshot();
+                    if (persisted != null)
+                    {
+                        lock (CacheLock)
+                        {
+                            // A manual startup edit may invalidate the cache
+                            // while JSON is being read. Reject that old file
+                            // rather than restoring stale enabled states.
+                            if (generation == _cacheGeneration)
+                            {
+                                SeedPublisherCacheFromSnapshot(persisted);
+                                _cache = persisted;
+                                _cacheAt = DateTime.UtcNow;
+                                _displayCache = persisted;
+                                _displayCacheNeedsRefresh = true;
+                                _cacheNeedsBackgroundRefresh = true;
+                                _primaryPersistentSnapshotCache = persisted;
+                                LogService.Info("startup", $"STARTUP_PERSISTENT_HIT count={persisted.Length} via=async");
+                                return (IReadOnlyList<StartupEntry>)persisted;
+                            }
+                        }
+                    }
+                }
+                return await LoadAsync(forceTaskSchedulerRefresh, generation).ConfigureAwait(false);
+            });
             return _flight;
         }
     }
@@ -156,14 +210,21 @@ public static class StartupManagerService
 
         if (publish)
         {
-            StartupEntry[] persistedFinal = final.ToArray();
+            // The sorted inventory is already a newly owned array. Reuse it for
+            // persistence/delta rather than allocating and copying every entry again.
+            StartupEntry[] persistedFinal = final;
             var delta = ComputeDelta(persistedFinal);
+            int deltaRevision;
             lock (CacheLock)
             {
-                if (generation == _cacheGeneration)
-                    _lastDelta = delta;
+                // An invalidation may occur while comparing the inventory.
+                // Never publish an obsolete delta or queue a stale disk write.
+                if (generation != _cacheGeneration)
+                    return final;
+                _lastDelta = delta;
                 _deltaBaselineCache = persistedFinal;
                 _deltaBaselineLoaded = true;
+                deltaRevision = ++_deltaWriteRevision;
             }
 
             LogService.Info("startup", $"STARTUP_DELTA added={delta.Added} removed={delta.Removed} changed={delta.Changed}");
@@ -171,35 +232,56 @@ public static class StartupManagerService
             // The primary snapshot is part of GetAsync's contract: callers may clear
             // memory immediately and still expect persistent hydration to work.
             // Avoid rewriting identical JSON on ordinary refreshes.
-            bool primaryUnchanged;
             lock (CacheLock)
-                primaryUnchanged = _primaryPersistentSnapshotCache is { Length: > 0 } previousPrimary &&
-                                   previousPrimary.SequenceEqual(persistedFinal);
-
-            if (!primaryUnchanged)
             {
-                WritePersistentSnapshot(persistedFinal);
-                lock (CacheLock)
+                // Commit atomically with InvalidateCache: an older completed
+                // inventory must not recreate the persistent file after a
+                // newer startup configuration invalidated it.
+                if (generation == _cacheGeneration &&
+                    !(_primaryPersistentSnapshotCache is { Length: > 0 } previousPrimary &&
+                      previousPrimary.SequenceEqual(persistedFinal)) &&
+                    UserScopedCacheService.TryWrite(PersistentSnapshotKey, persistedFinal))
                     _primaryPersistentSnapshotCache = persistedFinal;
             }
 
-            // Delta baseline is only needed by a later inventory pass, so keep this
-            // secondary filesystem write off the current critical path.
+            // Delta baseline is only needed by the next inventory pass. Commit
+            // off-thread, but serialize writes and reject superseded revisions:
+            // ThreadPool callbacks are not guaranteed to execute in FIFO order.
             _ = ThreadPool.QueueUserWorkItem(_ =>
             {
-                bool stillCurrent;
-                lock (CacheLock)
-                    stillCurrent = generation == _cacheGeneration;
-                if (!stillCurrent) return;
+                    try
+                    {
+                        lock (DeltaWriteGate)
+                        {
+                            DateTime now = DateTime.UtcNow;
+                            bool needsWrite;
+                            lock (CacheLock)
+                            {
+                                needsWrite = generation == _cacheGeneration &&
+                                    deltaRevision == _deltaWriteRevision &&
+                                    ShouldPersistDeltaBaseline(_lastCommittedDeltaBaseline,
+                                        persistedFinal, _lastCommittedDeltaUtc, now);
+                            }
+                            if (!needsWrite) return;
 
-                try
-                {
-                    UserScopedCacheService.Write(DeltaBaselineKey, persistedFinal);
-                }
-                catch (Exception ex)
-                {
-                    LogService.Error("startup", "Deferred startup delta baseline persistence failed", ex);
-                }
+                            // Only successfully committed snapshots can suppress
+                            // later writes. An I/O failure must leave retry open.
+                            if (!UserScopedCacheService.TryWrite(DeltaBaselineKey, persistedFinal))
+                                return;
+                            lock (CacheLock)
+                            {
+                                // Even if a newer revision published DURING this
+                                // commit, these are the bytes now on disk. A newer
+                                // queued writer must see them and correct the file.
+                                _lastCommittedDeltaBaseline = persistedFinal;
+                                _lastCommittedDeltaUtc = now;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogService.Error("startup", "Deferred startup delta baseline persistence failed", ex);
+                    }
             });
         }
 
@@ -320,16 +402,28 @@ public static class StartupManagerService
         }
     }
 
+    private static void MarkDisplayCacheForRefreshLocked()
+    {
+        // Must run inside CacheLock. Retain stale UI rows and force hydration.
+        _displayCacheNeedsRefresh = _displayCache != null;
+        _cacheNeedsBackgroundRefresh = _displayCacheNeedsRefresh;
+    }
+
     public static void InvalidateCache(bool invalidateTaskScheduler = false)
     {
         lock (CacheLock)
         {
             _cache = null;
             _cacheAt = default;
-            _cacheNeedsBackgroundRefresh = false;
+            // Retain the old display while a refresh runs, but ALWAYS
+            // schedule new inventory hydration; previously manual Obnovit
+            // left _displayCache with refreshPending=false forever.
+            MarkDisplayCacheForRefreshLocked();
             _cacheGeneration++;
+            // Same lock as fresh disk publication. Do not remove the file
+            // outside the critical section and let a stale writer restore it.
+            UserScopedCacheService.Remove(PersistentSnapshotKey);
         }
-        UserScopedCacheService.Remove(PersistentSnapshotKey);
         if (invalidateTaskScheduler)
             TaskSchedulerService.InvalidateCache();
     }
@@ -376,6 +470,17 @@ public static class StartupManagerService
         }
     }
 
+    private static bool ShouldPersistDeltaBaseline(
+        IReadOnlyList<StartupEntry>? committed,
+        IReadOnlyList<StartupEntry> current,
+        DateTime committedUtc, DateTime nowUtc) =>
+        committed == null ||
+        committed.Count != current.Count ||
+        committedUtc == default ||
+        nowUtc <= committedUtc ||
+        nowUtc - committedUtc >= DeltaBaselineRefreshInterval ||
+        !committed.SequenceEqual(current);
+
     private static StartupInventoryDelta ComputeDelta(IReadOnlyList<StartupEntry> current)
     {
         var previous = EnsureDeltaBaselineLoaded();
@@ -388,16 +493,30 @@ public static class StartupManagerService
         IReadOnlyList<StartupEntry> previous,
         IReadOnlyList<StartupEntry> current)
     {
-        var oldMap = previous.ToDictionary(x => x.Id, StringComparer.OrdinalIgnoreCase);
-        var newMap = current.ToDictionary(x => x.Id, StringComparer.OrdinalIgnoreCase);
-        int added = newMap.Keys.Count(x => !oldMap.ContainsKey(x));
-        int removed = oldMap.Keys.Count(x => !newMap.ContainsKey(x));
-        int changed = newMap.Count(pair =>
-            oldMap.TryGetValue(pair.Key, out var old) &&
-            (!string.Equals(old.Command, pair.Value.Command, StringComparison.Ordinal) ||
-             old.Enabled != pair.Value.Enabled ||
-             !string.Equals(old.FilePath, pair.Value.FilePath, StringComparison.OrdinalIgnoreCase)));
-        return new StartupInventoryDelta(added, removed, changed);
+        // A single old-ID dictionary and a current-ID set replace two
+        // ToDictionary allocations and three LINQ sweeps. Remove matched
+        // old entries so dictionary.Count is exactly the removed count.
+        // Duplicate legacy snapshot IDs are ignored rather than throwing.
+        var oldMap = new Dictionary<string, StartupEntry>(
+            previous.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var item in previous)
+            oldMap.TryAdd(item.Id, item);
+        var currentIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int added = 0, changed = 0;
+        foreach (var item in current)
+        {
+            if (!currentIds.Add(item.Id)) continue;
+            if (!oldMap.Remove(item.Id, out var old))
+            {
+                added++;
+                continue;
+            }
+            if (!string.Equals(old.Command, item.Command, StringComparison.Ordinal) ||
+                old.Enabled != item.Enabled ||
+                !string.Equals(old.FilePath, item.FilePath, StringComparison.OrdinalIgnoreCase))
+                changed++;
+        }
+        return new StartupInventoryDelta(added, oldMap.Count, changed);
     }
 
     internal static string RunDeltaSmoke()
@@ -423,23 +542,113 @@ public static class StartupManagerService
         if (delta.Added != 1 || delta.Removed != 1 || delta.Changed != 1)
             throw new InvalidOperationException(
                 $"Startup delta smoke selhal: +{delta.Added} -{delta.Removed} ~{delta.Changed}");
-        return "STARTUP_DELTA_SMOKE_OK added=1 removed=1 changed=1";
+        var duplicates = ComputeDeltaFrom([previous[0], previous[0], previous[1]],
+            [previous[1], previous[1], previous[0] with { Enabled = false }]);
+        if (duplicates.Added != 0 || duplicates.Removed != 0 || duplicates.Changed != 1)
+            throw new InvalidOperationException("Duplicate legacy Startup IDs corrupted delta comparison.");
+        var oldPath = A("path-case", "tool.exe", true) with { FilePath = @"C:\Apps\Tool.exe" };
+        if (ComputeDeltaFrom([oldPath], [oldPath with { FilePath = @"c:\apps\TOOL.EXE" }]).HasChanges)
+            throw new InvalidOperationException("Startup path case-only change falsely invalidated delta.");
+
+        // Unchanged inventories must not rewrite the atomic JSON baseline at
+        // every refresh. Publisher/metadata-only changes still persist, and
+        // the 12h refresh prevents a long-lived process from aging its file out.
+        DateTime sampleUtc = new(2026, 10, 17, 18, 0, 0, DateTimeKind.Utc);
+        if (ShouldPersistDeltaBaseline(previous, previous, sampleUtc, sampleUtc.AddMinutes(2)) ||
+            !ShouldPersistDeltaBaseline(null, previous, sampleUtc, sampleUtc.AddMinutes(2)) ||
+            !ShouldPersistDeltaBaseline(previous, current, sampleUtc, sampleUtc.AddMinutes(2)) ||
+            !ShouldPersistDeltaBaseline(previous,
+                [previous[0] with { Publisher = "New Publisher" }, previous[1], previous[2]],
+                sampleUtc, sampleUtc.AddMinutes(2)) ||
+            !ShouldPersistDeltaBaseline(previous, previous, sampleUtc, sampleUtc.AddHours(12)) ||
+            !ShouldPersistDeltaBaseline(previous, previous, sampleUtc, sampleUtc.AddMinutes(-1)))
+            throw new InvalidOperationException("Startup delta baseline write coalescing regressed.");
+
+        // Read-only policy fixture: do not invalidate actual persisted cache or
+        // touch startup registry; preserve original static state under lock.
+        lock (CacheLock)
+        {
+            var previousDisplay = _displayCache;
+            bool previousPending = _displayCacheNeedsRefresh;
+            bool previousNeedsRefresh = _cacheNeedsBackgroundRefresh;
+            try
+            {
+                _displayCache = previous;
+                _displayCacheNeedsRefresh = false;
+                _cacheNeedsBackgroundRefresh = false;
+                MarkDisplayCacheForRefreshLocked();
+                if (!_displayCacheNeedsRefresh || !_cacheNeedsBackgroundRefresh)
+                    throw new InvalidOperationException("Manual refresh did not schedule rehydration.");
+                _displayCache = null;
+                MarkDisplayCacheForRefreshLocked();
+                if (_displayCacheNeedsRefresh || _cacheNeedsBackgroundRefresh)
+                    throw new InvalidOperationException("Refresh scheduled without cached display.");
+            }
+            finally
+            {
+                _displayCache = previousDisplay;
+                _displayCacheNeedsRefresh = previousPending;
+                _cacheNeedsBackgroundRefresh = previousNeedsRefresh;
+            }
+        }
+
+        return "STARTUP_DELTA_SMOKE_OK added=1 removed=1 changed=1 " +
+            "duplicates=true pathCase=true manualRefreshFlag=true persistentWrites=0";
     }
 
     private static void WritePersistentSnapshot(IReadOnlyList<StartupEntry> items) =>
-        UserScopedCacheService.Write(PersistentSnapshotKey, items.ToArray());
+        UserScopedCacheService.Write(PersistentSnapshotKey, items as StartupEntry[] ?? items.ToArray());
 
-    private static void ReadKey(List<StartupEntry> result, RegistryHive hive, RegistryView view, string path, bool enabled)
+    // The AI presence/restore path has no reason to open every EXE to read
+    // version metadata: executable identity comes from the registry command.
+    internal static bool NeedsPublisherMetadata(bool aiInventory) => !aiInventory;
+
+    // Registry enumeration is not a transaction. GetValueNames may include
+    // a name deleted by another process before its GetValue is performed.
+    // Only an actual non-null read is evidence that the slot still exists;
+    // a legitimate present empty REG_SZ is preserved as a row so inventory
+    // can still show it (restore policy separately rejects blank commands).
+    internal static bool TryReadPresentRegistryCommand(object? rawValue, out string command)
+    {
+        command = rawValue?.ToString() ?? string.Empty;
+        return rawValue is not null;
+    }
+
+    // An unnamed/default Run registry value is not a Windows autorun entry.
+    // Other non-string or blank values remain visible for diagnosis but must
+    // never offer a toggle: registry moves require real nonempty commands.
+    // No registry access here; safe for synthetic inventory and policy tests.
+    internal static bool TryClassifyRegistryStartupSlot(
+        string? name, object? rawValue, out string command, out bool canToggle)
+    {
+        canToggle = false;
+        if (!TryReadPresentRegistryCommand(rawValue, out command) ||
+            string.IsNullOrWhiteSpace(name))
+            return false;
+        canToggle = rawValue is string && !string.IsNullOrWhiteSpace(command);
+        return true;
+    }
+
+    private static void ReadKey(List<StartupEntry> result, RegistryHive hive,
+        RegistryView view, string path, bool enabled, bool includePublisher = true)
     {
         using var root = RegistryKey.OpenBaseKey(hive, view);
         using var key = root.OpenSubKey(path);
         if (key == null) return;
         foreach (var name in key.GetValueNames())
         {
-            var value = key.GetValue(name, "", RegistryValueOptions.DoNotExpandEnvironmentNames)?.ToString() ?? "";
-            var executable = ExecutableOf(value);
+            // A removed value MUST NOT become a phantom enabled Run slot.
+            // Null default distinguishes disappearance from a present empty
+            // string. This matters for the AI-owned startup recovery journal.
+            object? rawValue = key.GetValue(
+                name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+            if (!TryClassifyRegistryStartupSlot(
+                    name, rawValue, out string value, out bool canToggle))
+                continue;
+            var executable = canToggle ? ExecutableOf(value) : null;
             result.Add(new StartupEntry($"{hive}|{view}|{path}|{name}", name, value, hive, path.Replace(DisabledSuffix, ""), enabled,
-                PublisherOfExecutable(executable), executable, "Registry", null, true, view));
+                includePublisher ? PublisherOfExecutable(executable) : "Neznámý vydavatel",
+                executable, "Registry", null, canToggle, view));
         }
     }
 
@@ -464,13 +673,77 @@ public static class StartupManagerService
         AddFiles(disabledFolder, false);
     }
 
+    // Read a direct absolute executable target even if it no longer exists:
+    // dropping a missing path here made old Spotify/Notion/launcher Run entries
+    // invisible to StartupRowViewModel.IsOrphaned and the Startup hero count.
+    // Relative/PATH commands and shell wrappers are intentionally unknown,
+    // not marked orphaned because their resolution requires a process shell.
     private static string? ExecutableOf(string command)
     {
         if (string.IsNullOrWhiteSpace(command)) return null;
-        var expanded = Environment.ExpandEnvironmentVariables(command.Trim());
-        string candidate = expanded.StartsWith('"') ? expanded.Split('"', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "" : Regex.Match(expanded, @"^[^ ]+\.exe", RegexOptions.IgnoreCase).Value;
-        candidate = candidate.Trim('"');
-        return File.Exists(candidate) ? candidate : null;
+        string expanded = Environment.ExpandEnvironmentVariables(command.Trim());
+        string candidate;
+        if (expanded.StartsWith('"'))
+        {
+            int closing = expanded.IndexOf('"', 1);
+            if (closing <= 1 || (closing + 1 < expanded.Length &&
+                !char.IsWhiteSpace(expanded[closing + 1])))
+                return null;
+            candidate = expanded[1..closing];
+        }
+        else
+        {
+            // Windows Run commands sometimes contain unquoted Program Files
+            // paths followed by arguments. Find the actual .exe boundary
+            // instead of truncating the path at its first space.
+            int ending = 0;
+            do
+            {
+                ending = expanded.IndexOf(".exe", ending, StringComparison.OrdinalIgnoreCase);
+                if (ending < 0) return null;
+                int after = ending + 4;
+                if (after == expanded.Length || char.IsWhiteSpace(expanded[after]))
+                {
+                    candidate = expanded[..after];
+                    break;
+                }
+                ending = after;
+            } while (true);
+        }
+
+        // Do not resolve relative executable names or UNC paths with blocking
+        // network file probes on the UI thread; a direct local absolute EXE is
+        // the only file whose missing status we can report with confidence.
+        try
+        {
+            if (!Path.IsPathFullyQualified(candidate) ||
+                !string.Equals(Path.GetExtension(candidate), ".exe", StringComparison.OrdinalIgnoreCase) ||
+                candidate.StartsWith(@"\\", StringComparison.Ordinal))
+                return null;
+        }
+        catch (ArgumentException) { return null; }
+        return candidate;
+    }
+
+    internal static string RunOrphanedRegistryCommandSmoke()
+    {
+        string missing = Path.Combine(Path.GetTempPath(), "Spanky Missing Startup " + Guid.NewGuid().ToString("N"), "Notion.exe");
+        string quoted = $"\"{missing}\" --processStart Notion.exe";
+        string bare = $"{missing} --processStart";
+        if (File.Exists(missing) ||
+            ExecutableOf(quoted) != missing ||
+            ExecutableOf(bare) != missing ||
+            ExecutableOf($"\"{missing}\"") != missing ||
+            ExecutableOf(missing + ".bak") != null ||
+            ExecutableOf("notion.exe --processStart") != null ||
+            ExecutableOf($"cmd.exe /c \"{missing}\"") != null ||
+            ExecutableOf($"\"{missing}\"bad-suffix") != null ||
+            ExecutableOf(@"\\test-server\share\Missing.exe") != null ||
+            ExecutableOf("") != null)
+            throw new InvalidOperationException("Orphaned registry startup target was not parsed safely.");
+
+        return "STARTUP_ORPHAN_REGISTRY_TARGET_OK quoted=true unquotedSpaces=true " +
+            "missingPreserved=true relativeExcluded=true wrappersExcluded=true uncExcluded=true writes=0";
     }
 
     private static string PublisherOfExecutable(string? executable)
@@ -488,71 +761,726 @@ public static class StartupManagerService
         catch { return "Neznámý vydavatel"; }
     }
 
-    public static async Task SetEnabledAsync(StartupEntry item, bool enabled)
+    // The startup inventory / worker payload is NOT an authority for
+    // arbitrary registry paths. Only actual Windows Run / RunOnce slots
+    // enumerated by this service are legal. Fail closed before creating a
+    // subkey, starting a worker, or moving any native startup value.
+    internal static bool IsAdmissibleRegistryStartupMove(StartupEntry item) =>
+        string.Equals(item.SourceKind, "Registry", StringComparison.OrdinalIgnoreCase) &&
+        item.CanToggle &&
+        !string.IsNullOrWhiteSpace(item.Name) &&
+        !string.IsNullOrWhiteSpace(item.Command) &&
+        item.Hive is RegistryHive.CurrentUser or RegistryHive.LocalMachine &&
+        item.View is RegistryView.Registry32 or RegistryView.Registry64 &&
+        RunPaths.Any(path => string.Equals(
+            item.RunPath, path, StringComparison.OrdinalIgnoreCase));
+
+    internal static bool IsMovableRegistryStartupValueKind(RegistryValueKind kind) =>
+        kind is RegistryValueKind.String or RegistryValueKind.ExpandString;
+
+    // The inventory is only a snapshot. A user or another program may change
+    // a Run value before we move it. Never migrate an unexpected command:
+    // such a move would mutate somebody else's startup preference.
+    internal static bool MatchesExpectedRegistryCommand(
+        object? currentValue, string expectedCommand) =>
+        currentValue is string text &&
+        string.Equals(text, expectedCommand, StringComparison.Ordinal);
+
+    // Never remove an unowned destination during rollback. A failed native
+    // SetValue may leave an independently-created target of the same command
+    // and type; equality is NOT proof that our write succeeded. Only an
+    // actually completed own target SetValue may authorize target cleanup,
+    // and only when the original source is safely restored and still matches.
+    internal static bool MayDeleteStartupRollbackTarget(
+        bool targetWrittenByUs, bool sourceRestored, object? targetValue,
+        RegistryValueKind targetKind, string originalCommand,
+        RegistryValueKind originalKind) =>
+        targetWrittenByUs && sourceRestored && targetKind == originalKind &&
+        MatchesExpectedRegistryCommand(targetValue, originalCommand);
+
+    // The inventory only offers direct files from the two actual Windows
+    // startup folders. Never move an arbitrary path supplied by a stale UI
+    // snapshot or a malformed worker payload outside that narrow scope.
+    internal static bool IsExpectedStartupFolderSource(
+        string? sourceId, string? runPath, bool enabled)
     {
+        if (string.IsNullOrWhiteSpace(sourceId) ||
+            string.IsNullOrWhiteSpace(runPath) ||
+            !Path.IsPathFullyQualified(sourceId) ||
+            !Path.IsPathFullyQualified(runPath))
+            return false;
+        try
+        {
+            string root = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(runPath));
+            string userStartup = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
+                Environment.GetFolderPath(Environment.SpecialFolder.Startup)));
+            string commonStartup = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup)));
+            if (!root.Equals(userStartup, StringComparison.OrdinalIgnoreCase) &&
+                !root.Equals(commonStartup, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            string expectedParent = enabled
+                ? root : Path.Combine(root, "SpankyhoDisabled");
+            string? actualParent = Path.GetDirectoryName(Path.GetFullPath(sourceId));
+            return !string.IsNullOrWhiteSpace(Path.GetFileName(sourceId)) &&
+                actualParent is not null &&
+                actualParent.Equals(expectedParent, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    // Registry Run value names are case-insensitive. A disabled entry and an
+    // enabled entry can legitimately share a name; never replace the target.
+    private static void RequireVacantRegistryTarget(IEnumerable<string> targetNames, string entryName)
+    {
+        // Registry value names are case-insensitive. Overwriting an existing
+        // target here could destroy a distinct active startup command, and the
+        // old rollback would then remove that unrelated target completely.
+        if (targetNames.Contains(entryName, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"Položku '{entryName}' nelze přesunout: cílový startup záznam se stejným názvem již existuje.");
+    }
+
+    // The first list-based collision check is a snapshot. A second
+    // just-in-time read detects a value written by another process since
+    // that enumeration, BEFORE any SetValue or rollback cleanup can occur.
+    // This narrows the race; Registry does not offer an atomic move/CAS.
+    internal static void RequireVacantRegistryTargetAtWrite(
+        IEnumerable<string> targetNames, object? currentValue, string entryName)
+    {
+        RequireVacantRegistryTarget(targetNames, entryName);
+        if (currentValue is not null)
+            throw new InvalidOperationException(
+                "Startup destination was populated after enumeration; move rejected.");
+    }
+
+    // DeleteValue(name, throwOnMissingValue:false) silently succeeds when
+    // another process removed the value since the last readback. Such a
+    // no-op must never mark sourceDeletedByUs and authorize resurrection.
+    // A strict delete throws on missing; callers only mark own deletion
+    // completed AFTER the injected native operation actually returns.
+    internal static bool CompleteStrictStartupSourceDelete(
+        Action<bool> deleteValue)
+    {
+        ArgumentNullException.ThrowIfNull(deleteValue);
+        deleteValue(true);
+        return true;
+    }
+
+    // Restoring a missing source when we have NOT successfully completed
+    // our own DeleteValue would resurrect a startup item removed by the
+    // user/another process. Only our completed delete authorizes rollback.
+    internal static bool MayRecreateStartupSourceDuringRollback(
+        bool sourceDeletedByUs, object? currentSource) =>
+        sourceDeletedByUs && currentSource is null;
+
+    // Do not call CreateSubKey merely to discover that a destination
+    // already exists and contains a colliding Run value. First open any
+    // existing key, create only if absent, and validate its names. Keep
+    // the opened handle owned by the caller on success; on rejection,
+    // dispose it without touching its values or deleting the source.
+    // The injected operations make ordering verifiable without live registry.
+    internal static T OpenVacantRegistryMoveTarget<T>(
+        Func<T?> openExisting, Func<T> createIfMissing,
+        Func<T, IEnumerable<string>> getValueNames, string entryName)
+        where T : class, IDisposable
+    {
+        ArgumentNullException.ThrowIfNull(openExisting);
+        ArgumentNullException.ThrowIfNull(createIfMissing);
+        ArgumentNullException.ThrowIfNull(getValueNames);
+        if (string.IsNullOrWhiteSpace(entryName))
+            throw new ArgumentException(
+                "Registry startup value name must be nonempty.", nameof(entryName));
+
+        T target = openExisting() ?? createIfMissing();
+        if (target is null)
+            throw new InvalidOperationException(
+                "Startup registry target could not be opened or created.");
+        try
+        {
+            RequireVacantRegistryTarget(getValueNames(target), entryName);
+            return target;
+        }
+        catch
+        {
+            // A failed destination admission must not leak the opened key.
+            // A broken Dispose must not mask the original collision.
+            try { target.Dispose(); }
+            catch { }
+            throw;
+        }
+    }
+
+    internal static string RunRegistryMoveCollisionSmoke()
+    {
+        string[] existing = { "Spotify", "Notion" };
+        RequireVacantRegistryTarget(existing, "DifferentApp");
+        int rejected = 0;
+        foreach (string colliding in new[] { "Spotify", "SPOTIFY", "notion" })
+        {
+            try { RequireVacantRegistryTarget(existing, colliding); }
+            catch (InvalidOperationException) { rejected++; }
+        }
+        if (rejected != 3)
+            throw new InvalidOperationException(
+                "Startup registry move would overwrite an existing active/disabled entry.");
+
+        // v16.183: the collision check must use OpenSubKey first, without
+        // invoking CreateSubKey for a pre-existing destination. Pure synthetic
+        // IDisposable handles stand in for registry keys; no OS key is opened.
+        int createdDuringCollision = 0;
+        using var occupiedHandle = new MemoryStream();
+        bool collisionRejected = false;
+        try
+        {
+            _ = OpenVacantRegistryMoveTarget(
+                () => occupiedHandle,
+                () => { createdDuringCollision++; return new MemoryStream(); },
+                _ => new[] { "SPOTIFY", "Notion" }, "Spotify");
+        }
+        catch (InvalidOperationException) { collisionRejected = true; }
+        if (!collisionRejected || createdDuringCollision != 0 ||
+            occupiedHandle.CanRead)
+            throw new InvalidOperationException(
+                "Existing startup collision created target or leaked registry handle.");
+
+        int createsForMissingKey = 0;
+        using var createdHandle = new MemoryStream();
+        var admitted = OpenVacantRegistryMoveTarget(
+            () => (MemoryStream?)null,
+            () => { createsForMissingKey++; return createdHandle; },
+            _ => Array.Empty<string>(), "Spotify");
+        if (createsForMissingKey != 1 || !ReferenceEquals(admitted, createdHandle) ||
+            !admitted.CanRead)
+            throw new InvalidOperationException(
+                "Missing startup registry destination was not created exactly once.");
+
+        // v16.184: the destination may be populated after GetValueNames()
+        // but before SetValue, and an unrelated user can remove the source
+        // before our own DeleteValue. Neither scenario authorizes rollback
+        // to overwrite somebody else's choice. No registry operations.
+        RequireVacantRegistryTargetAtWrite(Array.Empty<string>(), null, "Spotify");
+        bool lateTargetOccupied = false;
+        try
+        {
+            RequireVacantRegistryTargetAtWrite(
+                Array.Empty<string>(), "external-override.exe", "Spotify");
+        }
+        catch (InvalidOperationException) { lateTargetOccupied = true; }
+        bool newlyEnumeratedCollision = false;
+        try
+        {
+            RequireVacantRegistryTargetAtWrite(
+                new[] { "SPOTIFY" }, null, "Spotify");
+        }
+        catch (InvalidOperationException) { newlyEnumeratedCollision = true; }
+        if (!lateTargetOccupied || !newlyEnumeratedCollision ||
+            MayRecreateStartupSourceDuringRollback(false, null) ||
+            MayRecreateStartupSourceDuringRollback(false, "old.exe") ||
+            MayRecreateStartupSourceDuringRollback(true, "user-new.exe") ||
+            !MayRecreateStartupSourceDuringRollback(true, null))
+            throw new InvalidOperationException(
+                "Registry startup rollback would resurrect an external deletion or overwrite the target.");
+
+        // v16.185: native DeleteValue must throw if another process
+        // removed the source between readback and our own deletion.
+        // Only an ACTUALLY completed strict delete grants rollback rights.
+        var syntheticSource = new Dictionary<string, string>
+        {
+            ["Spotify"] = "original.exe"
+        };
+        bool sourceWasDeletedByUs = false, strictMissingRejected = false;
+        syntheticSource.Remove("Spotify"); // external user removed it
+        try
+        {
+            sourceWasDeletedByUs = CompleteStrictStartupSourceDelete(
+                throwOnMissing =>
+                {
+                    if (!syntheticSource.Remove("Spotify") && throwOnMissing)
+                        throw new ArgumentException("Synthetic source is already gone.");
+                });
+        }
+        catch (ArgumentException) { strictMissingRejected = true; }
+        if (!strictMissingRejected || sourceWasDeletedByUs ||
+            MayRecreateStartupSourceDuringRollback(
+                sourceWasDeletedByUs, syntheticSource.GetValueOrDefault("Spotify")))
+            throw new InvalidOperationException(
+                "Strict registry source delete treated an external deletion as our own.");
+
+        syntheticSource["Spotify"] = "original.exe";
+        sourceWasDeletedByUs = CompleteStrictStartupSourceDelete(
+            throwOnMissing =>
+            {
+                if (!syntheticSource.Remove("Spotify") && throwOnMissing)
+                    throw new ArgumentException("Synthetic source is absent.");
+            });
+        if (!sourceWasDeletedByUs || syntheticSource.ContainsKey("Spotify") ||
+            !MayRecreateStartupSourceDuringRollback(
+                sourceWasDeletedByUs, syntheticSource.GetValueOrDefault("Spotify")))
+            throw new InvalidOperationException(
+                "Strict registry source delete did not grant legitimate rollback rights.");
+
+        // No registry reads/writes: exercise stale inventory, unchanged
+        // command, changed command, wrong data type and null values.
+        if (!MatchesExpectedRegistryCommand("app.exe --silent", "app.exe --silent") ||
+            MatchesExpectedRegistryCommand("app.exe --update", "app.exe --silent") ||
+            MatchesExpectedRegistryCommand("APP.exe --silent", "app.exe --silent") ||
+            MatchesExpectedRegistryCommand(null, "app.exe --silent") ||
+            MatchesExpectedRegistryCommand(new[] { "app.exe" }, "app.exe"))
+            throw new InvalidOperationException(
+                "Startup Run command changed after inventory: stale move admission regressed.");
+
+        var source = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Spotify"] = "disabled-command"
+        };
+        var target = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["SPOTIFY"] = "original-active-command"
+        };
+        bool blockedBeforeWrite = false;
+        try
+        {
+            RequireVacantRegistryTarget(target.Keys, "Spotify");
+            target["Spotify"] = source["Spotify"];
+            source.Remove("Spotify");
+        }
+        catch (InvalidOperationException) { blockedBeforeWrite = true; }
+        if (!blockedBeforeWrite || source["Spotify"] != "disabled-command" ||
+            target["Spotify"] != "original-active-command")
+            throw new InvalidOperationException(
+                "Startup collision validation did not preserve both existing commands.");
+
+        // The rollback must not delete a target when the native SetValue
+        // never completed, when source restore failed, or when data/kind differ.
+        if (MayDeleteStartupRollbackTarget(false, true, "app.exe", RegistryValueKind.String,
+                "app.exe", RegistryValueKind.String) ||
+            MayDeleteStartupRollbackTarget(true, false, "app.exe", RegistryValueKind.String,
+                "app.exe", RegistryValueKind.String) ||
+            !MayDeleteStartupRollbackTarget(true, true, "app.exe", RegistryValueKind.String,
+                "app.exe", RegistryValueKind.String) ||
+            MayDeleteStartupRollbackTarget(true, true, "other.exe", RegistryValueKind.String,
+                "app.exe", RegistryValueKind.String) ||
+            MayDeleteStartupRollbackTarget(true, true, "app.exe", RegistryValueKind.ExpandString,
+                "app.exe", RegistryValueKind.String) ||
+            MayDeleteStartupRollbackTarget(true, true, null, RegistryValueKind.None,
+                "app.exe", RegistryValueKind.String))
+            throw new InvalidOperationException(
+                "Startup rollback might discard the sole surviving registry command.");
+
+        // v16.182: a stale inventory/worker payload must not authorize
+        // arbitrary native registry mutations outside real Run/RunOnce
+        // slots, nor a default/blank value. All test entries are synthetic.
+        var validRun = new StartupEntry("synthetic", "Spotify",
+            "\"C:\\Apps\\Spotify.exe\" --silent",
+            RegistryHive.CurrentUser, RunPaths[0], true,
+            "Spotify", @"C:\Apps\Spotify.exe",
+            View: RegistryView.Registry64);
+        if (!IsAdmissibleRegistryStartupMove(validRun) ||
+            !IsAdmissibleRegistryStartupMove(validRun with
+                { RunPath = RunPaths[1], Hive = RegistryHive.LocalMachine,
+                  View = RegistryView.Registry32 }) ||
+            IsAdmissibleRegistryStartupMove(validRun with { Name = "" }) ||
+            IsAdmissibleRegistryStartupMove(validRun with { Command = " " }) ||
+            IsAdmissibleRegistryStartupMove(validRun with
+                { RunPath = @"Software\Microsoft\Windows\CurrentVersion\Run\Other" }) ||
+            IsAdmissibleRegistryStartupMove(validRun with
+                { RunPath = RunPaths[0] + DisabledSuffix }) ||
+            IsAdmissibleRegistryStartupMove(validRun with
+                { Hive = RegistryHive.ClassesRoot }) ||
+            IsAdmissibleRegistryStartupMove(validRun with
+                { View = RegistryView.Default }) ||
+            IsAdmissibleRegistryStartupMove(validRun with
+                { SourceKind = "ScheduledTask" }) ||
+            !IsMovableRegistryStartupValueKind(RegistryValueKind.String) ||
+            !IsMovableRegistryStartupValueKind(RegistryValueKind.ExpandString) ||
+            IsMovableRegistryStartupValueKind(RegistryValueKind.DWord) ||
+            IsMovableRegistryStartupValueKind(RegistryValueKind.MultiString))
+            throw new InvalidOperationException(
+                "Startup registry move allowed a malformed location, kind or worker payload.");
+
+        // Pure path fixtures: no Windows startup files are created or moved.
+        string startupFolder = Environment.GetFolderPath(
+            Environment.SpecialFolder.Startup);
+        string launcher = Path.Combine(startupFolder, "fixture.lnk");
+        string disabled = Path.Combine(startupFolder,
+            "SpankyhoDisabled", "fixture.lnk");
+        if (!IsExpectedStartupFolderSource(launcher, startupFolder, true) ||
+            !IsExpectedStartupFolderSource(disabled, startupFolder, false) ||
+            IsExpectedStartupFolderSource(launcher, startupFolder, false) ||
+            IsExpectedStartupFolderSource(disabled, startupFolder, true) ||
+            IsExpectedStartupFolderSource(
+                Path.Combine(startupFolder, "Subfolder", "fixture.lnk"),
+                startupFolder, true) ||
+            IsExpectedStartupFolderSource(launcher,
+                Path.GetTempPath(), true) ||
+            IsExpectedStartupFolderSource(@"fixture.lnk",
+                startupFolder, true))
+            throw new InvalidOperationException(
+                "Startup folder source admission is not restricted to Windows startup folders.");
+
+        return "STARTUP_REGISTRY_MOVE_COLLISION_SMOKE_OK cases=5 collisionsRejected=4 " +
+            "existingSourcePreserved=true existingTargetPreserved=true registryWrites=0";
+    }
+
+    public static async Task SetEnabledAsync(StartupEntry item, bool enabled, CancellationToken token = default)
+    {
+        // The AI can be switched off while the registry operation is still
+        // queued. Reject cancellation before any native startup mutation.
+        token.ThrowIfCancellationRequested();
         if (item.Enabled == enabled) return;
         if (!item.CanToggle) throw new InvalidOperationException("Tato startup položka je chráněná.");
+        if (item.SourceKind.Equals("ScheduledTask", StringComparison.OrdinalIgnoreCase))
+            TaskSchedulerService.EnsureTaskMutationAllowed(
+                item.SourceId ?? string.Empty, enabled);
+        if (!string.Equals(item.SourceKind, "StartupFolder", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(item.SourceKind, "ScheduledTask", StringComparison.OrdinalIgnoreCase) &&
+            !IsAdmissibleRegistryStartupMove(item))
+            throw new InvalidOperationException(
+                "Startup registry cesta, název, příkaz nebo registr view nejsou v povoleném rozsahu Run/RunOnce.");
+
+        bool requiresElevation =
+            item.Hive != RegistryHive.CurrentUser ||
+            (item.SourceKind.Equals("StartupFolder", StringComparison.OrdinalIgnoreCase) &&
+             item.RunPath.Equals(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup), StringComparison.OrdinalIgnoreCase));
+
+        if (!WorkerExecutionContext.IsWorker && !WorkerPrivilegePolicy.IsAdministrator() && requiresElevation)
+        {
+            try
+            {
+                await WorkerClientService.RunAsync<WorkerAck>(
+                    "startup-set",
+                    WorkerPayloads.Encode(new StartupStateChangeRequest(item, enabled)),
+                    TimeSpan.FromSeconds(45),
+                    token).ConfigureAwait(false);
+            }
+            finally
+            {
+                // A worker timeout/failed acknowledgement does not prove
+                // that its native write never started. Drop stale inventory.
+                InvalidateCache();
+            }
+            LogService.Info($"Startup privileged state changed and verified via worker: {item.Name}, enabled={enabled}");
+            return;
+        }
 
         if (item.SourceKind.Equals("ScheduledTask", StringComparison.OrdinalIgnoreCase))
         {
+            token.ThrowIfCancellationRequested();
             string path = item.SourceId ?? throw new InvalidOperationException("Task path chybí.");
-            await new TaskSchedulerService().SetEnabledAsync(path, enabled).ConfigureAwait(false);
-            InvalidateCache();
+            try
+            {
+                await new TaskSchedulerService().SetEnabledAsync(path, enabled, token).ConfigureAwait(false);
+            }
+            finally
+            {
+                // Readback/cancellation failures may follow a successful COM
+                // mutation. Do not retain a stale Startup page snapshot.
+                InvalidateCache();
+            }
             LogService.Info($"Startup task changed and verified: {path}, enabled={enabled}");
             return;
         }
 
         if (item.SourceKind.Equals("StartupFolder", StringComparison.OrdinalIgnoreCase))
         {
-            await Task.Run(() =>
+            Task fileMove = Task.Run(() =>
             {
+                token.ThrowIfCancellationRequested();
                 string source = item.SourceId ?? throw new InvalidOperationException("Startup file path chybí.");
+                if (!IsExpectedStartupFolderSource(source, item.RunPath, item.Enabled))
+                    throw new InvalidOperationException(
+                        "Startup soubor neleží v očekávané složce Po spuštění, přesun zablokován.");
                 string disabledDir = Path.Combine(item.RunPath, "SpankyhoDisabled");
-                Directory.CreateDirectory(disabledDir);
                 string target = enabled
                     ? Path.Combine(item.RunPath, Path.GetFileName(source))
                     : Path.Combine(disabledDir, Path.GetFileName(source));
                 if (!File.Exists(source)) throw new InvalidOperationException("Startup soubor už neexistuje.");
                 if (File.Exists(target)) throw new IOException("Cílový startup soubor už existuje.");
+                token.ThrowIfCancellationRequested();
+                // Re-enabling never needs to create the disabled folder.
+                // Only a pending disable creates its destination directory.
+                if (!enabled)
+                {
+                    Directory.CreateDirectory(disabledDir);
+                    token.ThrowIfCancellationRequested();
+                    if (File.Exists(target)) throw new IOException("Cílový startup soubor už existuje.");
+                }
                 File.Move(source, target);
                 if (!File.Exists(target) || File.Exists(source))
                 {
                     try { if (File.Exists(target) && !File.Exists(source)) File.Move(target, source); } catch { }
                     throw new InvalidOperationException("Read-back nepotvrdil přesun startup souboru.");
                 }
-            }).ConfigureAwait(false);
-            InvalidateCache();
+            }, token);
+            try { await fileMove.ConfigureAwait(false); }
+            finally { InvalidateCache(); }
             LogService.Info($"Startup folder item changed and verified: {item.Name}, enabled={enabled}");
             return;
         }
 
-        await Task.Run(() =>
+        Task registryMove = Task.Run(() =>
         {
+            token.ThrowIfCancellationRequested();
             using var root = RegistryKey.OpenBaseKey(item.Hive, item.View);
             var sourcePath = item.RunPath + (enabled ? DisabledSuffix : "");
             var targetPath = item.RunPath + (enabled ? "" : DisabledSuffix);
             using var source = root.OpenSubKey(sourcePath, writable: true) ?? throw new InvalidOperationException("Položka po spuštění už neexistuje.");
             var value = source.GetValue(item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames) ?? throw new InvalidOperationException("Hodnotu nelze přečíst.");
+            // Revalidate actual registry contents immediately before the
+            // write, not only the earlier StartupEntry/AI inventory object.
+            // Fail closed rather than moving a replaced/updated Run command.
+            if (!MatchesExpectedRegistryCommand(value, item.Command))
+                throw new InvalidOperationException(
+                    "Startup příkaz se od inventáře změnil, přesun je zablokován.");
             var kind = source.GetValueKind(item.Name);
-            using var target = root.CreateSubKey(targetPath, writable: true);
-            target.SetValue(item.Name, value, kind);
+            // Revalidate the native REG_SZ / REG_EXPAND_SZ type as well as
+            // the command before creating any destination. A stale, forged
+            // or unexpected value kind must never be migrated.
+            if (!IsMovableRegistryStartupValueKind(kind))
+                throw new InvalidOperationException(
+                    "Typ položky startup registru není REG_SZ ani REG_EXPAND_SZ, přesun zablokován.");
+            token.ThrowIfCancellationRequested();
+            using var target = OpenVacantRegistryMoveTarget(
+                () => root.OpenSubKey(targetPath, writable: true),
+                () => root.CreateSubKey(targetPath, writable: true)
+                    ?? throw new InvalidOperationException(
+                        "Startup registry target could not be created."),
+                key => key.GetValueNames(), item.Name);
+            // Existing targets are checked without a CreateSubKey attempt.
+            // If the target does not exist, create it and check again after
+            // creation, before writing. After writing, finish or rollback;
+            // never intentionally strand half a startup move.
+            token.ThrowIfCancellationRequested();
+            // The source may also have been removed or replaced by the
+            // user since the initial read. Do not resurrect that command
+            // by copying it to the target from our stale snapshot.
+            if (!MatchesExpectedRegistryCommand(
+                    source.GetValue(item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames),
+                    item.Command) || source.GetValueKind(item.Name) != kind)
+                throw new InvalidOperationException(
+                    "Startup source changed before the move write; operation cancelled.");
+            // Fail before entering the rollback catch when another writer
+            // fills the target between the first inventory check and now.
+            // Never allow the rollback to delete someone else's value.
+            RequireVacantRegistryTargetAtWrite(
+                target.GetValueNames(),
+                target.GetValue(item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames),
+                item.Name);
+            bool sourceDeletedByUs = false;
+            bool targetWrittenByUs = false;
             try
             {
-                source.DeleteValue(item.Name, false);
+                target.SetValue(item.Name, value, kind);
+                // A native SetValue that throws is ambiguous: never delete a
+                // potentially external matching target in our rollback.
+                targetWrittenByUs = true;
+                // A successful SetValue call is not enough to delete the
+                // only original. Verify the exact copied command and type,
+                // and check the source again before deleting it.
+                if (!MatchesExpectedRegistryCommand(
+                        target.GetValue(item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames),
+                        item.Command) || target.GetValueKind(item.Name) != kind ||
+                    !MatchesExpectedRegistryCommand(
+                        source.GetValue(item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames),
+                        item.Command) || source.GetValueKind(item.Name) != kind)
+                    throw new InvalidOperationException(
+                        "Startup položka se změnila během přesunu, zdroj ponechán.");
+                // A concurrent external delete must throw, not be
+                // mistaken for our completed deletion. Otherwise rollback
+                // could resurrect the user-removed Run entry.
+                sourceDeletedByUs = CompleteStrictStartupSourceDelete(
+                    throwOnMissing => source.DeleteValue(item.Name, throwOnMissing));
                 var targetValue = target.GetValue(item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
                 var sourceValue = source.GetValue(item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
-                if (targetValue == null || sourceValue != null)
-                    throw new InvalidOperationException("Read-back nepotvrdil přesun položky po spuštění.");
+                if (!MatchesExpectedRegistryCommand(targetValue, item.Command) ||
+                    sourceValue != null || target.GetValueKind(item.Name) != kind)
+                    throw new InvalidOperationException("Read-back nepotvrdil příkaz, typ a přesun startup položky.");
             }
             catch
             {
-                try { source.SetValue(item.Name, value, kind); } catch { }
-                try { target.DeleteValue(item.Name, false); } catch { }
+                // Restore source only if it is still vacant. Never overwrite
+                // a user-modified value that raced with this operation.
+                bool originalRestored = false;
+                try
+                {
+                    object? currentSource = source.GetValue(
+                        item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                    if (MayRecreateStartupSourceDuringRollback(
+                            sourceDeletedByUs, currentSource))
+                    {
+                        source.SetValue(item.Name, value, kind);
+                        currentSource = source.GetValue(
+                            item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                    }
+                    originalRestored = MatchesExpectedRegistryCommand(
+                        currentSource, item.Command) && source.GetValueKind(item.Name) == kind;
+                }
+                catch { }
+                // Critical: if restoring the source FAILED, the matching
+                // target may be the only surviving copy. Never delete it.
+                // Also preserve a target changed by any external writer.
+                try
+                {
+                    object? currentTarget = target.GetValue(
+                        item.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                    RegistryValueKind currentKind = currentTarget is null
+                        ? RegistryValueKind.None : target.GetValueKind(item.Name);
+                    if (MayDeleteStartupRollbackTarget(
+                            targetWrittenByUs, originalRestored, currentTarget,
+                            currentKind, item.Command, kind))
+                        target.DeleteValue(item.Name, false);
+                }
+                catch { }
                 throw;
             }
-        }).ConfigureAwait(false);
-        InvalidateCache();
+        }, token);
+        try { await registryMove.ConfigureAwait(false); }
+        finally { InvalidateCache(); }
         LogService.Info($"Startup registry state changed and verified: {item.Name}, enabled={enabled}, view={item.View}");
+    }
+
+    // Permanent removal of an app-owned startup entry. Scheduled tasks stay
+    // toggle-only; registry Run values and Startup-folder shortcuts are the
+    // narrow, reversible-by-reinstall scope offered by the UI.
+    public static async Task DeleteAsync(StartupEntry item, CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!item.CanToggle)
+            throw new InvalidOperationException("Tato startup položka je chráněná.");
+
+        if (item.SourceKind.Equals("Registry", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!IsAdmissibleRegistryStartupMove(item))
+                throw new InvalidOperationException(
+                    "Startup registry cesta, název, příkaz nebo registr view nejsou v povoleném rozsahu Run/RunOnce.");
+            bool requiresElevation = item.Hive != RegistryHive.CurrentUser;
+            if (!WorkerExecutionContext.IsWorker && !WorkerPrivilegePolicy.IsAdministrator() && requiresElevation)
+            {
+                try
+                {
+                    await WorkerClientService.RunAsync<WorkerAck>(
+                        "startup-delete",
+                        WorkerPayloads.Encode(new StartupDeleteRequest(item)),
+                        TimeSpan.FromSeconds(45),
+                        token).ConfigureAwait(false);
+                }
+                finally { InvalidateCache(); }
+                LogService.Info($"Startup registry item deleted via worker: {item.Name}");
+                return;
+            }
+
+            await Task.Run(() =>
+            {
+                token.ThrowIfCancellationRequested();
+                using var root = RegistryKey.OpenBaseKey(item.Hive, item.View);
+                string path = item.RunPath + (item.Enabled ? "" : DisabledSuffix);
+                using var key = root.OpenSubKey(path, writable: true)
+                    ?? throw new InvalidOperationException("Položka po spuštění už neexistuje.");
+                object? value = key.GetValue(item.Name, null,
+                    RegistryValueOptions.DoNotExpandEnvironmentNames);
+                if (value is null ||
+                    !MatchesExpectedRegistryCommand(value, item.Command) ||
+                    !IsMovableRegistryStartupValueKind(key.GetValueKind(item.Name)))
+                    throw new InvalidOperationException(
+                        "Startup příkaz se od inventáře změnil, smazání je zablokováno.");
+                token.ThrowIfCancellationRequested();
+                key.DeleteValue(item.Name, throwOnMissingValue: false);
+                if (key.GetValueNames().Any(x =>
+                        string.Equals(x, item.Name, StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException(
+                        "Read-back stále vidí startup hodnotu.");
+            }, token).ConfigureAwait(false);
+            InvalidateCache();
+            LogService.Info($"Startup registry item deleted and verified: {item.Name}");
+            return;
+        }
+
+        if (item.SourceKind.Equals("StartupFolder", StringComparison.OrdinalIgnoreCase))
+        {
+            bool requiresElevation = item.RunPath.Equals(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup),
+                StringComparison.OrdinalIgnoreCase);
+            if (!WorkerExecutionContext.IsWorker && !WorkerPrivilegePolicy.IsAdministrator() && requiresElevation)
+            {
+                try
+                {
+                    await WorkerClientService.RunAsync<WorkerAck>(
+                        "startup-delete",
+                        WorkerPayloads.Encode(new StartupDeleteRequest(item)),
+                        TimeSpan.FromSeconds(45),
+                        token).ConfigureAwait(false);
+                }
+                finally { InvalidateCache(); }
+                LogService.Info($"Startup folder item deleted via worker: {item.Name}");
+                return;
+            }
+
+            await Task.Run(() =>
+            {
+                token.ThrowIfCancellationRequested();
+                string source = item.SourceId
+                    ?? throw new InvalidOperationException("Startup file path chybí.");
+                if (!IsExpectedStartupFolderSource(source, item.RunPath, item.Enabled))
+                    throw new InvalidOperationException(
+                        "Startup soubor neleží v očekávané složce Po spuštění, smazání zablokováno.");
+                if (!File.Exists(source))
+                    throw new InvalidOperationException("Startup soubor už neexistuje.");
+                token.ThrowIfCancellationRequested();
+                File.Delete(source);
+                if (File.Exists(source))
+                    throw new InvalidOperationException(
+                        "Read-back stále vidí startup soubor.");
+            }, token).ConfigureAwait(false);
+            InvalidateCache();
+            LogService.Info($"Startup folder item deleted and verified: {item.Name}");
+            return;
+        }
+
+        if (item.SourceKind.Equals("ScheduledTask", StringComparison.OrdinalIgnoreCase))
+        {
+            string path = item.SourceId
+                ?? throw new InvalidOperationException("Task path chybí.");
+            if (path.StartsWith(@"\Microsoft\Windows\", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith(@"\SpankyhoOptimizer-", StringComparison.OrdinalIgnoreCase) ||
+                !TaskSafetyService.CanDisable(path))
+                throw new InvalidOperationException("Tato plánovaná úloha je chráněná.");
+
+            if (!WorkerExecutionContext.IsWorker && !WorkerPrivilegePolicy.IsAdministrator())
+            {
+                try
+                {
+                    await WorkerClientService.RunAsync<WorkerAck>(
+                        "startup-delete",
+                        WorkerPayloads.Encode(new StartupDeleteRequest(item)),
+                        TimeSpan.FromSeconds(45),
+                        token).ConfigureAwait(false);
+                }
+                finally { InvalidateCache(invalidateTaskScheduler: true); }
+                LogService.Info($"Startup scheduled task deleted via worker: {path}");
+                return;
+            }
+
+            await Task.Run(() =>
+            {
+                token.ThrowIfCancellationRequested();
+                _ = TaskSchedulerComService.DeleteIfExists(path);
+                if (TaskSchedulerComService.TryGetTaskXml(path) != null)
+                    throw new InvalidOperationException(
+                        "Read-back stále vidí plánovanou úlohu.");
+            }, token).ConfigureAwait(false);
+            InvalidateCache(invalidateTaskScheduler: true);
+            LogService.Info($"Startup scheduled task deleted and verified: {path}");
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "Mazání je povoleno jen pro registry, složku Po spuštění a bezpečné plánované úlohy.");
     }
 }
 
@@ -665,7 +1593,7 @@ public static class GhostUsbService
         if (!await IsCurrentlyDisconnectedAsync(instanceId).ConfigureAwait(false))
             throw new InvalidOperationException("Zařízení už není odpojené; odebrání bylo bezpečně zrušeno.");
 
-        var result = await ProcessRunner.RunAsync("pnputil.exe", $"/remove-device \"{instanceId}\"", TimeSpan.FromSeconds(30));
+        var result = await PrivilegedProcessRunner.RunAsync("pnputil.exe", $"/remove-device \"{instanceId}\"", TimeSpan.FromSeconds(30));
         if (!result.Success) throw new InvalidOperationException(result.StdErr + result.StdOut);
         if (await IsCurrentlyDisconnectedAsync(instanceId).ConfigureAwait(false))
             throw new InvalidOperationException("Read-back stále vidí zařízení mezi odpojenými položkami.");
@@ -694,10 +1622,15 @@ public static class LauncherCacheService
         {
             if (!path.Contains('*')) { yield return path; continue; }
             var parent = Path.GetDirectoryName(path); var pattern = Path.GetFileName(path);
-            if (parent != null && Directory.Exists(parent))
-                foreach (var dir in Directory.EnumerateDirectories(parent, pattern)) yield return dir;
+            if (parent == null || !Directory.Exists(parent)) continue;
+            foreach (var dir in Directory.EnumerateDirectories(parent, pattern))
+            {
+                // Never follow a junction/symlink into an unrelated tree.
+                if (!IsReparsePoint(dir)) yield return dir;
+            }
         }
     }
+
     public static Task<long> GetSizeAsync(IEnumerable<string> paths, CancellationToken token = default) => Task.Run(() =>
     {
         long total = 0;
@@ -709,20 +1642,63 @@ public static class LauncherCacheService
         return total;
     }, token);
 
+    // Cache cleanup must never traverse a junction or symbolic link. A planted
+    // or redirected link inside TEMP/a launcher cache would otherwise make the
+    // recursive delete remove files outside the selected cache root.
+    private static bool IsReparsePoint(string path)
+    {
+        try { return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0; }
+        catch { return true; } // Unreadable path: fail closed, do not traverse.
+    }
+
+    private static (List<string> Files, List<string> Directories) EnumerateTreeNoReparse(
+        string root, CancellationToken token)
+    {
+        var files = new List<string>();
+        var directories = new List<string>();
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            token.ThrowIfCancellationRequested();
+            string directory = pending.Pop();
+            if (IsReparsePoint(directory)) continue;
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(directory))
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (!IsReparsePoint(file)) files.Add(file);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { }
+            try
+            {
+                foreach (string subdirectory in Directory.EnumerateDirectories(directory))
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (IsReparsePoint(subdirectory)) continue;
+                    directories.Add(subdirectory);
+                    pending.Push(subdirectory);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { }
+        }
+        return (files, directories);
+    }
+
     private static long DirectorySize(string path, CancellationToken token = default)
     {
         if (!Directory.Exists(path)) return 0;
         long total = 0;
-        try
+        var (files, _) = EnumerateTreeNoReparse(path, token);
+        foreach (string file in files)
         {
-            foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
-            {
-                token.ThrowIfCancellationRequested();
-                try { total += new FileInfo(file).Length; } catch { }
-            }
+            token.ThrowIfCancellationRequested();
+            try { total += new FileInfo(file).Length; } catch { }
         }
-        catch (OperationCanceledException) { throw; }
-        catch { }
         return total;
     }
 
@@ -748,11 +1724,10 @@ public static class LauncherCacheService
         {
             token.ThrowIfCancellationRequested();
             if (!Directory.Exists(path)) continue;
-            string[] files;
-            string[] dirs;
-            try { files = Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).ToArray(); }
-            catch (OperationCanceledException) { throw; }
-            catch { failed++; continue; }
+            // A redirected cache root is refused, not followed. Report it as a
+            // failure so the UI never claims a junctioned tree was cleared.
+            if (IsReparsePoint(path)) { failed++; continue; }
+            var (files, dirs) = EnumerateTreeNoReparse(path, token);
 
             foreach (var file in files)
             {
@@ -760,11 +1735,7 @@ public static class LauncherCacheService
                 try { File.Delete(file); } catch { failed++; }
             }
 
-            try { dirs = Directory.EnumerateDirectories(path, "*", SearchOption.AllDirectories).OrderByDescending(x => x.Length).ToArray(); }
-            catch (OperationCanceledException) { throw; }
-            catch { failed++; dirs = Array.Empty<string>(); }
-
-            foreach (var dir in dirs)
+            foreach (var dir in dirs.OrderByDescending(x => x.Length))
             {
                 token.ThrowIfCancellationRequested();
                 try { Directory.Delete(dir, false); } catch { if (Directory.Exists(dir)) failed++; }
@@ -803,16 +1774,28 @@ public static class LauncherGamingModeService
     public static Task<string> ApplyAsync(IEnumerable<string> selected) => Task.Run(() =>
     {
         var changed = new List<string>();
-        foreach (var launcher in selected.Distinct(StringComparer.OrdinalIgnoreCase))
+        var wanted = LauncherProcessMatcher.BuildIndex(selected, Processes);
+        if (wanted.Count > 0)
         {
-            if (!Processes.TryGetValue(launcher, out var names)) continue;
-            foreach (var name in names)
-                foreach (var process in Process.GetProcessesByName(name))
+            // A single native snapshot replaces repeated full-table searches
+            // for every selected launcher. Dispose *all* Process wrappers even
+            // when an individual process cannot be inspected or modified.
+            ProcessSnapshotCleanup.Inspect(Process.GetProcesses, processes =>
+            {
+                foreach (Process process in processes)
                 {
-                    try { process.PriorityClass = ProcessPriorityClass.BelowNormal; changed.Add($"{launcher}: {process.ProcessName}"); }
-                    catch { }
-                    finally { process.Dispose(); }
+                    try
+                    {
+                        string name = process.ProcessName;
+                        if (!wanted.TryGetValue(name, out List<string>? launchers)) continue;
+                        process.PriorityClass = ProcessPriorityClass.BelowNormal;
+                        foreach (string launcher in launchers)
+                            changed.Add($"{launcher}: {name}");
+                    }
+                    catch { /* Protected or already exited process. */ }
                 }
+                return true;
+            });
         }
         LogService.Info("Launcher gaming mode: " + string.Join(", ", changed));
         return changed.Count == 0 ? "Neběží žádný vybraný pomocný proces." : "Priorita BelowNormal nastavena:\n" + string.Join("\n", changed.Distinct());
@@ -826,186 +1809,13 @@ public static class LauncherGamingModeService
         foreach (var entry in entries)
         {
             if (entry.Enabled == enabled) continue;
-            var haystack = entry.Name + " " + entry.Command;
-            var launcher = wanted.FirstOrDefault(x => Processes.TryGetValue(x, out var names) && (haystack.Contains(x, StringComparison.OrdinalIgnoreCase) || names.Any(n => haystack.Contains(n, StringComparison.OrdinalIgnoreCase))));
+            var launcher = wanted.FirstOrDefault(x =>
+                Processes.TryGetValue(x, out var names) &&
+                LauncherProcessMatcher.StartupMatches(x, names, entry.Name, entry.Command));
             if (launcher == null) continue;
             await StartupManagerService.SetEnabledAsync(entry, enabled); changed.Add(entry.Name);
         }
         return changed.Count == 0 ? "Nebyla nalezena odpovídající položka po spuštění." : $"{(enabled ? "Obnoveno" : "Vypnuto")}:\n" + string.Join("\n", changed.Distinct());
-    }
-}
-
-public sealed record FirefoxAdvancedState(bool WebRender, bool DiskCacheOff, bool SpeculativeOff, bool DohMode2, int ProfilesTotal, int ProfilesManaged);
-
-public static class FirefoxAdvancedService
-{
-    private const string Start = "// SPANKYHO OPTIMIZER START";
-    private const string End = "// SPANKYHO OPTIMIZER END";
-
-    public static IReadOnlyList<string> Profiles()
-    {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Mozilla", "Firefox", "Profiles");
-        if (!Directory.Exists(root)) return Array.Empty<string>();
-        return Directory.EnumerateDirectories(root).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
-    }
-
-    public static FirefoxAdvancedState GetState()
-    {
-        var profiles = Profiles();
-        if (profiles.Count == 0) return new(false, false, false, false, 0, 0);
-        int managed = 0; bool web = true, cache = true, spec = true, doh = true;
-        foreach (var profile in profiles)
-        {
-            string file = Path.Combine(profile, "user.js");
-            string text = File.Exists(file) ? File.ReadAllText(file) : string.Empty;
-            if (!HasManagedBlock(text)) { web = cache = spec = doh = false; continue; }
-            managed++;
-            web &= Has(text, "user_pref(\"gfx.webrender.all\", true);");
-            cache &= Has(text, "user_pref(\"browser.cache.disk.enable\", false);");
-            spec &= Has(text, "user_pref(\"network.prefetch-next\", false);") && Has(text, "user_pref(\"network.dns.disablePrefetch\", true);") && Has(text, "user_pref(\"network.predictor.enabled\", false);");
-            doh &= Has(text, "user_pref(\"network.trr.mode\", 2);");
-        }
-        return new(web && managed == profiles.Count, cache && managed == profiles.Count, spec && managed == profiles.Count, doh && managed == profiles.Count, profiles.Count, managed);
-    }
-
-    public static Task<int> ApplyAsync(bool webRender, bool diskCacheOff, bool speculativeOff, bool dohMode2) => Task.Run(() =>
-    {
-        var profiles = Profiles();
-        var backup = profiles.ToDictionary(x => Path.Combine(x, "user.js"), x => File.Exists(Path.Combine(x, "user.js")) ? File.ReadAllText(Path.Combine(x, "user.js")) : null);
-        try
-        {
-            foreach (var profile in profiles)
-            {
-                var file = Path.Combine(profile, "user.js");
-                var text = backup[file] ?? string.Empty;
-                var lines = new List<string> { Start };
-                if (webRender) lines.Add("user_pref(\"gfx.webrender.all\", true);");
-                lines.Add(diskCacheOff
-                    ? "user_pref(\"browser.cache.disk.enable\", false);"
-                    : "user_pref(\"browser.cache.disk.enable\", true);");
-                if (speculativeOff)
-                {
-                    lines.Add("user_pref(\"network.prefetch-next\", false);");
-                    lines.Add("user_pref(\"network.dns.disablePrefetch\", true);");
-                    lines.Add("user_pref(\"network.dns.disablePrefetchFromHTTPS\", true);");
-                    lines.Add("user_pref(\"network.http.speculative-parallel-limit\", 0);");
-                    lines.Add("user_pref(\"browser.urlbar.speculativeConnect.enabled\", false);");
-                    lines.Add("user_pref(\"network.predictor.enabled\", false);");
-                }
-                else
-                {
-                    // Performance-safe defaults. Writing these explicitly also overrides obsolete settings.
-                    // prefs that may still exist earlier in user.js.
-                    lines.Add("user_pref(\"network.prefetch-next\", true);");
-                    lines.Add("user_pref(\"network.dns.disablePrefetch\", false);");
-                    lines.Add("user_pref(\"network.dns.disablePrefetchFromHTTPS\", false);");
-                    lines.Add("user_pref(\"network.http.speculative-parallel-limit\", 6);");
-                    lines.Add("user_pref(\"browser.urlbar.speculativeConnect.enabled\", true);");
-                    lines.Add("user_pref(\"network.predictor.enabled\", true);");
-                }
-                if (dohMode2) lines.Add("user_pref(\"network.trr.mode\", 2);");
-                lines.Add(End);
-                AtomicFileService.WriteText(file, RemoveBlock(text).TrimEnd() + Environment.NewLine + string.Join(Environment.NewLine, lines) + Environment.NewLine);
-                Verify(file, webRender, diskCacheOff, speculativeOff, dohMode2);
-            }
-            LogService.Info($"Firefox advanced profile applied and verified on {profiles.Count} profiles.");
-            return profiles.Count;
-        }
-        catch
-        {
-            RestoreBackup(backup);
-            throw;
-        }
-    });
-
-    public static Task<int> RestoreAsync() => Task.Run(() =>
-    {
-        var profiles = Profiles();
-        var backup = profiles.ToDictionary(x => Path.Combine(x, "user.js"), x => File.Exists(Path.Combine(x, "user.js")) ? File.ReadAllText(Path.Combine(x, "user.js")) : null);
-        try
-        {
-            foreach (var profile in profiles)
-            {
-                var file = Path.Combine(profile, "user.js");
-                if (!File.Exists(file)) continue;
-                AtomicFileService.WriteText(file, RemoveBlock(File.ReadAllText(file)).TrimEnd() + Environment.NewLine);
-                string verify = File.ReadAllText(file);
-                if (HasManagedBlock(verify)) throw new InvalidOperationException($"Firefox user.js restore read-back selhal: {profile}");
-            }
-            LogService.Info($"Firefox advanced block restored and verified on {profiles.Count} profiles.");
-            return profiles.Count;
-        }
-        catch
-        {
-            RestoreBackup(backup);
-            throw;
-        }
-    });
-
-    private static bool HasManagedBlock(string text) => text.Contains(Start, StringComparison.Ordinal) && text.Contains(End, StringComparison.Ordinal);
-    private static bool Has(string text, string value) => text.Contains(value, StringComparison.Ordinal);
-
-    private static void Verify(string file, bool webRender, bool diskCacheOff, bool speculativeOff, bool dohMode2)
-    {
-        string text = File.ReadAllText(file);
-        if (!HasManagedBlock(text)) throw new InvalidOperationException($"Firefox user.js read-back nenalezl managed blok: {file}");
-        if (Has(text, "user_pref(\"gfx.webrender.all\", true);") != webRender) throw new InvalidOperationException($"Firefox WebRender read-back nesouhlasí: {file}");
-        if (Has(text, "user_pref(\"browser.cache.disk.enable\", false);") != diskCacheOff) throw new InvalidOperationException($"Firefox disk cache read-back nesouhlasí: {file}");
-        bool spec = Has(text, "user_pref(\"network.prefetch-next\", false);") &&
-                    Has(text, "user_pref(\"network.dns.disablePrefetch\", true);") &&
-                    Has(text, "user_pref(\"network.http.speculative-parallel-limit\", 0);") &&
-                    Has(text, "user_pref(\"browser.urlbar.speculativeConnect.enabled\", false);");
-        if (spec != speculativeOff) throw new InvalidOperationException($"Firefox speculative networking read-back nesouhlasí: {file}");
-        if (!speculativeOff)
-        {
-            bool performanceDefaults =
-                Has(text, "user_pref(\"network.prefetch-next\", true);") &&
-                Has(text, "user_pref(\"network.dns.disablePrefetch\", false);") &&
-                Has(text, "user_pref(\"network.dns.disablePrefetchFromHTTPS\", false);") &&
-                Has(text, "user_pref(\"network.http.speculative-parallel-limit\", 6);") &&
-                Has(text, "user_pref(\"browser.urlbar.speculativeConnect.enabled\", true);");
-            if (!performanceDefaults)
-                throw new InvalidOperationException($"Firefox performance networking read-back nesouhlasí: {file}");
-        }
-        if (Has(text, "user_pref(\"network.trr.mode\", 2);") != dohMode2) throw new InvalidOperationException($"Firefox DoH read-back nesouhlasí: {file}");
-    }
-
-    private static void RestoreBackup(Dictionary<string, string?> backup)
-    {
-        foreach (var pair in backup)
-        {
-            if (pair.Value == null) { if (File.Exists(pair.Key)) File.Delete(pair.Key); }
-            else AtomicFileService.WriteText(pair.Key, pair.Value);
-        }
-    }
-
-    private static string RemoveBlock(string text) => Regex.Replace(text, Regex.Escape(Start) + ".*?" + Regex.Escape(End) + "\\s*", "", RegexOptions.Singleline);
-}
-
-public static class BrowserCacheService
-{
-    public static IReadOnlyList<string> Paths(string browser)
-    {
-        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string? userData = browser switch
-        {
-            "Chrome" => Path.Combine(local, "Google", "Chrome", "User Data"),
-            "Edge" => Path.Combine(local, "Microsoft", "Edge", "User Data"),
-            "Brave" => Path.Combine(local, "BraveSoftware", "Brave-Browser", "User Data"),
-            "Vivaldi" => Path.Combine(local, "Vivaldi", "User Data"),
-            _ => null
-        };
-        var paths = new List<string>();
-        if (userData != null)
-        {
-            paths.Add(Path.Combine(userData, "Default", "Cache")); paths.Add(Path.Combine(userData, "ShaderCache"));
-            if (Directory.Exists(userData)) foreach (var profile in Directory.EnumerateDirectories(userData, "Profile *")) paths.Add(Path.Combine(profile, "Cache"));
-        }
-        if (browser == "Firefox") foreach (var profile in FirefoxAdvancedService.Profiles()) paths.Add(Path.Combine(profile, "cache2"));
-        if (browser == "Opera") { paths.Add(Path.Combine(roaming, "Opera Software", "Opera Stable", "Cache")); paths.Add(Path.Combine(local, "Opera Software", "Opera Stable", "Cache")); }
-        if (browser == "Opera GX") { paths.Add(Path.Combine(roaming, "Opera Software", "Opera GX Stable", "Cache")); paths.Add(Path.Combine(local, "Opera Software", "Opera GX Stable", "Cache")); }
-        return paths;
     }
 }
 
@@ -1060,10 +1870,45 @@ public static class StorageMaintenanceService
         }
     }
 
-    private static async Task<string> LoadHealthCoreAsync()
+    private static Task<string> LoadHealthCoreAsync()
     {
-        var r = await ProcessRunner.RunAsync("wmic.exe", "diskdrive get Model,Status,Size /format:list", TimeSpan.FromSeconds(8), CancellationToken.None).ConfigureAwait(false);
-        return !r.Success || string.IsNullOrWhiteSpace(r.StdOut) ? DriveFallback() : Regex.Replace(r.StdOut.Trim(), "(\r?\n){2,}", "\n");
+        // wmic.exe is absent on current Windows 11 builds. Query the same
+        // Win32_DiskDrive data through System.Management instead of silently
+        // degrading every storage page to free-space-only output.
+        return Task.Run(() =>
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher(
+                    new ManagementScope(@"\\.\root\CIMV2"),
+                    new ObjectQuery("SELECT Model,Status,Size FROM Win32_DiskDrive"),
+                    new System.Management.EnumerationOptions
+                    {
+                        Timeout = TimeSpan.FromSeconds(3),
+                        ReturnImmediately = false,
+                        Rewindable = false
+                    });
+                using var results = searcher.Get();
+                var blocks = new List<string>(4);
+                foreach (ManagementObject disk in results)
+                {
+                    using (disk)
+                    {
+                        string model = disk["Model"]?.ToString()?.Trim() ?? "Neznámý";
+                        string status = disk["Status"]?.ToString()?.Trim() ?? "Unknown";
+                        string size = disk["Size"]?.ToString() ?? "0";
+                        blocks.Add($"Model={model}{Environment.NewLine}Status={status}{Environment.NewLine}Size={size}");
+                    }
+                }
+                return blocks.Count == 0
+                    ? DriveFallback()
+                    : string.Join(Environment.NewLine + Environment.NewLine, blocks);
+            }
+            catch
+            {
+                return DriveFallback();
+            }
+        });
     }
 
     private static string DriveFallback() => string.Join("\n", DriveInfo.GetDrives().Where(x => x.IsReady)

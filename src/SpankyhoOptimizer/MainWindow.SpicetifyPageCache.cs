@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.UI.Xaml;
@@ -19,9 +19,12 @@ public sealed partial class MainWindow
     private SpicetifyStatus? _spicetifyCachedStatus;
     private bool _spicetifyActionsQueued;
     private bool _spicetifySecondaryQueued;
+    // Cached action cards read this field so a revisit uses the current navigation token, not a cancelled one.
+    private System.Threading.CancellationToken _spicetifyActionToken;
 
     private bool TryAttachSpicetifyPageCache(System.Threading.CancellationToken token)
     {
+        _spicetifyActionToken = token;
         if (_spicetifyPageCache == null || DateTime.UtcNow - _spicetifyPageCacheAt > SpicetifyPageCacheTtl)
             return false;
         foreach (var element in _spicetifyPageCache)
@@ -42,7 +45,7 @@ public sealed partial class MainWindow
 
     private void CaptureSpicetifyPageCache()
     {
-        _spicetifyPageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _spicetifyPageCache = SnapshotChildren(ContentStack);
         _spicetifyPageCacheAt = DateTime.UtcNow;
     }
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -12,15 +12,20 @@ using System.Threading.Tasks;
 
 namespace SpankyhoOptimizer.Services;
 
-public sealed record UpstreamSourceStatus(string Id, string Name, string Repository, string Commit, DateTime? LastCheckedUtc, DateTime? LastUpdatedUtc, bool UpdateDownloaded, string? Error);
+public sealed record UpstreamSourceStatus(string Id, string Name, string Repository, string Commit, DateTime? LastCheckedUtc, DateTime? LastUpdatedUtc, bool UpdateDownloaded, string? Error)
+{
+    public string LatestCommit { get; init; } = "-";
+    public string IntegrationMode => UpstreamUpdatePolicy.IntegrationMode(Id);
+    public bool NewerSourceAvailable => LatestCommit != "-" && !string.Equals(Commit, LatestCommit, StringComparison.OrdinalIgnoreCase);
+}
 public sealed record UpstreamUpdateCandidate(string Id, string Name, string Repository, string CurrentCommit, string LatestCommit);
-internal sealed record UpstreamState(string Commit, DateTime LastCheckedUtc, DateTime? LastUpdatedUtc);
+internal sealed record UpstreamState(string Commit, DateTime LastCheckedUtc, DateTime? LastUpdatedUtc, string? LatestCommit = null, string? LastError = null);
 
 public static class UpstreamSourceUpdateService
 {
     private static readonly HttpClient Http = CreateClient();
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
-    private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(24);
+
     private const long MaxSnapshotDownloadBytes = 512L * 1024 * 1024;
     private const long MaxSnapshotExpandedBytes = 1536L * 1024 * 1024;
     private const int MaxSnapshotEntries = 100_000;
@@ -29,21 +34,113 @@ public static class UpstreamSourceUpdateService
         ("winutil", "WinUtil", "ChrisTitusTech/winutil"),
         ("sophia", "Sophia Script", "farag2/Sophia-Script-for-Windows"),
         ("win11debloat", "Win11Debloat", "Raphire/Win11Debloat"),
-        ("removewindowsai", "RemoveWindowsAI", "zoicware/RemoveWindowsAI"),
         ("winhance", "Winhance", "memstechtips/Winhance"),
         ("dnshop", "DNS-Hop", "center2055/DNS-Hop"),
         ("spicetify-marketplace", "Spicetify Marketplace", "spicetify/marketplace")
     };
 
+    private static readonly IReadOnlyDictionary<string, SemaphoreSlim> SourceGates =
+        CoreSources.ToDictionary(x => x.Id, _ => new SemaphoreSlim(1, 1), StringComparer.OrdinalIgnoreCase);
     private static IReadOnlyList<(string Id, string Name, string Repo)> GetSources() => CoreSources;
-    public static string Root => Path.Combine(LogService.Root, "UpstreamSources");
+
+    // The crash window between renaming current -> previous and next -> current
+    // must be repaired BEFORE touching old snapshots or making a network call.
+    private static void RecoverInterruptedSnapshotSwap(string directory)
+    {
+        string current = Path.Combine(directory, "current");
+        string previous = Path.Combine(directory, "previous");
+        if (Directory.Exists(current) || !Directory.Exists(previous))
+            return;
+
+        // Only a snapshot previously committed by this updater can be
+        // restored. A failed/incomplete directory must never replace current.
+        string marker = Path.Combine(previous, ".spanky-source-commit");
+        string revision = File.Exists(marker) ? File.ReadAllText(marker).Trim() : "";
+        if (revision.Length != 40 || revision.Any(c => !Uri.IsHexDigit(c)) ||
+            !Directory.EnumerateFileSystemEntries(previous)
+                .Any(entry => !string.Equals(entry, marker, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidDataException(
+                "Přerušená aktualizace obsahuje neověřenou předchozí kopii; data byla zachována.");
+
+        // Atomic rename within the same snapshot parent. Do not delete the
+        // previous backup before restoring the last known-good current state.
+        Directory.Move(previous, current);
+        LogService.Info("upstream", "Recovered interrupted source snapshot swap: " +
+            Path.GetFileName(directory));
+    }
+
+    internal static string RunInterruptedSnapshotRecoverySmoke()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "spanky-upstream-swap-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string current = Path.Combine(root, "current");
+            string previous = Path.Combine(root, "previous");
+            Directory.CreateDirectory(current);
+            File.WriteAllText(Path.Combine(current, ".spanky-source-commit"), new string('a', 40));
+            File.WriteAllText(Path.Combine(current, "settings.ps1"), "known-good-data");
+
+            // Simulate process death immediately after current -> previous.
+            Directory.Move(current, previous);
+            RecoverInterruptedSnapshotSwap(root);
+            if (!Directory.Exists(current) || Directory.Exists(previous) ||
+                File.ReadAllText(Path.Combine(current, "settings.ps1")) != "known-good-data")
+                throw new InvalidOperationException(
+                    "Interrupted upstream source snapshot swap did not restore known-good current.");
+
+            // Idempotent recovery; a valid current snapshot must never be
+            // replaced with an older previous revision.
+            Directory.CreateDirectory(previous);
+            File.WriteAllText(Path.Combine(previous, ".spanky-source-commit"), new string('b', 40));
+            File.WriteAllText(Path.Combine(previous, "settings.ps1"), "older-data");
+            RecoverInterruptedSnapshotSwap(root);
+            if (File.ReadAllText(Path.Combine(current, "settings.ps1")) != "known-good-data" ||
+                File.ReadAllText(Path.Combine(previous, "settings.ps1")) != "older-data")
+                throw new InvalidOperationException("Recovery overwrote an existing current snapshot.");
+
+            Directory.Delete(current, recursive: true);
+            Directory.Delete(previous, recursive: true);
+            Directory.CreateDirectory(previous);
+            File.WriteAllText(Path.Combine(previous, "settings.ps1"), "unverified-data");
+            bool invalidRejected = false;
+            try { RecoverInterruptedSnapshotSwap(root); }
+            catch (InvalidDataException) { invalidRejected = true; }
+            if (!invalidRejected || Directory.Exists(current) || !Directory.Exists(previous))
+                throw new InvalidOperationException("Unverified recovery snapshot was promoted or deleted.");
+            return "UPSTREAM_SNAPSHOT_RECOVERY_SMOKE_OK restoredCurrent=true " +
+                   "existingCurrentPreserved=true invalidPreviousPreserved=true networkCalls=0";
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    private static bool HasVerifiedSnapshot(string id, string? commit)
+    {
+        if (string.IsNullOrEmpty(commit) || commit == "-") return false;
+        try
+        {
+            string marker = Path.Combine(Root, id, "current", ".spanky-source-commit");
+            return File.Exists(marker) && string.Equals(File.ReadAllText(marker).Trim(), commit, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
+    private static UpstreamSourceStatus Status(string id, string name, string repo, UpstreamState? state, string? error = null) =>
+        new(id, name, repo, state?.Commit ?? "-", state?.LastCheckedUtc, state?.LastUpdatedUtc,
+            HasVerifiedSnapshot(id, state?.Commit), error ?? state?.LastError)
+        { LatestCommit = state?.LatestCommit ?? "-" };
+    public static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SpankyhoOptimizer", "UpstreamSources");
+    private static string LegacyRoot => Path.Combine(LogService.Root, "UpstreamSources");
     private static string AutoCheckFile => Path.Combine(Root, "auto-check.txt");
     public static bool AutoCheckEnabled
     {
         get
         {
-            try { return !File.Exists(AutoCheckFile) || !string.Equals(File.ReadAllText(AutoCheckFile).Trim(), "0", StringComparison.Ordinal); }
-            catch { return true; }
+            string current = AutoCheckFile;
+            if (File.Exists(current)) return ReadAutoCheckAt(current);
+            return ReadAutoCheckAt(Path.Combine(LegacyRoot, "auto-check.txt"));
         }
     }
     public static void SetAutoCheckEnabled(bool enabled)
@@ -51,64 +148,72 @@ public static class UpstreamSourceUpdateService
         Directory.CreateDirectory(Root);
         AtomicWriteAllText(AutoCheckFile, enabled ? "1" : "0");
     }
+    private static bool ReadAutoCheckAt(string path)
+    {
+        try { return !File.Exists(path) || !string.Equals(File.ReadAllText(path).Trim(), "0", StringComparison.Ordinal); }
+        catch { return true; }
+    }
+
+    // Exercise the same atomic write/read-back backend on a disposable path.
+    // Release smoke must NEVER rewrite the user's real auto-check.txt.
+    internal static string RunIsolatedPersistenceSmoke()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "spanky-upstream-smoke-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "auto-check.txt");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            AtomicWriteAllText(path, "0");
+            if (ReadAutoCheckAt(path) || File.ReadAllText(path).Trim() != "0")
+                throw new InvalidOperationException("Upstream auto-check isolated disable persistence failed.");
+            AtomicWriteAllText(path, "1");
+            if (!ReadAutoCheckAt(path) || File.ReadAllText(path).Trim() != "1")
+                throw new InvalidOperationException("Upstream auto-check isolated enable persistence failed.");
+            if (Directory.GetFiles(directory, "*.tmp").Length != 0)
+                throw new InvalidOperationException("Upstream auto-check atomic temporary files leaked.");
+            return "UPSTREAM_AUTOCHECK_PERSISTENCE_ISOLATED_SMOKE_OK writeReadback=true tempLeak=0 actualUserSettingsTouched=false";
+        }
+        finally
+        {
+            try { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); } catch { }
+        }
+    }
 
     public static async Task<IReadOnlyList<UpstreamUpdateCandidate>> ProbeUpdatesAsync(bool force, CancellationToken token = default)
     {
+        if (!force && !AutoCheckEnabled) return Array.Empty<UpstreamUpdateCandidate>();
         Directory.CreateDirectory(Root);
-        if (!AutoCheckEnabled) return Array.Empty<UpstreamUpdateCandidate>();
-
-        var sources = GetSources()
-            .Where(source =>
-            {
-                var state = LoadState(source.Id);
-                return force || state == null || DateTime.UtcNow - state.LastCheckedUtc >= CheckInterval;
-            })
-            .ToArray();
-
-        if (sources.Length == 0) return Array.Empty<UpstreamUpdateCandidate>();
-
-        using var gate = new SemaphoreSlim(3, 3);
-        var tasks = sources.Select(async source =>
+        using var concurrency = new SemaphoreSlim(3, 3);
+        var tasks = GetSources().Select(async source =>
         {
-            await gate.WaitAsync(token).ConfigureAwait(false);
+            await concurrency.WaitAsync(token).ConfigureAwait(false);
+            var sourceGate = SourceGates[source.Id]; bool acquired = false;
             try
             {
+                await sourceGate.WaitAsync(token).ConfigureAwait(false); acquired = true;
+                RecoverInterruptedSnapshotSwap(Path.Combine(Root, source.Id));
                 var state = LoadState(source.Id);
+                bool snapshot = HasVerifiedSnapshot(source.Id, state?.Commit);
+                if (!UpstreamUpdatePolicy.ShouldProbe(force, AutoCheckEnabled, snapshot, state?.LastCheckedUtc, DateTime.UtcNow))
+                    return null;
                 string latest = await GetHeadCommitAsync(source.Repo, token).ConfigureAwait(false);
-                if (state == null)
-                {
-                    // First automatic check establishes a baseline only. Do not annoy the user
-                    // with a startup popup just because this source has never been seen before.
-                    SaveState(source.Id, new UpstreamState(latest, DateTime.UtcNow, null));
+                // Observing HEAD is not downloading or activating it. Keep these revisions separate.
+                var observed = state == null
+                    ? new UpstreamState("-", DateTime.UtcNow, null, latest)
+                    : state with { LastCheckedUtc = DateTime.UtcNow, LatestCommit = latest };
+                SaveState(source.Id, observed);
+                if (snapshot && string.Equals(observed.Commit, latest, StringComparison.OrdinalIgnoreCase) && observed.LastError == null)
                     return null;
-                }
-
-                if (string.Equals(state.Commit, latest, StringComparison.OrdinalIgnoreCase))
-                {
-                    SaveState(source.Id, state with { LastCheckedUtc = DateTime.UtcNow });
-                    return null;
-                }
-
-                return new UpstreamUpdateCandidate(source.Id, source.Name, source.Repo, state.Commit, latest);
+                return new UpstreamUpdateCandidate(source.Id, source.Name, source.Repo, observed.Commit, latest);
             }
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
-            {
-                LogService.Info("upstream", $"Silent update probe timed out: {source.Name}");
-                return null;
-            }
+            { LogService.Info("upstream", "Source probe timed out: " + source.Name); return null; }
             catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                LogService.Error("upstream", $"Silent update probe failed: {source.Name}", ex);
-                return null;
-            }
-            finally
-            {
-                gate.Release();
-            }
+            { LogService.Error("upstream", "Source probe failed: " + source.Name, ex); return null; }
+            finally { if (acquired) sourceGate.Release(); concurrency.Release(); }
         }).ToArray();
-
-        var probed = await Task.WhenAll(tasks).ConfigureAwait(false);
-        return probed.Where(x => x != null).Cast<UpstreamUpdateCandidate>().ToArray();
+        var result = await Task.WhenAll(tasks).ConfigureAwait(false);
+        return result.Where(x => x != null).Cast<UpstreamUpdateCandidate>().ToArray();
     }
 
     public static async Task<IReadOnlyList<UpstreamSourceStatus>> UpdateSourcesAsync(
@@ -147,16 +252,7 @@ public static class UpstreamSourceUpdateService
 
     public static IReadOnlyList<UpstreamSourceStatus> ReadCachedStatuses()
     {
-        Directory.CreateDirectory(Root);
-        var sources = GetSources();
-        var result = new List<UpstreamSourceStatus>(sources.Count);
-        foreach (var source in sources)
-        {
-            var state = LoadState(source.Id);
-            bool staged = Directory.Exists(Path.Combine(Root, source.Id, "current"));
-            result.Add(new(source.Id, source.Name, source.Repo, state?.Commit ?? "-", state?.LastCheckedUtc, state?.LastUpdatedUtc, staged, null));
-        }
-        return result;
+        return GetSources().Select(source => Status(source.Id, source.Name, source.Repo, LoadState(source.Id))).ToArray();
     }
 
     public static string GetDiffSummary(string id)
@@ -190,32 +286,48 @@ public static class UpstreamSourceUpdateService
 
     private static async Task<UpstreamSourceStatus> CheckOneAsync(string id, string name, string repo, bool force, CancellationToken token)
     {
-        string dir = Path.Combine(Root, id);
-        Directory.CreateDirectory(dir);
-        var state = LoadState(id);
-        if (!force && state != null && DateTime.UtcNow - state.LastCheckedUtc < CheckInterval)
-            return new(id, name, repo, state.Commit, state.LastCheckedUtc, state.LastUpdatedUtc, Directory.Exists(Path.Combine(dir, "current")), null);
+        var gate = SourceGates[id];
+        await gate.WaitAsync(token).ConfigureAwait(false);
+        UpstreamState? state = null;
         try
         {
-            string commit = await GetHeadCommitAsync(repo, token);
-            bool hasSnapshot = Directory.Exists(Path.Combine(dir, "current"));
-            bool changed = state == null || !hasSnapshot || !string.Equals(state.Commit, commit, StringComparison.OrdinalIgnoreCase);
-            DateTime? updated = state?.LastUpdatedUtc;
+            string dir = Path.Combine(Root, id); Directory.CreateDirectory(dir);
+            RecoverInterruptedSnapshotSwap(dir);
+            state = LoadState(id);
+            bool snapshot = HasVerifiedSnapshot(id, state?.Commit);
+            if (!UpstreamUpdatePolicy.ShouldProbe(force, AutoCheckEnabled, snapshot, state?.LastCheckedUtc, DateTime.UtcNow))
+                return Status(id, name, repo, state);
+            string latest = await GetHeadCommitAsync(repo, token).ConfigureAwait(false);
+            state = state == null ? new UpstreamState("-", DateTime.UtcNow, null, latest)
+                : state with { LastCheckedUtc = DateTime.UtcNow, LatestCommit = latest };
+            SaveState(id, state);
+            bool changed = !snapshot || !string.Equals(state.Commit, latest, StringComparison.OrdinalIgnoreCase);
             if (changed)
             {
-                await DownloadSnapshotAsync(repo, commit, dir, token);
-                updated = DateTime.UtcNow;
+                await DownloadSnapshotAsync(repo, latest, dir, token).ConfigureAwait(false);
+                state = state with { Commit = latest, LastUpdatedUtc = DateTime.UtcNow };
             }
-            var next = new UpstreamState(commit, DateTime.UtcNow, updated);
-            SaveState(id, next);
-            return new(id, name, repo, commit, next.LastCheckedUtc, next.LastUpdatedUtc, Directory.Exists(Path.Combine(dir, "current")), null);
+            state = state with { LastError = null };
+            SaveState(id, state); // Snapshot truth survives even if a consumer rejects its new schema.
+            token.ThrowIfCancellationRequested();
+            if (id == "winutil")
+                WinUtilServicePolicy.Activate(Path.Combine(dir, "current"), latest);
+            return Status(id, name, repo, state);
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            LogService.Error("upstream", $"Source check failed: {name}", ex);
-            return new(id, name, repo, state?.Commit ?? "-", DateTime.UtcNow, state?.LastUpdatedUtc, Directory.Exists(Path.Combine(dir, "current")), ex.Message);
+            LogService.Error("upstream", "Source/adapter update failed: " + name, ex);
+            if (state != null)
+            {
+                state = state with { LastError = ex.Message };
+                SaveState(id, state);
+            }
+            return Status(id, name, repo, state, ex.Message);
         }
+        finally { gate.Release(); }
     }
+
     private static async Task<string> GetHeadCommitAsync(string repo, CancellationToken token)
     {
         using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -251,6 +363,7 @@ public static class UpstreamSourceUpdateService
 
         try
         {
+            RecoverInterruptedSnapshotSwap(dir);
             TryDeleteFile(zip);
             TryDeleteDirectory(staging);
             TryDeleteDirectory(next);
@@ -303,6 +416,8 @@ public static class UpstreamSourceUpdateService
             if (!Directory.EnumerateFileSystemEntries(next).Any())
                 throw new InvalidDataException("Stažený GitHub snapshot je prázdný.");
 
+            token.ThrowIfCancellationRequested();
+            AtomicWriteAllText(Path.Combine(next, ".spanky-source-commit"), commit);
             // Prepare everything before touching the known-good snapshot. If the final swap fails,
             // restore the old current directory so a cancelled/failed update cannot corrupt cache state.
             TryDeleteDirectory(previous);
@@ -375,6 +490,7 @@ public static class UpstreamSourceUpdateService
         try
         {
             string file = Path.Combine(Root, id, "state.json");
+            if (!File.Exists(file)) file = Path.Combine(LegacyRoot, id, "state.json");
             return File.Exists(file) ? JsonSerializer.Deserialize<UpstreamState>(File.ReadAllText(file)) : null;
         }
         catch { return null; }
@@ -387,9 +503,9 @@ public static class UpstreamSourceUpdateService
     }
     private static void AtomicWriteAllText(string path, string content)
     {
-        string temp = path + ".tmp";
-        File.WriteAllText(temp, content);
-        File.Move(temp, path, true);
+        string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try { File.WriteAllText(temp, content); File.Move(temp, path, true); }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
     }
 
     private static HttpClient CreateClient()
@@ -400,4 +516,3 @@ public static class UpstreamSourceUpdateService
         return client;
     }
 }
-

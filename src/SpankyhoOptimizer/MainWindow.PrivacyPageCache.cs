@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.UI.Xaml;
@@ -33,7 +33,7 @@ public sealed partial class MainWindow
 
     private void CapturePrivacyPageCache()
     {
-        _privacyPageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _privacyPageCache = SnapshotChildren(ContentStack);
         _privacyVirtualRowsCache = _virtualTweakRows;
         _privacyVirtualMapCache = new Dictionary<TweakDefinition, TweakVirtualRowViewModel>(_virtualTweakRowMap);
         _privacyPageCacheUsedAt = DateTime.UtcNow;
@@ -47,8 +47,9 @@ public sealed partial class MainWindow
         int remaining = GetDeferredVirtualGroupCount("privacy");
         if (remaining != 0)
             throw new InvalidOperationException($"Privacy deferred virtual groups incomplete: {remaining} remaining.");
-        if (_privacyPageCache == null || _privacyVirtualRowsCache == null || _privacyVirtualRowsCache.Length != 68)
-            throw new InvalidOperationException("Privacy deferred render cache coverage mismatch.");
+        int expectedPrivacyTweaks = CatalogService.GetTweaks("privacy").Count;
+        if (_privacyPageCache == null || _privacyVirtualRowsCache == null || _privacyVirtualRowsCache.Length != expectedPrivacyTweaks)
+            throw new InvalidOperationException($"Privacy deferred render cache coverage mismatch rows={_privacyVirtualRowsCache?.Length ?? -1} expected={expectedPrivacyTweaks}.");
 
         var cachedMap = _privacyVirtualMapCache;
 

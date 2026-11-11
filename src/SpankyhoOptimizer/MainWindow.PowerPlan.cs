@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +15,7 @@ public sealed partial class MainWindow
     private int _powerPageRefreshInFlight;
     private async Task BuildPowerPlanAsync(CancellationToken token = default)
     {
+        int generation = _navigationGeneration;
         var perf = System.Diagnostics.Stopwatch.StartNew();
         var snapshot = PowerPlanStateService.TryGetFreshSnapshot();
         if (snapshot == null)
@@ -21,7 +23,7 @@ public sealed partial class MainWindow
             // The normal registry-backed path completes synchronously in only a few ms.
             // Use it immediately to avoid a visible loading-shell -> rebuild flash.
             // If powercfg fallback is required, keep the existing non-blocking loading path.
-            var readTask = PowerPlanStateService.ReadAsync(CancellationToken.None);
+            var readTask = PowerPlanStateService.ReadAsync(token);
             if (readTask.IsCompletedSuccessfully)
             {
                 snapshot = await readTask;
@@ -31,7 +33,14 @@ public sealed partial class MainWindow
                 BuildPowerLoading(token);
                 if (Interlocked.CompareExchange(ref _powerPageRefreshInFlight, 1, 0) == 0)
                     DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-                        SafeTaskService.Forget(LoadPowerSnapshotAndRefreshAsync(token), "power", "Lazy power snapshot"));
+                    {
+                        if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "power")
+                        {
+                            Interlocked.Exchange(ref _powerPageRefreshInFlight, 0);
+                            return;
+                        }
+                        SafeTaskService.Forget(LoadPowerSnapshotAndRefreshAsync(token, generation), "power", "Lazy power snapshot");
+                    });
                 if (perf.ElapsedMilliseconds >= 10)
                     LogService.Info("performance", $"POWER_UI_PHASE mode=loading totalMs={perf.ElapsedMilliseconds}");
                 return;
@@ -63,20 +72,35 @@ public sealed partial class MainWindow
         SafeTaskService.Forget(LoadAiPowerControlsAsync(aiPowerHost, _navigationGeneration, token),
             "ai-runtime", "Deferred AI power controls");
         var summaryHost = new StackPanel();
+        int pageGeneration = _navigationGeneration;
+        _powerSummaryHost = summaryHost;
+        _powerSummarySnapshot = snapshot;
+        _powerActionsSnapshot = snapshot;
         ContentStack.Children.Add(summaryHost);
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            if (summaryHost.Children.Count == 0)
-                summaryHost.Children.Add(PowerPlanSummary(snapshot, actions));
-        });
-        SchedulePowerActions(actions, snapshot);
+        SchedulePowerSummary(summaryHost, snapshot, actions, token, pageGeneration);
+        SchedulePowerActions(actions, snapshot, token, pageGeneration);
         long summaryMs = perf.ElapsedMilliseconds - dataReadyMs;
-        var recommended = snapshot.Settings.Where(x => !IsAdvancedPowerSetting(x.Id)).ToArray();
-        var advanced = snapshot.Settings.Where(x => IsAdvancedPowerSetting(x.Id)).ToArray();
-        long splitMs = perf.ElapsedMilliseconds - dataReadyMs - summaryMs;
+        var primaryRecommendedList = new List<PowerSettingState>(snapshot.Settings.Count);
+        var adaptiveDetailsList = new List<PowerSettingState>();
+        var advancedList = new List<PowerSettingState>();
+        foreach (PowerSettingState setting in snapshot.Settings)
+        {
+            if (IsAdvancedPowerSetting(setting.Id))
+            {
+                advancedList.Add(setting);
+                continue;
+            }
 
-        var primaryRecommended = recommended.Where(x => !IsAdaptiveDetailPowerSetting(x.Id)).ToArray();
-        var adaptiveDetails = recommended.Where(x => IsAdaptiveDetailPowerSetting(x.Id)).ToArray();
+            if (IsAdaptiveDetailPowerSetting(setting.Id))
+                adaptiveDetailsList.Add(setting);
+            else
+                primaryRecommendedList.Add(setting);
+        }
+
+        PowerSettingState[] primaryRecommended = primaryRecommendedList.ToArray();
+        PowerSettingState[] adaptiveDetails = adaptiveDetailsList.ToArray();
+        PowerSettingState[] advanced = advancedList.ToArray();
+        long splitMs = perf.ElapsedMilliseconds - dataReadyMs - summaryMs;
         long recommendedHeaderMs = perf.ElapsedMilliseconds - dataReadyMs - summaryMs - splitMs;
         var recommendedDetails = new StackPanel { Spacing = 8 };
         var recommendedHost = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -84,6 +108,7 @@ public sealed partial class MainWindow
         _powerRecommendedSettings = primaryRecommended;
         _powerRecommendedRendered = 0;
         _powerRecommendedQueued = false;
+        _powerRecommendedQueuedGeneration = -1;
         recommendedDetails.Children.Add(recommendedHost);
         SchedulePowerRecommendedCards(token);
         long primaryGridMs = perf.ElapsedMilliseconds - dataReadyMs - summaryMs - splitMs - recommendedHeaderMs;
@@ -102,13 +127,14 @@ public sealed partial class MainWindow
         _powerAdvancedSettings = advanced;
         _powerAdvancedRendered = 0;
         _powerAdvancedQueued = false;
+        _powerAdvancedQueuedGeneration = -1;
         ContentStack.Children.Add(advancedHost);
         SchedulePowerAdvancedCards(token);
         long advancedGridMs = perf.ElapsedMilliseconds - dataReadyMs - summaryMs - splitMs - recommendedHeaderMs - primaryGridMs - adaptiveMs - advancedHeaderMs;
         CapturePowerPageCache();
         long cacheMs = perf.ElapsedMilliseconds - dataReadyMs - summaryMs - splitMs - recommendedHeaderMs - primaryGridMs - adaptiveMs - advancedHeaderMs - advancedGridMs;
         if (perf.ElapsedMilliseconds >= 5)
-            LogService.Info("performance", $"POWER_UI_PHASE mode=rebuild snapshotMs={snapshotReadyMs} actionMs={actionMs} dataMs={dataReadyMs} summaryMs={summaryMs} splitMs={splitMs} recommendedHeaderMs={recommendedHeaderMs} primaryGridMs={primaryGridMs} adaptiveMs={adaptiveMs} advancedHeaderMs={advancedHeaderMs} advancedGridMs={advancedGridMs} cacheMs={cacheMs} totalMs={perf.ElapsedMilliseconds} settings={snapshot.Settings.Count} recommended={recommended.Length} advanced={advanced.Length}");
+            LogService.Info("performance", $"POWER_UI_PHASE mode=rebuild snapshotMs={snapshotReadyMs} actionMs={actionMs} dataMs={dataReadyMs} summaryMs={summaryMs} splitMs={splitMs} recommendedHeaderMs={recommendedHeaderMs} primaryGridMs={primaryGridMs} adaptiveMs={adaptiveMs} advancedHeaderMs={advancedHeaderMs} advancedGridMs={advancedGridMs} cacheMs={cacheMs} totalMs={perf.ElapsedMilliseconds} settings={snapshot.Settings.Count} recommended={primaryRecommended.Length + adaptiveDetails.Length} advanced={advanced.Length}");
     }
 
     private void BuildPowerLoading(CancellationToken token)
@@ -134,12 +160,28 @@ public sealed partial class MainWindow
         ContentStack.Children.Add(loading);
     }
 
-    private void SchedulePowerActions(StackPanel host, PowerPlanSnapshot snapshot)
+    private void SchedulePowerSummary(StackPanel host, PowerPlanSnapshot snapshot, StackPanel actions,
+        CancellationToken token, int generation)
     {
         if (host.Children.Count > 0) return;
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (host.Children.Count > 0) return;
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "power" || !ReferenceEquals(host, _powerSummaryHost) ||
+                !ContentStack.Children.Contains(host) || host.Children.Count > 0) return;
+            host.Children.Add(PowerPlanSummary(snapshot, actions));
+        });
+    }
+
+    private void SchedulePowerActions(StackPanel host, PowerPlanSnapshot snapshot,
+        CancellationToken token, int generation)
+    {
+        if (host.Children.Count > 0) return;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "power" || !ReferenceEquals(host, _powerActionsHost) ||
+                host.Children.Count > 0) return;
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             host.Children.Add(PrimaryQuickButton("Použít Recommended", ApplyPerformancePowerAsync));
@@ -153,7 +195,7 @@ public sealed partial class MainWindow
                             "Vyčistit", "Zrušit"))
                         return;
 
-                    string result = await PerformanceProfilesService.CleanupDuplicatePowerPlansAsync(CancellationToken.None);
+                    string result = await PerformanceProfilesService.CleanupDuplicatePowerPlansAsync(_windowLifetimeCts.Token);
                     InvalidatePowerPageCache();
                     await ShowStyledInfoAsync("Power Plan", result);
                     await ShowSectionAsync("power");
@@ -164,16 +206,17 @@ public sealed partial class MainWindow
         });
     }
 
-    private async Task LoadPowerSnapshotAndRefreshAsync(CancellationToken token)
+    private async Task LoadPowerSnapshotAndRefreshAsync(CancellationToken token, int generation)
     {
         try
         {
             // Shared snapshot must survive navigation cancellation; refresh UI only when this load actually published fresh state.
-            await PowerPlanStateService.ReadAsync(CancellationToken.None);
-            if (PowerPlanStateService.TryGetFreshSnapshot() == null || _section != "power") return;
+            await PowerPlanStateService.ReadAsync(_windowLifetimeCts.Token);
+            if (PowerPlanStateService.TryGetFreshSnapshot() == null || generation != _navigationGeneration || _section != "power") return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section == "power") SafeTaskService.Forget(ShowSectionAsync("power"), "power", "Refresh loaded power page");
+                if (!token.IsCancellationRequested && generation == _navigationGeneration && _section == "power")
+                    SafeTaskService.Forget(ShowSectionAsync("power"), "power", "Refresh loaded power page");
             });
         }
         catch (Exception ex)
@@ -183,7 +226,7 @@ public sealed partial class MainWindow
             {
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (_section != "power") return;
+                    if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "power") return;
                     ContentStack.Children.Clear();
                     var error = new StackPanel { Spacing = 9, Margin = new Thickness(4, 6, 4, 0) };
                     error.Children.Add(new TextBlock
@@ -286,8 +329,8 @@ public sealed partial class MainWindow
             Padding = new Thickness(13, 10, 13, 10),
             CornerRadius = new CornerRadius(10),
             BorderThickness = new Thickness(1),
-            BorderBrush = spankyActive ? ButtonVioletBorderBrush() : SectionBorderBrush(),
-            Background = spankyActive ? ButtonVioletSoftBrush() : SurfaceAltBrush(),
+            BorderBrush = spankyActive ? GlassBorderStrongBrush() : SectionBorderBrush(),
+            Background = spankyActive ? GlassHeroSurfaceBrush() : GlassSurfaceLowBrush(),
             Child = new TextBlock
             {
                 Text = spankyActive ? "Spankyho Performance — AKTIVNÍ" : $"Aktivní plán: {snapshot.ActivePlan}",
@@ -330,7 +373,7 @@ public sealed partial class MainWindow
             {
                 Padding = new Thickness(11, 8, 11, 8),
                 CornerRadius = new CornerRadius(9),
-                Background = SurfaceAltBrush(),
+                Background = _darkTheme ? GlassSurfaceLowBrush() : SurfaceAltBrush(),
                 BorderBrush = SectionBorderBrush(),
                 BorderThickness = new Thickness(1),
                 Child = new TextBlock
@@ -369,7 +412,7 @@ public sealed partial class MainWindow
             TextWrapping = TextWrapping.Wrap
         };
         root.Children.Add(guardStatus);
-        ScheduleAutomaticPowerGuardVerification(snapshot, guardStatus);
+        ScheduleAutomaticPowerGuardVerification(snapshot, guardStatus, _navigationGeneration);
 
         root.Children.Add(actions);
 
@@ -378,23 +421,28 @@ public sealed partial class MainWindow
 
     private void ScheduleAutomaticPowerGuardVerification(
         PowerPlanSnapshot snapshot,
-        TextBlock statusText)
+        TextBlock statusText,
+        int generation)
     {
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (generation != _navigationGeneration || _section != "power" || statusText.Parent == null) return;
             SafeTaskService.Forget(
-                VerifyAndRepairPowerGuardAsync(snapshot, statusText),
+                VerifyAndRepairPowerGuardAsync(snapshot, statusText, generation),
                 "power",
-                "Automatic power plan guard verification"));
+                "Automatic power plan guard verification");
+        });
     }
 
     private async Task VerifyAndRepairPowerGuardAsync(
         PowerPlanSnapshot snapshot,
-        TextBlock statusText)
+        TextBlock statusText,
+        int generation)
     {
         string? targetGuid = snapshot.SpankyPlanGuid;
         if (string.IsNullOrWhiteSpace(targetGuid))
         {
-            if (_section == "power")
+            if (generation == _navigationGeneration && _section == "power" && statusText.Parent != null)
             {
                 statusText.Text = "Auto-ověření: Spankyho Performance ještě není vytvořený.";
                 statusText.Foreground = TextSecondaryBrush();
@@ -405,7 +453,7 @@ public sealed partial class MainWindow
         try
         {
             var status = await PowerPlanGuardService.ReadStatusAsync(
-                targetGuid, CancellationToken.None);
+                targetGuid, _windowLifetimeCts.Token);
             bool targetActive = string.Equals(
                 snapshot.ActiveGuid, targetGuid, StringComparison.OrdinalIgnoreCase);
             bool guardArmed =
@@ -414,34 +462,36 @@ public sealed partial class MainWindow
 
             if (targetActive && (!status.LogonConfigured || !status.BootConfigured))
             {
-                await PowerPlanGuardService.EnsureAsync(targetGuid, CancellationToken.None);
+                await PowerPlanGuardService.EnsureAsync(targetGuid, _windowLifetimeCts.Token);
                 status = await PowerPlanGuardService.ReadStatusAsync(
-                    targetGuid, CancellationToken.None);
+                    targetGuid, _windowLifetimeCts.Token);
                 LogService.Info("power",
                     $"POWER_AUTO_GUARD_REPAIRED active=true boot={status.BootConfigured} logon={status.LogonConfigured}");
             }
             else if (!targetActive && guardArmed)
             {
-                await PowerPlanGuardService.EnsureAsync(targetGuid, CancellationToken.None);
-                await PowerPlanGuardService.RunNowAsync(CancellationToken.None);
-                await Task.Delay(1100);
+                await PowerPlanGuardService.EnsureAsync(targetGuid, _windowLifetimeCts.Token);
+                long guardRunCursor = await PowerPlanGuardService.RunNowAsync(
+                    targetGuid, _windowLifetimeCts.Token);
+                await Task.Delay(1100, _windowLifetimeCts.Token);
                 PowerPlanStateService.InvalidateCache();
                 var repaired = await PowerPlanStateService.ReadAsync(
-                    CancellationToken.None, forceRefresh: true);
+                    _windowLifetimeCts.Token, forceRefresh: true);
                 targetActive = string.Equals(
                     repaired.ActiveGuid, targetGuid, StringComparison.OrdinalIgnoreCase);
                 status = await PowerPlanGuardService.ReadStatusAsync(
-                    targetGuid, CancellationToken.None);
+                    targetGuid, _windowLifetimeCts.Token,
+                    minimumStatusRecordOffset: guardRunCursor);
 
                 LogService.Info("power",
                     $"POWER_AUTO_GUARD_RESTORE active={targetActive} boot={status.BootConfigured} logon={status.LogonConfigured}");
 
-                if (targetActive && _section == "power")
+                if (targetActive && generation == _navigationGeneration && _section == "power")
                 {
                     InvalidatePowerPageCache();
                     DispatcherQueue.TryEnqueue(() =>
                     {
-                        if (_section == "power")
+                        if (generation == _navigationGeneration && _section == "power")
                             SafeTaskService.Forget(
                                 ShowSectionAsync("power"),
                                 "power",
@@ -450,7 +500,7 @@ public sealed partial class MainWindow
                 }
             }
 
-            if (_section != "power") return;
+            if (generation != _navigationGeneration || _section != "power" || statusText.Parent == null) return;
 
             string activeText = targetActive ? "plán aktivní" : "jiný plán aktivní";
             string bootText = status.BootConfigured ? "po startu OK" : "po startu chybí";
@@ -484,7 +534,7 @@ public sealed partial class MainWindow
         var grid = new Grid { Height = 7, HorizontalAlignment = HorizontalAlignment.Stretch };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(0.001, safeValue), GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(0.001, safeMax - safeValue), GridUnitType.Star) });
-        var track = new Border { Background = BorderThemeBrush(), CornerRadius = new CornerRadius(4) };
+        var track = new Border { Background = GlassTrackBrush(), CornerRadius = new CornerRadius(4) };
         Grid.SetColumnSpan(track, 2); grid.Children.Add(track);
         var fill = new Border { Background = ButtonVioletBrush(), CornerRadius = new CornerRadius(4) };
         Grid.SetColumn(fill, 0); grid.Children.Add(fill);
@@ -493,32 +543,42 @@ public sealed partial class MainWindow
 
     private void SchedulePowerRecommendedCards(CancellationToken token)
     {
-        if (_powerRecommendedQueued ||
+        int generation = _navigationGeneration;
+        if ((_powerRecommendedQueued && _powerRecommendedQueuedGeneration == generation) ||
             _powerRecommendedHost == null ||
             _powerRecommendedSettings == null ||
             _powerRecommendedRendered >= _powerRecommendedSettings.Length)
             return;
 
+        // An abandoned callback from another page visit must not block new work.
         _powerRecommendedQueued = true;
-        QueuePowerRecommendedBatch(token);
+        _powerRecommendedQueuedGeneration = generation;
+        QueuePowerRecommendedBatch(token, generation);
     }
 
-    private void QueuePowerRecommendedBatch(CancellationToken token)
+    private void QueuePowerRecommendedBatch(CancellationToken token, int generation)
     {
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        bool queued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
                 _section != "power" ||
                 _powerRecommendedHost == null ||
-                _powerRecommendedSettings == null)
+                _powerRecommendedSettings == null ||
+                _powerRecommendedQueuedGeneration != generation)
             {
-                _powerRecommendedQueued = false;
+                // Do not clear the pending state of a newer visit.
+                if (_powerRecommendedQueuedGeneration == generation)
+                    _powerRecommendedQueued = false;
                 return;
             }
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             int start = _powerRecommendedRendered;
-            int end = Math.Min(start + 3, _powerRecommendedSettings.Length);
+            // Cards take ~1–3 ms per three on the measured warm path.
+            // Four per turn reduce dispatcher/layout churn without creating
+            // all twelve controls during the first navigation frame.
+            int end = Math.Min(start + 4, _powerRecommendedSettings.Length);
             for (int i = start; i < end; i++)
             {
                 var card = PowerSettingCard(_powerRecommendedSettings[i]);
@@ -530,40 +590,49 @@ public sealed partial class MainWindow
                 $"POWER_RECOMMENDED_BATCH start={start} added={end - start} ms={sw.ElapsedMilliseconds} total={_powerRecommendedRendered}");
 
             if (end < _powerRecommendedSettings.Length)
-                QueuePowerRecommendedBatch(token);
+                QueuePowerRecommendedBatch(token, generation);
             else
                 _powerRecommendedQueued = false;
         });
+        if (!queued && _powerRecommendedQueuedGeneration == generation)
+            _powerRecommendedQueued = false;
     }
 
     private void SchedulePowerAdvancedCards(CancellationToken token)
     {
-        if (_powerAdvancedQueued ||
+        int generation = _navigationGeneration;
+        if ((_powerAdvancedQueued && _powerAdvancedQueuedGeneration == generation) ||
             _powerAdvancedHost == null ||
             _powerAdvancedSettings == null ||
             _powerAdvancedRendered >= _powerAdvancedSettings.Length)
             return;
 
         _powerAdvancedQueued = true;
-        QueuePowerAdvancedBatch(token);
+        _powerAdvancedQueuedGeneration = generation;
+        QueuePowerAdvancedBatch(token, generation);
     }
 
-    private void QueuePowerAdvancedBatch(CancellationToken token)
+    private void QueuePowerAdvancedBatch(CancellationToken token, int generation)
     {
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        bool queued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
                 _section != "power" ||
                 _powerAdvancedHost == null ||
-                _powerAdvancedSettings == null)
+                _powerAdvancedSettings == null ||
+                _powerAdvancedQueuedGeneration != generation)
             {
-                _powerAdvancedQueued = false;
+                if (_powerAdvancedQueuedGeneration == generation)
+                    _powerAdvancedQueued = false;
                 return;
             }
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             int start = _powerAdvancedRendered;
-            int end = Math.Min(start + 1, _powerAdvancedSettings.Length);
+            // Two advanced cards per turn reduce five dispatcher hops to
+            // three, retaining the deferred first frame and ordering.
+            int end = Math.Min(start + 2, _powerAdvancedSettings.Length);
             for (int i = start; i < end; i++)
             {
                 var card = PowerSettingCard(_powerAdvancedSettings[i]);
@@ -575,10 +644,12 @@ public sealed partial class MainWindow
                 $"POWER_ADVANCED_BATCH start={start} added={end - start} ms={sw.ElapsedMilliseconds} total={_powerAdvancedRendered}");
 
             if (end < _powerAdvancedSettings.Length)
-                QueuePowerAdvancedBatch(token);
+                QueuePowerAdvancedBatch(token, generation);
             else
                 _powerAdvancedQueued = false;
         });
+        if (!queued && _powerAdvancedQueuedGeneration == generation)
+            _powerAdvancedQueued = false;
     }
 
     private UIElement PowerSettingsGrid(PowerSettingState[] settings)
@@ -630,7 +701,7 @@ public sealed partial class MainWindow
         badge.Child = new TextBlock
         {
             Text = state.CurrentValue is null ? "NEDOSTUPNÉ" : state.IsApplied ? "AKTIVNÍ" : "NEAKTIVNÍ",
-            FontSize = 9,
+            FontSize = 10.5,
             FontWeight = FontWeights.Bold,
             Foreground = OnAccentTextBrush()
         };
@@ -665,6 +736,8 @@ public sealed partial class MainWindow
             Foreground = TextPrimaryBrush(),
             HorizontalAlignment = HorizontalAlignment.Left
         };
+        ApplyMaterialButtonAppearance(apply, primary: !state.IsApplied);
+        apply.HorizontalAlignment = HorizontalAlignment.Left;
         apply.Click += (_, _) => SafeTaskService.Forget(
             ApplyPowerSettingAsync(), "power", "Apply setting " + state.Id);
         async Task ApplyPowerSettingAsync()
@@ -709,7 +782,7 @@ public sealed partial class MainWindow
         root.Children.Add(new TextBlock
         {
             Text = label,
-            FontSize = 9,
+            FontSize = 10.5,
             CharacterSpacing = 90,
             Foreground = TextSecondaryBrush(),
             FontWeight = FontWeights.SemiBold

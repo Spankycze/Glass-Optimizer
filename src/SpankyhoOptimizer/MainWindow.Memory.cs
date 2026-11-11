@@ -12,20 +12,40 @@ public sealed partial class MainWindow
 {
     private void BuildMemoryState()
     {
+        int generation = _navigationGeneration;
         var host = new StackPanel { Spacing = 7 };
         host.Children.Add(new TextBlock { Text = "Načítám skutečný stav paměti…", Foreground = TextSecondaryBrush() });
         ContentStack.Children.Add(BuildSectionSurface("memory", "Paměť", "Komprese • stránkovací soubor • plánování • cache • RAM", host));
-        CancellationToken token = _loadCts?.Token ?? CancellationToken.None;
-        SafeTaskService.Forget(LoadMemoryStateAsync(host, token), "memory", "Memory V3 state");
+        // A fresh native/WMI snapshot is already safe to render synchronously.
+        // Avoid the loading placeholder -> dispatcher rerender round trip on
+        // rapid returns to the Memory page (the service owns its 10s TTL).
+        var warm = MemoryStateService.TryGetFreshSnapshot();
+        if (warm != null)
+        {
+            RenderMemoryState(host, warm);
+            return;
+        }
+        CancellationToken token = _loadCts?.Token ?? _windowLifetimeCts.Token;
+        SafeTaskService.Forget(LoadMemoryStateAsync(host, generation, token), "memory", "Memory V3 state");
     }
 
-    private async Task LoadMemoryStateAsync(StackPanel host, CancellationToken token)
+    private async Task LoadMemoryStateAsync(StackPanel host, int generation, CancellationToken token)
     {
         try
         {
             var state = await MemoryStateService.ReadAsync(token);
-            if (token.IsCancellationRequested || _section != "memory") return;
-            DispatcherQueue.TryEnqueue(() => RenderMemoryState(host, state));
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "memory" ||
+                host.Parent == null) return;
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (token.IsCancellationRequested ||
+                    generation != _navigationGeneration ||
+                    _section != "memory" ||
+                    host.Parent == null) return;
+                RenderMemoryState(host, state);
+            });
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -33,7 +53,10 @@ public sealed partial class MainWindow
             LogService.Error("memory", "Memory V3 state failed", ex);
             if (!token.IsCancellationRequested) DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "memory") return;
+                if (token.IsCancellationRequested ||
+                    generation != _navigationGeneration ||
+                    _section != "memory" ||
+                    host.Parent == null) return;
                 host.Children.Clear();
                 host.Children.Add(new TextBlock
                 {
@@ -42,7 +65,10 @@ public sealed partial class MainWindow
                     TextWrapping = TextWrapping.Wrap
                 });
                 host.Children.Add(QuickButton("Načíst znovu", () =>
-                    LoadMemoryStateAsync(host, _loadCts?.Token ?? CancellationToken.None)));
+                    LoadMemoryStateAsync(
+                        host,
+                        _navigationGeneration,
+                        _loadCts?.Token ?? _windowLifetimeCts.Token)));
                 ShowActionFeedback("Paměť", ActionFeedbackKind.Failed, ex.Message);
             });
         }
@@ -66,5 +92,32 @@ public sealed partial class MainWindow
             Foreground = TextSecondaryBrush(),
             TextWrapping = TextWrapping.Wrap
         });
+
+        // Keep the opt-in Memory Recommended action in its dedicated section.
+        bool needsRecommended = !s.CompressionEnabled ||
+                                s.AutomaticManagedPagefile == false ||
+                                s.LargeSystemCache != 0;
+        if (needsRecommended)
+        {
+            host.Children.Add(PrimaryQuickButton("Použít doporučené nastavení paměti", async () =>
+            {
+                try
+                {
+                    var token = _loadCts?.Token ?? _windowLifetimeCts.Token;
+                    await MemoryStateService.ApplyRecommendedAsync(token);
+                    MemoryStateService.Invalidate();
+                    if (_section != "memory" || token.IsCancellationRequested) return;
+                    await LoadMemoryStateAsync(host, _navigationGeneration, token);
+                    ShowActionFeedback("Paměť", ActionFeedbackKind.Verified,
+                        "Doporučené hodnoty paměti byly použity a znovu načteny.");
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    LogService.Error("memory", "Memory Recommended failed", ex);
+                    ShowActionFeedback("Paměť", ActionFeedbackKind.Failed, ex.Message);
+                }
+            }));
+        }
     }
 }

@@ -10,51 +10,67 @@ internal static class NativeTitleBarService
     private const int DwmwaTextColor = 36;
     private const uint DwmColorNone = 0xFFFFFFFE;
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("dwmapi.dll", ExactSpelling = true)]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref uint pvAttribute, int cbAttribute);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("dwmapi.dll", ExactSpelling = true)]
     private static extern int DwmFlush();
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Rect { public int Left, Top, Right, Bottom; }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern IntPtr GetDC(IntPtr hwnd);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("gdi32.dll", ExactSpelling = true)]
     private static extern uint GetPixel(IntPtr hdc, int x, int y);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativePoint { public int X, Y; }
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
     private static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
     private static extern bool ClientToScreen(IntPtr hwnd, ref NativePoint point);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
     private static extern int SetWindowRgn(IntPtr hwnd, IntPtr region, bool redraw);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern int GetWindowRgn(IntPtr hwnd, IntPtr region);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("gdi32.dll", ExactSpelling = true)]
     private static extern IntPtr CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("gdi32.dll", ExactSpelling = true)]
     private static extern bool DeleteObject(IntPtr value);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("gdi32.dll", ExactSpelling = true)]
     private static extern bool PtInRegion(IntPtr region, int x, int y);
 
     private const uint GlassResizeSubclassId = 0x53474C41;
     private delegate IntPtr WindowSubclassProc(IntPtr hwnd,uint message,UIntPtr wParam,IntPtr lParam,UIntPtr id,UIntPtr data);
     private static readonly WindowSubclassProc GlassResizeCallback = GlassResizeWindowProc;
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("comctl32.dll", ExactSpelling = true)]
     private static extern bool SetWindowSubclass(IntPtr hwnd,WindowSubclassProc callback,UIntPtr id,UIntPtr data);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("comctl32.dll", ExactSpelling = true)]
     private static extern bool RemoveWindowSubclass(IntPtr hwnd,WindowSubclassProc callback,UIntPtr id);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("comctl32.dll", ExactSpelling = true)]
     private static extern IntPtr DefSubclassProc(IntPtr hwnd,uint message,UIntPtr wParam,IntPtr lParam);
     private static IntPtr GlassResizeWindowProc(IntPtr hwnd,uint message,UIntPtr wParam,IntPtr lParam,UIntPtr id,UIntPtr data)
@@ -77,7 +93,7 @@ internal static class NativeTitleBarService
         }
         catch { return original; }
     }
-    public static bool TrySetRoundedGlassRegion(IntPtr hwnd, bool rounded, double radius, out int error)
+    public static bool TrySetRoundedGlassRegion(IntPtr hwnd, bool rounded, double radius, out int error, bool resizeEdges = true)
     {
         error = 0;
         if (hwnd == IntPtr.Zero) { error = -1; return false; }
@@ -97,6 +113,11 @@ internal static class NativeTitleBarService
         if (region == IntPtr.Zero) { error = -2; return false; }
         if (SetWindowRgn(hwnd, region, true) != 0)
         {
+            if (!resizeEdges)
+            {
+                RemoveWindowSubclass(hwnd, GlassResizeCallback, new UIntPtr(GlassResizeSubclassId));
+                return true;
+            }
             // Windows owns the HRGN. The client edge must remain a native resize target.
             int grip = Math.Max(1,(int)Math.Round(radius*8/25));
             if (SetWindowSubclass(hwnd,GlassResizeCallback,new UIntPtr(GlassResizeSubclassId),new UIntPtr((uint)grip))) return true;
@@ -125,6 +146,7 @@ internal static class NativeTitleBarService
         }
         finally { DeleteObject(region); }
     }
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern IntPtr SendMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
     public static bool HasCustomWindowRegion(IntPtr hwnd)
@@ -149,6 +171,39 @@ internal static class NativeTitleBarService
             if(actual != expected) throw new InvalidOperationException($"Glass resize hit-test failed x={x} y={y} actual={actual} expected={expected}");
         }
     }
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr GetPopupWindowStyle(IntPtr hwnd, int index);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetPopupWindowStyle(IntPtr hwnd, int index, IntPtr value);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+    public static bool TryRemovePopupNativeFrame(IntPtr hwnd, out int error)
+    {
+        error = 0;
+        if (hwnd == IntPtr.Zero) { error = -1; return false; }
+        const int styleIndex = -16;
+        const long captionAndBorder = 0x00C00000L;
+        const uint frameChangedNoActivate = 0x0037; // FRAMECHANGED | NOMOVE | NOSIZE | NOZORDER | NOACTIVATE
+        long before = GetPopupWindowStyle(hwnd, styleIndex).ToInt64();
+        if (before == 0) { error = Marshal.GetLastWin32Error(); return false; }
+        long after = before & ~captionAndBorder;
+        if (after == before) return true;
+        if (SetPopupWindowStyle(hwnd, styleIndex, new IntPtr(after)) == IntPtr.Zero)
+        { error = Marshal.GetLastWin32Error(); return false; }
+        if (SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, frameChangedNoActivate) &&
+            (GetPopupWindowStyle(hwnd, styleIndex).ToInt64() & captionAndBorder) == 0) return true;
+        error = Marshal.GetLastWin32Error();
+        if (error == 0) error = -2;
+        // Restore the previous style if frame recalculation fails. Never touch the owner window.
+        SetPopupWindowStyle(hwnd, styleIndex, new IntPtr(before));
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, frameChangedNoActivate);
+        return false;
+    }
+
     public static bool TryRoundCorners(IntPtr hwnd, out int error)
     {
         if (hwnd == IntPtr.Zero) { error = -1; return false; }
@@ -159,6 +214,7 @@ internal static class NativeTitleBarService
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FrameMargins { public int Left, Right, Top, Bottom; }
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("dwmapi.dll", ExactSpelling = true)]
     private static extern int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref FrameMargins margins);
     public static bool TryApplyGlassBorder(IntPtr hwnd, bool dark, out int error)

@@ -37,9 +37,6 @@ public sealed partial class MainWindow
         {
             if (_gpuPersistentWarmTask?.IsCompletedSuccessfully == true)
                 _gpuInfo = _gpuPersistentWarmTask.Result;
-
-            if (_gpuInfo == null)
-                deferredDetection = _gpuDeferredDetectionTask ??= ResolveGpuInfoDeferredAsync();
         }
 
         token.ThrowIfCancellationRequested();
@@ -49,48 +46,106 @@ public sealed partial class MainWindow
         var root = new StackPanel { Spacing = 12 };
         long rootMs = gpuPhase.ElapsedMilliseconds - liveHeaderStartMs;
 
-        string gpuName = _gpuInfo?.Name ?? "Detekuji GPU…";
-        var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        long titleRowMs = gpuPhase.ElapsedMilliseconds - liveHeaderStartMs - rootMs;
+        var liveHeaderHost = new StackPanel { Spacing = 6 };
+        root.Children.Add(liveHeaderHost);
+        int liveHeaderGeneration = _navigationGeneration;
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (token.IsCancellationRequested ||
+                liveHeaderGeneration != _navigationGeneration ||
+                _section != "gpu" ||
+                liveHeaderHost.Children.Count > 0)
+                return;
 
-        _gpuNameText = new TextBlock { Text = gpuName, FontSize = 19, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
-        titleRow.Children.Add(_gpuNameText);
-        long nameMs = gpuPhase.ElapsedMilliseconds - liveHeaderStartMs - rootMs - titleRowMs;
+            var liveHeaderSw = System.Diagnostics.Stopwatch.StartNew();
+            string gpuName = _gpuInfo?.Name ?? "Detekuji GPU…";
+            var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
 
-        _gpuUpdateBadge = new TextBlock { Text = "NEZKONTROLOVÁNO", FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = InfoBrush(), VerticalAlignment = VerticalAlignment.Center };
-        titleRow.Children.Add(new Border { Background = AccentSoftBrush(), BorderBrush = SectionBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.1 : 1), CornerRadius = new CornerRadius(6), Padding = new Thickness(8, 3, 8, 3), Child = _gpuUpdateBadge });
-        root.Children.Add(titleRow);
-        long badgeMs = gpuPhase.ElapsedMilliseconds - liveHeaderStartMs - rootMs - titleRowMs - nameMs;
+            _gpuNameText = new TextBlock
+            {
+                Text = gpuName,
+                FontSize = 19,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = TextPrimaryBrush(),
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            titleRow.Children.Add(_gpuNameText);
 
-        _gpuDriverStatus = new TextBlock { Text = _gpuInfo == null ? "Detekce GPU probíhá na pozadí." : "Připraveno.", FontSize = 12.5, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap };
-        root.Children.Add(_gpuDriverStatus);
-        long liveStatusMs = gpuPhase.ElapsedMilliseconds - liveHeaderStartMs - rootMs - titleRowMs - nameMs - badgeMs;
+            _gpuUpdateBadge = new TextBlock
+            {
+                Text = "NEZKONTROLOVÁNO",
+                FontSize = 10.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = InfoBrush(),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            titleRow.Children.Add(new Border
+            {
+                Background = AccentSoftBrush(),
+                BorderBrush = SectionBorderBrush(),
+                BorderThickness = new Thickness(_darkTheme ? 1.1 : 1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(8, 3, 8, 3),
+                Child = _gpuUpdateBadge
+            });
+            liveHeaderHost.Children.Add(titleRow);
+
+            _gpuDriverStatus = new TextBlock
+            {
+                Text = _gpuInfo == null ? "Detekce GPU probíhá na pozadí." : "Připraveno.",
+                FontSize = 12.5,
+                Foreground = TextSecondaryBrush(),
+                TextWrapping = TextWrapping.Wrap
+            };
+            liveHeaderHost.Children.Add(_gpuDriverStatus);
+            LogService.Info("performance",
+                $"GPU_LIVE_HEADER_DEFERRED totalMs={liveHeaderSw.ElapsedMilliseconds} detected={_gpuInfo != null}");
+        }))
+        {
+            LogService.Info("performance", "GPU_LIVE_HEADER_DEFERRED queue=false");
+        }
         long liveHeaderMs = gpuPhase.ElapsedMilliseconds - liveHeaderStartMs;
-        if (liveHeaderMs >= 8)
-            LogService.Info("performance", $"GPU_LIVE_HEADER_PHASE rootMs={rootMs} titleRowMs={titleRowMs} nameMs={nameMs} badgeMs={badgeMs} statusMs={liveStatusMs} totalMs={liveHeaderMs} detected={_gpuInfo != null}");
 
         long shellStartMs = gpuPhase.ElapsedMilliseconds;
+        long actionQueueMs = 0;
+        long heroCreateMs = 0;
         StackPanel actions;
         Border hero;
-        if (_gpuInfo != null && _gpuStaticHero != null && _gpuHeroActionsHost != null)
+        if (_gpuStaticHero != null && _gpuHeroActionsHost != null && (UseCompactSectionChrome || _gpuInfo != null))
         {
             actions = _gpuHeroActionsHost;
+            long actionStartMs = gpuPhase.ElapsedMilliseconds;
             ScheduleGpuHeroActions(actions, token);
+            actionQueueMs = gpuPhase.ElapsedMilliseconds - actionStartMs;
             hero = _gpuStaticHero;
+            // Cache reuse is normal; log only a suspicious still-attached
+            // element or a costly prepare path. The standard GPU build phase
+            // already captures slow navigations.
+            if (hero.Parent != null || gpuPhase.ElapsedMilliseconds >= 8)
+                LogService.Info("performance", $"GPU_INTRO_CACHE_HIT detached={hero.Parent == null} actions={actions.Children.Count}");
         }
         else
         {
             actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             _gpuHeroActionsHost = actions;
+            long actionStartMs = gpuPhase.ElapsedMilliseconds;
             ScheduleGpuHeroActions(actions, token);
-            hero = BuildModernSectionHero(
-                "gpu",
-                "Graphics",
-                "GPU, ovladače a herní grafická nastavení na jednom místě.",
-                _gpuInfo?.Vendor ?? "GPU",
-                _gpuInfo == null ? "Detekce grafické karty probíhá…" : $"{_gpuInfo.Name} • driver {_gpuInfo.DisplayVersion}",
-                actions);
-            if (_gpuInfo != null)
+            actionQueueMs = gpuPhase.ElapsedMilliseconds - actionStartMs;
+            long heroStartMs = gpuPhase.ElapsedMilliseconds;
+            // Compact chrome is the normal Graphics layout. Avoid allocating
+            // the unused vendor/detail strings for the legacy visual hero.
+            hero = UseCompactSectionChrome
+                ? BuildNeutralSectionIntro("Graphics", "GPU, ovladače a herní grafická nastavení na jednom místě.", actions)
+                : BuildModernSectionHero(
+                    "gpu", "Graphics", "GPU, ovladače a herní grafická nastavení na jednom místě.",
+                    _gpuInfo?.Vendor ?? "GPU",
+                    _gpuInfo == null ? "Detekce grafické karty probíhá…" : $"{_gpuInfo.Name} • driver {_gpuInfo.DisplayVersion}",
+                    actions);
+            heroCreateMs = gpuPhase.ElapsedMilliseconds - heroStartMs;
+            // Intro text does not depend on live detection in compact mode.
+            // Reuse it even while GPU hardware detection is still pending.
+            if (UseCompactSectionChrome || _gpuInfo != null)
                 _gpuStaticHero = hero;
         }
         long actionsMs = gpuPhase.ElapsedMilliseconds - shellStartMs;
@@ -99,23 +154,32 @@ public sealed partial class MainWindow
 
         _gpuStatsHost = new StackPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
         var gpuStatsHost = _gpuStatsHost;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            if (token.IsCancellationRequested || _section != "gpu" || !ReferenceEquals(_gpuStatsHost, gpuStatsHost))
-                return;
-
-            if (!ContentStack.Children.Contains(gpuStatsHost))
-                ContentStack.Children.Add(gpuStatsHost);
-            ScheduleGpuStatsShell(gpuStatsHost, token);
-        });
+        int gpuGeneration = _navigationGeneration;
+        // Attach the lightweight empty host at its final location BEFORE
+        // capturing the GPU page cache. The previous outer deferred callback
+        // could run after snapshot and append all three stats tiles at the
+        // bottom of the page during a fast GPU -> other -> GPU return.
+        // Native feature tiles still materialize on Low-priority dispatcher.
+        ContentStack.Children.Add(gpuStatsHost);
+        ScheduleGpuStatsShell(gpuStatsHost, token, gpuGeneration);
         long statsMs = gpuPhase.ElapsedMilliseconds - shellStartMs - actionsMs - heroMs;
 
-        ContentStack.Children.Add(BuildSectionSurface("gpu", "Driver status", "Kontrola, stažení a instalace grafických ovladačů", root));
+        // Reserve the Driver status slot synchronously, but defer its cold
+        // native surface construction. A release smoke recorded 44ms inside
+        // BuildSectionSurface here, on the 55ms GPU first-paint hot path.
+        // This stable slot also belongs to any subsequent GPU cache snapshot.
+        _gpuDriverStatusHost = new StackPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
+        _gpuDriverStatusBody = root;
+        ContentStack.Children.Add(_gpuDriverStatusHost);
+        ScheduleGpuDriverStatusSurface(_gpuDriverStatusHost, root, token, gpuGeneration);
         long statusMs = gpuPhase.ElapsedMilliseconds - shellStartMs - actionsMs - heroMs - statsMs;
 
         long baseUiMs = gpuPhase.ElapsedMilliseconds;
         if (baseUiMs - detectMs >= 8)
+        {
             LogService.Info("performance", $"GPU_BASE_UI_PHASE actionsMs={actionsMs} heroMs={heroMs} statsMs={statsMs} statusMs={statusMs} totalMs={baseUiMs - detectMs}");
+            LogService.Info("performance", $"GPU_BASE_UI_DETAIL actionQueueMs={actionQueueMs} heroCreateMs={heroCreateMs} unaccountedMs={Math.Max(0, actionsMs - actionQueueMs - heroCreateMs)} reused={_gpuInfo != null && _gpuStaticHero != null}");
+        }
         _gpuDriverCardsHost = new StackPanel { Spacing = 10 };
         ContentStack.Children.Add(_gpuDriverCardsHost);
         ScheduleGpuDriverCards(token);
@@ -124,59 +188,90 @@ public sealed partial class MainWindow
         if (detectMs > 0 || totalMs >= 20)
             LogService.Info("performance", $"GPU_UI_PHASE detectMs={detectMs} baseUiMs={baseUiMs - detectMs} cardsMs={cardsMs - baseUiMs} totalMs={totalMs} detected={_gpuInfo != null}");
 
-        if (_gpuInfo == null && deferredDetection != null)
-            SafeTaskService.Forget(HydrateGpuDriverCenterAsync(deferredDetection, detectionGeneration, token), "gpu", "Deferred GPU detection");
+        // A superseded navigation should not initiate a fresh GPU probe.
+        // The next active GPU visit starts it normally.
+        if (_gpuInfo == null && !token.IsCancellationRequested)
+            deferredDetection = _gpuDeferredDetectionTask ??= ResolveGpuInfoDeferredAsync();
+        if (!token.IsCancellationRequested && _gpuInfo == null && deferredDetection != null)
+        {
+            int navigationGeneration = _navigationGeneration;
+            SafeTaskService.Forget(HydrateGpuDriverCenterAsync(deferredDetection, detectionGeneration, token, navigationGeneration), "gpu", "Deferred GPU detection");
+        }
         return;
     }
 
-    private void ScheduleGpuStatsShell(StackPanel host, CancellationToken token)
+    private void ScheduleGpuDriverStatusSurface(StackPanel host, StackPanel body, CancellationToken token, int generation)
     {
-        if (_gpuStatsQueued || host.Children.Count > 0) return;
-        _gpuStatsQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        if (ReferenceEquals(_gpuDriverStatusQueuedHost, host) || host.Children.Count > 0) return;
+        _gpuDriverStatusQueuedHost = host;
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            _gpuStatsQueued = false;
-            if (token.IsCancellationRequested || _section != "gpu" || !ReferenceEquals(_gpuStatsHost, host) || host.Children.Count > 0)
+            if (ReferenceEquals(_gpuDriverStatusQueuedHost, host))
+                _gpuDriverStatusQueuedHost = null;
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "gpu" || !ReferenceEquals(_gpuDriverStatusHost, host) ||
+                !ReferenceEquals(_gpuDriverStatusBody, body) || host.Parent == null ||
+                host.Children.Count > 0)
                 return;
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            if (_gpuStatsShell == null)
+            host.Children.Add(BuildSectionSurface(
+                "gpu", "Driver status", "Kontrola, stažení a instalace grafických ovladačů", body));
+            LogService.Info("performance", $"GPU_STATUS_SURFACE_DEFERRED ms={sw.ElapsedMilliseconds}");
+        }))
+        {
+            if (ReferenceEquals(_gpuDriverStatusQueuedHost, host))
+                _gpuDriverStatusQueuedHost = null;
+        }
+    }
+
+    private void ScheduleGpuStatsShell(StackPanel host, CancellationToken token, int generation)
+    {
+        if (ReferenceEquals(_gpuStatsQueuedHost, host) || host.Children.Count > 0) return;
+        _gpuStatsQueuedHost = host;
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (ReferenceEquals(_gpuStatsQueuedHost, host)) _gpuStatsQueuedHost = null;
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "gpu" || !ReferenceEquals(_gpuStatsHost, host) || host.Parent == null || host.Children.Count > 0)
+                return;
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            // Never reparent a live WinUI visual from a previous GPU page. Under rapid
+            // GPU -> other-section navigation CoreMessaging can still own composition
+            // state for the detached tree, and native reparenting can fault before a
+            // managed exception is observable. Keep the data cached, not the visual.
+            var statsShell = new Grid { ColumnSpacing = 10, Margin = new Thickness(0, 0, 0, 14) };
+            for (int i = 0; i < 3; i++) statsShell.ColumnDefinitions.Add(new ColumnDefinition());
+            string name = _gpuInfo?.Name ?? "Detekuji GPU…";
+            _gpuNameTile = BuildFeatureTile("gpu", "GPU", name, _gpuInfo?.Vendor ?? "Detekce probíhá");
+            _gpuDriverTile = BuildFeatureTile("components", "ZDROJE OVLADAČŮ", "2", "NVIDIA + Exostenza");
+            _gpuDriverCenterTile = BuildFeatureTile("system", "OVLADAČE GPU", "PŘIPRAVENO", "Oficiální ovladač + volitelná Exostenza");
+            var gpuCards = new[] { _gpuNameTile, _gpuDriverTile, _gpuDriverCenterTile };
+            for (int i = 0; i < gpuCards.Length; i++)
             {
-                _gpuStatsShell = new Grid { ColumnSpacing = 10, Margin = new Thickness(0, 0, 0, 14) };
-                for (int i = 0; i < 3; i++) _gpuStatsShell.ColumnDefinitions.Add(new ColumnDefinition());
-                string name = _gpuInfo?.Name ?? "Detekuji GPU…";
-                _gpuNameTile = BuildFeatureTile("gpu", "GPU", name, _gpuInfo?.Vendor ?? "Detekce probíhá");
-                _gpuDriverTile = BuildFeatureTile("components", "ZDROJE OVLADAČŮ", "2", "NVIDIA + Exostenza");
-                _gpuDriverCenterTile = BuildFeatureTile("system", "OVLADAČE GPU", "PŘIPRAVENO", "Oficiální ovladač + volitelná Exostenza");
-                var gpuCards = new[] { _gpuNameTile, _gpuDriverTile, _gpuDriverCenterTile };
-                for (int i = 0; i < gpuCards.Length; i++)
-                {
-                    Grid.SetColumn(gpuCards[i], i);
-                    _gpuStatsShell.Children.Add(gpuCards[i]);
-                }
-            }
-            else
-            {
-                UpdateGpuFeatureTile(_gpuNameTile, _gpuInfo?.Name ?? "Detekuji GPU…", _gpuInfo?.Vendor ?? "Detekce probíhá");
-                UpdateGpuFeatureTile(_gpuDriverTile, "2", "NVIDIA + Exostenza");
-                UpdateGpuFeatureTile(_gpuDriverCenterTile, "PŘIPRAVENO", "Oficiální ovladač + volitelná Exostenza");
+                Grid.SetColumn(gpuCards[i], i);
+                statsShell.Children.Add(gpuCards[i]);
             }
 
-            if (_gpuStatsShell.Parent is Panel previousParent && !ReferenceEquals(previousParent, host))
-                previousParent.Children.Remove(_gpuStatsShell);
-            host.Children.Add(_gpuStatsShell);
-            LogService.Info("performance", $"GPU_STATS_DEFERRED ms={sw.ElapsedMilliseconds}");
-        });
+            _gpuStatsShell = statsShell;
+            host.Children.Add(statsShell);
+            LogService.Info("performance", $"GPU_STATS_DEFERRED ms={sw.ElapsedMilliseconds} freshVisual=true");
+        }))
+        {
+            if (ReferenceEquals(_gpuStatsQueuedHost, host)) _gpuStatsQueuedHost = null;
+        }
     }
 
     private void ScheduleGpuHeroActions(StackPanel host, CancellationToken token)
     {
-        if (_gpuHeroActionsQueued || host.Children.Count > 0) return;
-        _gpuHeroActionsQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        if (ReferenceEquals(_gpuHeroActionsQueuedHost, host) || host.Children.Count > 0) return;
+        int generation = _navigationGeneration;
+        _gpuHeroActionsQueuedHost = host;
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            _gpuHeroActionsQueued = false;
-            if (token.IsCancellationRequested || _section != "gpu" || !ReferenceEquals(_gpuHeroActionsHost, host) || host.Children.Count > 0)
+            if (ReferenceEquals(_gpuHeroActionsQueuedHost, host)) _gpuHeroActionsQueuedHost = null;
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "gpu" || !ReferenceEquals(_gpuHeroActionsHost, host) || host.Parent == null || host.Children.Count > 0)
                 return;
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -189,7 +284,36 @@ public sealed partial class MainWindow
                 return Task.CompletedTask;
             }));
             LogService.Info("performance", $"GPU_HERO_ACTIONS_DEFERRED ms={sw.ElapsedMilliseconds}");
-        });
+        }))
+        {
+            if (ReferenceEquals(_gpuHeroActionsQueuedHost, host)) _gpuHeroActionsQueuedHost = null;
+        }
+    }
+
+    private static async Task<GpuDriverInfo?> ResolveWarmGpuOrDetectAsync(
+        Task<GpuDriverInfo?>? persistedRead,
+        Func<Task<GpuDriverInfo?>> fallbackDetect,
+        CancellationToken cancellationToken,
+        Action<Exception> reportCacheFailure)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (persistedRead != null)
+        {
+            try
+            {
+                var persisted = await persistedRead.ConfigureAwait(false);
+                if (persisted != null) return persisted;
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                // A failed optional disk cache must not prevent a live GPU
+                // detection. Only the fallback failure is terminal.
+                reportCacheFailure(ex);
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return await fallbackDetect().ConfigureAwait(false);
     }
 
     private async Task<GpuDriverInfo?> ResolveGpuInfoDeferredAsync()
@@ -197,13 +321,16 @@ public sealed partial class MainWindow
         var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            if (_gpuPersistentWarmTask != null)
-            {
-                var persisted = await _gpuPersistentWarmTask.ConfigureAwait(false);
-                if (persisted != null) return persisted;
-            }
-
-            return await GpuDriverService.DetectPrimaryGpuAsync(CancellationToken.None).ConfigureAwait(false);
+            return await ResolveWarmGpuOrDetectAsync(
+                _gpuPersistentWarmTask,
+                () => GpuDriverService.DetectPrimaryGpuAsync(_windowLifetimeCts.Token),
+                _windowLifetimeCts.Token,
+                ex => LogService.Error("GPU persisted warm read failed, trying live detection", ex))
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_windowLifetimeCts.IsCancellationRequested)
+        {
+            return null;
         }
         catch (Exception ex)
         {
@@ -216,21 +343,112 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task HydrateGpuDriverCenterAsync(Task<GpuDriverInfo?> detection, long detectionGeneration, CancellationToken navigationToken)
+    private async Task HydrateGpuDriverCenterAsync(Task<GpuDriverInfo?> detection, long detectionGeneration, CancellationToken navigationToken, int navigationGeneration)
     {
         GpuDriverInfo? info;
         try { info = await detection.ConfigureAwait(false); }
-        catch (Exception ex) { LogService.Error("GPU deferred hydration failed", ex); return; }
-        if (info == null || detectionGeneration != GpuDriverService.DetectionCacheGeneration) return;
-
-        _gpuInfo = info;
-        _ = System.Threading.Interlocked.CompareExchange(ref _gpuDeferredDetectionTask, null, detection);
-        if (navigationToken.IsCancellationRequested) return;
-        DispatcherQueue.TryEnqueue(() =>
+        catch (Exception ex)
         {
-            if (navigationToken.IsCancellationRequested || _section != "gpu") return;
+            // A fault must not pin the completed detection forever, preventing
+            // retries when the GPU page is visited again.
+            _ = System.Threading.Interlocked.CompareExchange(ref _gpuDeferredDetectionTask, null, detection);
+            LogService.Error("GPU deferred hydration failed", ex);
+            return;
+        }
+        if (info == null || detectionGeneration != GpuDriverService.DetectionCacheGeneration)
+        {
+            _ = System.Threading.Interlocked.CompareExchange(ref _gpuDeferredDetectionTask, null, detection);
+            return;
+        }
+
+        // WinUI-owned GPU state must only be published on its dispatcher,
+        // AFTER validating navigation and PnP generations. Previously a
+        // cancelled page could overwrite _gpuInfo from a worker thread.
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            _ = System.Threading.Interlocked.CompareExchange(ref _gpuDeferredDetectionTask, null, detection);
+            if (_windowLifetimeCts.IsCancellationRequested || navigationToken.IsCancellationRequested ||
+                navigationGeneration != _navigationGeneration || _section != "gpu" ||
+                detectionGeneration != GpuDriverService.DetectionCacheGeneration)
+                return;
+            _gpuInfo = info;
             ApplyGpuInfoToLiveUi(info);
-        });
+        }))
+            _ = System.Threading.Interlocked.CompareExchange(ref _gpuDeferredDetectionTask, null, detection);
+    }
+
+    // Test only: fake completed Task values. Never scans hardware, touches
+    // the persisted GPU cache, installs drivers, or changes Windows settings.
+    internal async Task RunGpuDeferredHydrationOwnershipSmokeAsync()
+    {
+        await ShowSectionAsync("gpu");
+        var originalInfo = _gpuInfo;
+        var originalTask = _gpuDeferredDetectionTask;
+        long detectionGeneration = GpuDriverService.DetectionCacheGeneration;
+        int activeNavigation = _navigationGeneration;
+        var staleInfo = new GpuDriverInfo("STALE GPU SMOKE", "Test", "0", "0", null);
+        try
+        {
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            var stale = Task.FromResult<GpuDriverInfo?>(staleInfo);
+            _gpuDeferredDetectionTask = stale;
+            await HydrateGpuDriverCenterAsync(stale, detectionGeneration, cancelled.Token, activeNavigation);
+            await Task.Delay(40);
+            if (!ReferenceEquals(_gpuInfo, originalInfo) || _gpuDeferredDetectionTask != null)
+                throw new InvalidOperationException("Cancelled GPU hydration mutated the current driver or retained its completed task.");
+
+            var wrongNavigation = Task.FromResult<GpuDriverInfo?>(staleInfo);
+            _gpuDeferredDetectionTask = wrongNavigation;
+            await HydrateGpuDriverCenterAsync(wrongNavigation, detectionGeneration, CancellationToken.None, activeNavigation - 1);
+            await Task.Delay(40);
+            if (!ReferenceEquals(_gpuInfo, originalInfo) || _gpuDeferredDetectionTask != null)
+                throw new InvalidOperationException("Stale-navigation GPU hydration published a driver or retained its task.");
+
+            var missing = Task.FromResult<GpuDriverInfo?>(null);
+            _gpuDeferredDetectionTask = missing;
+            await HydrateGpuDriverCenterAsync(missing, detectionGeneration, CancellationToken.None, activeNavigation);
+            if (!ReferenceEquals(_gpuInfo, originalInfo) || _gpuDeferredDetectionTask != null)
+                throw new InvalidOperationException("Missing GPU result blocked the next detection retry.");
+
+            int fallbackRuns = 0, readFailures = 0;
+            Task<GpuDriverInfo?> Probe()
+            {
+                fallbackRuns++;
+                return Task.FromResult<GpuDriverInfo?>(staleInfo);
+            }
+            var recovered = await ResolveWarmGpuOrDetectAsync(
+                Task.FromException<GpuDriverInfo?>(new IOException("synthetic cache failure")),
+                Probe, CancellationToken.None, _ => readFailures++);
+            if (!ReferenceEquals(recovered, staleInfo) || fallbackRuns != 1 || readFailures != 1)
+                throw new InvalidOperationException("Faulted persisted GPU cache blocked live fallback.");
+
+            var cached = await ResolveWarmGpuOrDetectAsync(
+                Task.FromResult<GpuDriverInfo?>(staleInfo),
+                Probe, CancellationToken.None, _ => readFailures++);
+            if (!ReferenceEquals(cached, staleInfo) || fallbackRuns != 1 || readFailures != 1)
+                throw new InvalidOperationException("Valid persisted GPU cache unnecessarily triggered fallback.");
+
+            using var cancelledProbe = new CancellationTokenSource();
+            cancelledProbe.Cancel();
+            try
+            {
+                _ = await ResolveWarmGpuOrDetectAsync(
+                    Task.FromResult<GpuDriverInfo?>(null), Probe,
+                    cancelledProbe.Token, _ => readFailures++);
+                throw new InvalidOperationException("Cancelled GPU cache resolver unexpectedly continued.");
+            }
+            catch (OperationCanceledException) when (cancelledProbe.IsCancellationRequested) { }
+            if (fallbackRuns != 1)
+                throw new InvalidOperationException("Cancelled GPU cache resolver executed hardware fallback.");
+            LogService.Info(RunGpuWindowWarmFlightPolicySmoke());
+            LogService.Info("GPU_DEFERRED_HYDRATION_OWNERSHIP_SMOKE_OK cancelledIgnored=true navigationIgnored=true retryAfterMiss=true cacheFaultFallback=true cacheHitNoProbe=true canceledProbeIgnored=true driverUnchanged=true");
+        }
+        finally
+        {
+            _gpuInfo = originalInfo;
+            _gpuDeferredDetectionTask = originalTask;
+        }
     }
 
     private void ApplyGpuInfoToLiveUi(GpuDriverInfo info)
@@ -254,43 +472,50 @@ public sealed partial class MainWindow
 
     private void ScheduleGpuDriverCards(CancellationToken token)
     {
-        if (_gpuDriverCardsQueued || _gpuDriverCardsHost == null || _gpuDriverCardsHost.Children.Count > 0) return;
-        _gpuDriverCardsQueued = true;
+        if (_gpuDriverCardsHost == null || ReferenceEquals(_gpuDriverCardsQueuedHost, _gpuDriverCardsHost) || _gpuDriverCardsHost.Children.Count >= 2) return;
+        int generation = _navigationGeneration;
+        var cardsHost = _gpuDriverCardsHost;
+        _gpuDriverCardsQueuedHost = cardsHost;
         long totalUiMs = 0;
 
         if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "gpu" || _gpuDriverCardsHost == null || _gpuDriverCardsHost.Children.Count > 0)
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "gpu" || !ReferenceEquals(_gpuDriverCardsHost, cardsHost) || cardsHost == null || cardsHost.Parent == null || cardsHost.Children.Count >= 2)
             {
-                _gpuDriverCardsQueued = false;
+                if (ReferenceEquals(_gpuDriverCardsQueuedHost, cardsHost)) _gpuDriverCardsQueuedHost = null;
                 return;
             }
 
             var officialSw = System.Diagnostics.Stopwatch.StartNew();
-            BuildOfficialDriverCard(_gpuDriverCardsHost);
+            if (cardsHost.Children.Count == 0)
+                BuildOfficialDriverCard(cardsHost);
             long officialMs = officialSw.ElapsedMilliseconds;
             totalUiMs += officialMs;
             LogService.Info("performance", $"GPU_DRIVER_CARDS_STAGE stage=official ms={officialMs}");
 
             if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                if (token.IsCancellationRequested || _section != "gpu" || _gpuDriverCardsHost == null)
+                if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "gpu" || !ReferenceEquals(_gpuDriverCardsHost, cardsHost) || cardsHost == null || cardsHost.Parent == null || cardsHost.Children.Count >= 2)
                 {
-                    _gpuDriverCardsQueued = false;
+                    if (ReferenceEquals(_gpuDriverCardsQueuedHost, cardsHost)) _gpuDriverCardsQueuedHost = null;
                     return;
                 }
 
                 var exostenzaSw = System.Diagnostics.Stopwatch.StartNew();
-                BuildExostenzaCard(_gpuDriverCardsHost);
+                BuildExostenzaCard(cardsHost);
                 long exostenzaMs = exostenzaSw.ElapsedMilliseconds;
                 totalUiMs += exostenzaMs;
-                _gpuDriverCardsQueued = false;
+                if (ReferenceEquals(_gpuDriverCardsQueuedHost, cardsHost)) _gpuDriverCardsQueuedHost = null;
                 LogService.Info("performance", $"GPU_DRIVER_CARDS_STAGE stage=exostenza ms={exostenzaMs}");
-                LogService.Info("performance", $"GPU_DRIVER_CARDS_DEFERRED staged=true uiMs={totalUiMs} count={_gpuDriverCardsHost.Children.Count}");
+                LogService.Info("performance", $"GPU_DRIVER_CARDS_DEFERRED staged=true uiMs={totalUiMs} count={cardsHost.Children.Count}");
             }))
-                _gpuDriverCardsQueued = false;
+            {
+                if (ReferenceEquals(_gpuDriverCardsQueuedHost, cardsHost)) _gpuDriverCardsQueuedHost = null;
+            }
         }))
-            _gpuDriverCardsQueued = false;
+        {
+            if (ReferenceEquals(_gpuDriverCardsQueuedHost, cardsHost)) _gpuDriverCardsQueuedHost = null;
+        }
     }
 
     private void BuildOfficialDriverCard(StackPanel host)
@@ -314,12 +539,18 @@ public sealed partial class MainWindow
             BuildDashboardMetric("Zdroj", "NVIDIA", "Oficiální zdroj", "SpankySuccessBrush"),
             BuildDashboardMetric("Stav", _gpuOfficialRelease == null ? "Neověřeno" : "Připraveno", "Ověření / stažení")));
 
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        row.Children.Add(PrimaryQuickButton("Zkontrolovat", CheckGpuDriverUpdatesAsync));
-        row.Children.Add(QuickButton("Stáhnout nejnovější", DownloadOfficialGpuDriverAsync));
-        row.Children.Add(QuickButton("Nainstalovat stažený", InstallDownloadedGpuDriverAsync));
-        row.Children.Add(QuickButton("Oficiální stránka", () => { if (_gpuInfo != null) GpuDriverService.OpenSource(GpuDriverService.GetOfficialPage(_gpuInfo)); return Task.CompletedTask; }));
-        body.Children.Add(row);
+        // Pair driver actions by workflow: verify/download, then install/source.
+        // Never force four differently sized buttons onto one clipped row.
+        var driverActions = new StackPanel { Spacing = 6, Tag = "gpu-official-actions" };
+        var acquireActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        acquireActions.Children.Add(PrimaryQuickButton("Zkontrolovat", CheckGpuDriverUpdatesAsync));
+        acquireActions.Children.Add(QuickButton("Stáhnout nejnovější", DownloadOfficialGpuDriverAsync));
+        driverActions.Children.Add(acquireActions);
+        var installActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        installActions.Children.Add(QuickButton("Nainstalovat stažený", InstallDownloadedGpuDriverAsync));
+        installActions.Children.Add(QuickButton("Oficiální stránka", () => { if (_gpuInfo != null) GpuDriverService.OpenSource(GpuDriverService.GetOfficialPage(_gpuInfo)); return Task.CompletedTask; }));
+        driverActions.Children.Add(installActions);
+        body.Children.Add(driverActions);
 
         host.Children.Add(BuildSectionSurface("gpu", "Oficiální ovladač", "Kontrola • stažení • instalace", body));
     }
@@ -348,20 +579,34 @@ public sealed partial class MainWindow
             TextWrapping = TextWrapping.Wrap,
             Visibility = pendingExostenza != null ? Visibility.Visible : Visibility.Collapsed
         };
-        body.Children.Add(_gpuCommunityText);
+        TextBlock communityText = _gpuCommunityText;
+        int pageGeneration = _navigationGeneration;
+        body.Children.Add(communityText);
 
         if (pendingExostenza != null)
         {
-            SafeTaskService.Forget(Task.Run(async () =>
+            SafeTaskService.Forget(ReconcilePendingExostenzaCardAsync(), "drivers", "Exostenza install read-back");
+
+            async Task ReconcilePendingExostenzaCardAsync()
             {
-                string? reconciled = await GpuDriverService.ReconcilePendingExostenzaAsync(CancellationToken.None);
-                DispatcherQueue.TryEnqueue(() =>
+                CancellationToken windowToken = _windowLifetimeCts.Token;
+                try
                 {
-                    if (_gpuCommunityText == null || string.IsNullOrWhiteSpace(reconciled)) return;
-                    _gpuCommunityText.Text = reconciled;
-                    _gpuCommunityText.Visibility = Visibility.Visible;
-                });
-            }), "drivers", "Exostenza install read-back");
+                    string? reconciled = await GpuDriverService.ReconcilePendingExostenzaAsync(windowToken).ConfigureAwait(false);
+                    if (windowToken.IsCancellationRequested || string.IsNullOrWhiteSpace(reconciled)) return;
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        if (windowToken.IsCancellationRequested ||
+                            pageGeneration != _navigationGeneration ||
+                            _section != "gpu" ||
+                            !ReferenceEquals(_gpuCommunityText, communityText))
+                            return;
+                        communityText.Text = reconciled;
+                        communityText.Visibility = Visibility.Visible;
+                    });
+                }
+                catch (OperationCanceledException) when (windowToken.IsCancellationRequested) { }
+            }
         }
 
         body.Children.Add(new TextBlock
@@ -393,6 +638,7 @@ public sealed partial class MainWindow
         await Task.Delay(50);
 
         GpuDriverService.InvalidateDetectionCache();
+        bool prewarmedIntro = _gpuStaticHero != null && _gpuHeroActionsHost != null;
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         await ShowSectionAsync("gpu");
@@ -400,9 +646,33 @@ public sealed partial class MainWindow
             throw new InvalidOperationException("GPU generation invalidation did not reach the UI cache.");
         sw.Stop();
         long renderMs = sw.ElapsedMilliseconds;
+        // The stats host itself belongs to the synchronous page snapshot,
+        // even though its expensive feature tiles are filled in later.
+        // The ordering contract is Intro -> Stats -> Driver status -> Cards.
+        if (_gpuStatsHost == null || _gpuDriverStatusHost == null || _gpuDriverCardsHost == null ||
+            !ContentStack.Children.Contains(_gpuStatsHost) ||
+            !ContentStack.Children.Contains(_gpuDriverStatusHost) ||
+            !ContentStack.Children.Contains(_gpuDriverCardsHost) ||
+            ContentStack.Children.IndexOf(_gpuStatsHost) >= ContentStack.Children.IndexOf(_gpuDriverStatusHost) ||
+            ContentStack.Children.IndexOf(_gpuDriverStatusHost) >= ContentStack.Children.IndexOf(_gpuDriverCardsHost))
+            throw new InvalidOperationException("GPU stats/driver-status placeholders were not attached in their original order during foreground navigation.");
+        var initialStatsHost = _gpuStatsHost;
+        var initialDriverStatusHost = _gpuDriverStatusHost;
+        if (prewarmedIntro)
+            LogService.Info("performance", "GPU_INTRO_PREWARM_SMOKE_OK");
+        else
+            LogService.Info("performance", "GPU_INTRO_PREWARM_SMOKE_MISS");
 
+        for (int i = 0; i < 40 && _gpuNameText == null; i++)
+            await Task.Delay(25);
         if (_gpuNameText == null)
-            throw new InvalidOperationException("GPU deferred smoke did not render the base shell.");
+            throw new InvalidOperationException("GPU deferred smoke did not render the deferred live header.");
+
+        for (int i = 0; i < 40 && (initialDriverStatusHost.Children.Count == 0); i++)
+            await Task.Delay(25);
+        if (initialDriverStatusHost.Children.Count != 1 ||
+            initialDriverStatusHost.Children[0] is not Border)
+            throw new InvalidOperationException("GPU deferred Driver status surface did not materialize.");
 
         for (int i = 0; i < 40 &&
             (_gpuNameTile == null || _gpuDriverTile == null || _gpuDriverCenterTile == null ||
@@ -412,6 +682,10 @@ public sealed partial class MainWindow
         if (_gpuNameTile == null || _gpuDriverTile == null || _gpuDriverCenterTile == null ||
             _gpuHeroActionsHost == null || _gpuHeroActionsHost.Children.Count < 3)
             throw new InvalidOperationException("GPU deferred smoke did not materialize deferred stats/actions.");
+
+        // GPU tweak catalog is intentionally loaded after first paint.
+        for (int i = 0; i < 80 && _tweaks.Count != 4; i++)
+            await Task.Delay(25);
 
         if (_tweaks.Count != 4)
             throw new InvalidOperationException($"GPU tweak catalog mismatch tweaks={_tweaks.Count}.");
@@ -440,6 +714,102 @@ public sealed partial class MainWindow
             throw new InvalidOperationException("GPU deferred smoke has stale Exostenza visibility.");
 
         LogService.Info("performance", $"GPU_DEFERRED_RENDER_SMOKE_OK renderMs={renderMs} gpu={_gpuInfo.Name} version={_gpuInfo.DisplayVersion}");
+
+        // Cache is captured only after deferred tweak detection and the
+        // hardware recommendations have finished. A quick return before that
+        // is legitimately a new page, not a cached reattachment. Wait for
+        // a real snapshot before asserting stable host identity.
+        for (int i = 0; i < 120 && _gpuPageCache == null; i++)
+            await Task.Delay(25);
+        if (_gpuPageCache == null || !_gpuPageCache.Contains(initialStatsHost) ||
+            !_gpuPageCache.Contains(initialDriverStatusHost) ||
+            _gpuPageCache.IndexOf(initialStatsHost) >= _gpuPageCache.IndexOf(initialDriverStatusHost) ||
+            _gpuPageCache.IndexOf(initialDriverStatusHost) >= _gpuPageCache.IndexOf(_gpuDriverCardsHost!))
+            throw new InvalidOperationException("GPU snapshot omitted or reordered the deferred Driver status slot.");
+
+        // Regression: GPU's small number of deep native roots must use
+        // deferred host cleanup, not 61ms synchronous Children.Clear().
+        // Cached stats/cards still must reattach correctly after the swap.
+        var gpuHostBeforeExit = ContentStack;
+        int gpuCompactClearBefore = _inPlaceNavigationClears;
+        await ShowSectionAsync("overview");
+        if (ReferenceEquals(ContentStack, gpuHostBeforeExit) ||
+            _inPlaceNavigationClears != gpuCompactClearBefore)
+            throw new InvalidOperationException("GPU exit synchronously cleared its deep native page instead of swapping hosts.");
+        await ShowSectionAsync("gpu");
+        for (int i = 0; i < 40 && (_gpuNameText == null || _gpuNameText.Text != _gpuInfo.Name); i++)
+            await Task.Delay(25);
+        if (_gpuNameText == null || !string.Equals(_gpuNameText.Text, _gpuInfo.Name, StringComparison.Ordinal))
+            throw new InvalidOperationException("GPU fast-return navigation left stale detected-device header.");
+        if (!ReferenceEquals(_gpuStatsHost, initialStatsHost) ||
+            !ReferenceEquals(_gpuDriverStatusHost, initialDriverStatusHost) ||
+            initialDriverStatusHost.Children.Count != 1 ||
+            _gpuPageCache == null || !_gpuPageCache.Contains(initialStatsHost) ||
+            !_gpuPageCache.Contains(initialDriverStatusHost) ||
+            !ContentStack.Children.Contains(initialStatsHost) ||
+            !ContentStack.Children.Contains(initialDriverStatusHost) ||
+            ContentStack.Children.IndexOf(initialStatsHost) >= ContentStack.Children.IndexOf(initialDriverStatusHost) ||
+            ContentStack.Children.IndexOf(initialDriverStatusHost) >= ContentStack.Children.IndexOf(_gpuDriverCardsHost))
+            throw new InvalidOperationException("GPU cached stats/Driver status hosts were omitted, reordered or recreated after quick return.");
+        LogService.Info("performance", "GPU_FAST_RETURN_SMOKE_OK sections=gpu,overview,gpu statsHostCached=true ordered=true");
+
+        // Force a superseded GPU navigation and check that Overview wins.
+        await ShowSectionAsync("overview");
+        Task pendingGpu = ShowSectionAsync("gpu");
+        Task winningOverview = ShowSectionAsync("overview");
+        await Task.WhenAll(pendingGpu, winningOverview);
+        if (_section != "overview")
+            throw new InvalidOperationException("Superseded GPU navigation replaced Overview.");
+        await ShowSectionAsync("gpu");
+        for (int i = 0; i < 40 && (_gpuNameText == null || _gpuNameText.Text != _gpuInfo.Name); i++)
+            await Task.Delay(25);
+        if (_gpuNameText == null || _gpuNameText.Text != _gpuInfo.Name)
+            throw new InvalidOperationException("GPU navigation cancellation corrupted device header.");
+        LogService.Info("performance", "GPU_CANCEL_NAV_SMOKE_OK");
+
+        // Simulate the second deferred card being lost after the first stage.
+        for (int i = 0; i < 40 && (_gpuDriverCardsHost?.Children.Count ?? 0) < 2; i++)
+            await Task.Delay(25);
+        if (_gpuDriverCardsHost?.Children.Count != 2)
+            throw new InvalidOperationException("GPU cards were incomplete before partial-recovery smoke.");
+        _gpuDriverCardsHost.Children.RemoveAt(1);
+        await ShowSectionAsync("overview");
+        await ShowSectionAsync("gpu");
+        for (int i = 0; i < 40 && (_gpuDriverCardsHost?.Children.Count ?? 0) < 2; i++)
+            await Task.Delay(25);
+        if (_gpuDriverCardsHost?.Children.Count != 2)
+            throw new InvalidOperationException("GPU partial driver cards were not recovered.");
+        LogService.Info("performance", "GPU_PARTIAL_CARDS_RECOVERY_SMOKE_OK");
+
+        // Simulate a rejected initial stats-host dispatch: no attached visual
+        // and no rendered children when the GPU page is cached on exit.
+        for (int i = 0; i < 40 && (_gpuStatsHost?.Children.Count ?? 0) == 0; i++)
+            await Task.Delay(25);
+        if (_gpuStatsHost == null || _gpuStatsHost.Children.Count == 0)
+            throw new InvalidOperationException("GPU stats were missing before recovery smoke.");
+        var detachedStatsHost = _gpuStatsHost;
+        detachedStatsHost.Children.Clear();
+        ContentStack.Children.Remove(detachedStatsHost);
+        // Simulate a page snapshot captured during a rejected initial stats
+        // callback, not only a missing visual from an otherwise valid cache.
+        if (_gpuPageCache == null || !_gpuPageCache.Remove(detachedStatsHost))
+            throw new InvalidOperationException("GPU stats recovery smoke expected an initial cached stats root.");
+        await ShowSectionAsync("overview");
+        await ShowSectionAsync("gpu");
+        for (int i = 0; i < 40 && (detachedStatsHost.Children.Count == 0 ||
+             !ContentStack.Children.Contains(detachedStatsHost)); i++)
+            await Task.Delay(25);
+        int statsIndex = ContentStack.Children.IndexOf(detachedStatsHost);
+        int heroIndex = _gpuStaticHero == null ? -1 : ContentStack.Children.IndexOf(_gpuStaticHero);
+        int driverIndex = _gpuDriverCardsHost == null ? -1 : ContentStack.Children.IndexOf(_gpuDriverCardsHost);
+        if (!ReferenceEquals(_gpuStatsHost, detachedStatsHost) ||
+            detachedStatsHost.Children.Count == 0 || statsIndex < 0 ||
+            heroIndex < 0 || statsIndex != heroIndex + 1 ||
+            driverIndex < 0 || statsIndex >= driverIndex ||
+            _gpuPageCache == null || !_gpuPageCache.Contains(detachedStatsHost) ||
+            _gpuPageCache.IndexOf(detachedStatsHost) != _gpuPageCache.IndexOf(_gpuStaticHero!) + 1)
+            throw new InvalidOperationException("GPU omitted stats root was not recovered in its original visual and cached position.");
+        LogService.Info("performance", "GPU_DETACHED_STATS_RECOVERY_SMOKE_OK cacheRestored=true orderRestored=true");
     }
 
     private async Task CheckGpuDriverUpdatesAsync()
@@ -493,8 +863,10 @@ public sealed partial class MainWindow
             SetGpuDriverStatus("Připravuji stažení oficiálního ovladače…");
             var progress = new Progress<DriverDownloadProgress>(p => SetGpuDriverStatus(p.Percent >= 0 ? $"Stahuji NVIDIA {_gpuOfficialRelease.Version}… {p.Percent} %" : $"Stahuji NVIDIA {_gpuOfficialRelease.Version}…"));
             _gpuDownloadedPackage = await GpuDriverService.DownloadAsync(_gpuOfficialRelease, progress);
+            if (string.IsNullOrWhiteSpace(_gpuDownloadedPackage) || !File.Exists(_gpuDownloadedPackage) || new FileInfo(_gpuDownloadedPackage).Length <= 0)
+                throw new InvalidOperationException("Stažený GPU instalační balík nebyl po downloadu nalezen nebo je prázdný.");
             SetGpuDriverStatus("Staženo: " + Path.GetFileName(_gpuDownloadedPackage));
-            ShowActionFeedback("GPU driver", ActionFeedbackKind.Verified, "Oficiální driver byl stažen a soubor byl uložen do cache.");
+            ShowActionFeedback("GPU driver", ActionFeedbackKind.Info, "Oficiální instalační balík byl stažen, fyzicky ověřen v cache a čeká na instalaci.");
         }
         catch (Exception ex)
         {
@@ -555,15 +927,23 @@ public sealed partial class MainWindow
     }
     private void SetGpuDriverStatus(string text)
     {
-        DispatcherQueue.TryEnqueue(() => { if (_gpuDriverStatus != null) _gpuDriverStatus.Text = text; });
+        int generation = _navigationGeneration;
+        var status = _gpuDriverStatus;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (generation == _navigationGeneration && _section == "gpu" && status != null && ReferenceEquals(_gpuDriverStatus, status) && status.Parent != null)
+                status.Text = text;
+        });
     }
     private void SetGpuDriverUpdateBadge(string text, bool updateAvailable)
     {
+        int generation = _navigationGeneration;
+        var badge = _gpuUpdateBadge;
         DispatcherQueue.TryEnqueue(() =>
         {
-            if (_gpuUpdateBadge == null) return;
-            _gpuUpdateBadge.Text = text;
-            _gpuUpdateBadge.Foreground = updateAvailable ? WarningBrush() : text == "AKTUÁLNÍ" ? SuccessBrush() : InfoBrush();
+            if (generation != _navigationGeneration || _section != "gpu" || badge == null || !ReferenceEquals(_gpuUpdateBadge, badge) || badge.Parent == null) return;
+            badge.Text = text;
+            badge.Foreground = updateAvailable ? WarningBrush() : text == "AKTUÁLNÍ" ? SuccessBrush() : InfoBrush();
         });
     }
 }

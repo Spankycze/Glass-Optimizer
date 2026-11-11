@@ -79,9 +79,17 @@ public sealed record FanAgentHealth(
 public static class FanProfileService
 {
     private const string RunValueName = "Spankyho Fan Agent";
+    private const string AiRunValueName = "Glass Optimizer AI Agent";
     private const string WatchdogRunValueName = "Spankyho Fan Watchdog";
     private const string AgentTaskName = "SpankyhoOptimizer-FanAgent";
     private const string AgentMutexName = @"Local\SpankyhoOptimizer.FanAgent.SingleInstance";
+    private const string AiAgentMutexName = @"Local\SpankyhoOptimizer.AiAgent.SingleInstance";
+    private const string ProfileWriteMutexName = @"Local\SpankyhoOptimizer.FanProfile.AtomicSave";
+    private static long _nextStartupRegistrationCheckUptimeMs;
+    private static int _startupRegistrationCheckRunning;
+    internal static bool StartupRegistrationDue(long nowUptimeMs, long nextCheckUptimeMs) =>
+        nextCheckUptimeMs <= 0 || nowUptimeMs >= nextCheckUptimeMs;
+    private static readonly string AgentAssemblyVersion = typeof(FanProfileService).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
     private const string WatchdogLoopMutexName = @"Local\SpankyhoOptimizer.FanWatchdogLoop.SingleInstance";
     private static readonly FanAgentRuntimePathSet RuntimePaths = FanAgentRuntimePaths.Create(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
@@ -89,9 +97,15 @@ public static class FanProfileService
     private static readonly string AgentVersionPath = RuntimePaths.VersionPath;
     private static readonly string AgentRestartRequestPath = RuntimePaths.RestartRequestPath;
     private static readonly string AgentHealthPath = RuntimePaths.HealthPath;
+    // Heartbeat and health now use the shared atomic writer, which builds its
+    // own unique temp name per call; no fixed ".tmp" path is needed here.
+    private static readonly string? HeartbeatDirectory = Path.GetDirectoryName(HeartbeatPath);
+    private static readonly string? HealthDirectory = Path.GetDirectoryName(AgentHealthPath);
     private static readonly string StateDirectory =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SpankyhoOptimizer");
     private static readonly string StatePath = Path.Combine(StateDirectory, "fan-profile.json");
+    private static readonly ReusableFileMetadata ProfileMetadata = new(StatePath);
+    private static readonly ReusableFileMetadata HealthMetadata = new(AgentHealthPath);
     private static readonly object ProfileCacheGate = new();
     private static readonly object HealthCacheGate = new();
     private static FanProfile? _cachedProfile;
@@ -102,7 +116,7 @@ public static class FanProfileService
     private static long _cachedHealthLength = -1;
     private static DateTime _lastHeartbeatWriteUtc = DateTime.MinValue;
     private static DateTime _lastHealthWriteUtc = DateTime.MinValue;
-    private static readonly JsonSerializerOptions IndentedJsonOptions = new() { WriteIndented = true };
+    private static DateTime _lastRestartRequestReadErrorUtc = DateTime.MinValue;
 
     public static FanProfile Default { get; } = new();
 
@@ -110,21 +124,27 @@ public static class FanProfileService
     {
         try
         {
-            if (!File.Exists(AgentHealthPath))
-                return null;
-
-            var info = new FileInfo(AgentHealthPath);
             lock (HealthCacheGate)
             {
+                FileMetadataStamp info = HealthMetadata.Read();
+                if (!info.Exists)
+                {
+                    _cachedHealth = null;
+                    _cachedHealthWriteUtc = DateTime.MinValue;
+                    _cachedHealthLength = -1;
+                    return null;
+                }
                 if (_cachedHealth != null &&
-                    _cachedHealthWriteUtc == info.LastWriteTimeUtc &&
+                    _cachedHealthWriteUtc == info.LastWriteUtc &&
                     _cachedHealthLength == info.Length)
                 {
                     return _cachedHealth;
                 }
 
-                _cachedHealth = JsonSerializer.Deserialize<FanAgentHealth>(File.ReadAllText(AgentHealthPath));
-                _cachedHealthWriteUtc = info.LastWriteTimeUtc;
+                using var healthStream = new FileStream(AgentHealthPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                _cachedHealth = JsonSerializer.Deserialize(healthStream,
+                    FanAgentCompactJsonContext.Default.FanAgentHealth);
+                _cachedHealthWriteUtc = info.LastWriteUtc;
                 _cachedHealthLength = info.Length;
                 return _cachedHealth;
             }
@@ -140,23 +160,19 @@ public static class FanProfileService
     {
         try
         {
-            if (!File.Exists(StatePath))
+            lock (ProfileCacheGate)
             {
-                lock (ProfileCacheGate)
+                FileMetadataStamp info = ProfileMetadata.Read();
+                if (!info.Exists)
                 {
                     _cachedProfile = Default;
                     _cachedProfileWriteUtc = DateTime.MinValue;
                     _cachedProfileLength = -1;
                     return _cachedProfile;
                 }
-            }
+                DateTime writeUtc = info.LastWriteUtc;
+                long length = info.Length;
 
-            var info = new FileInfo(StatePath);
-            DateTime writeUtc = info.LastWriteTimeUtc;
-            long length = info.Length;
-
-            lock (ProfileCacheGate)
-            {
                 if (_cachedProfile != null &&
                     _cachedProfileWriteUtc == writeUtc &&
                     _cachedProfileLength == length)
@@ -164,7 +180,9 @@ public static class FanProfileService
                     return _cachedProfile;
                 }
 
-                FanProfile? profile = JsonSerializer.Deserialize<FanProfile>(File.ReadAllText(StatePath));
+                using var profileStream = new FileStream(StatePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                FanProfile? profile = JsonSerializer.Deserialize(profileStream,
+                    FanAgentCompactJsonContext.Default.FanProfile);
                 _cachedProfile = profile == null ? Default : Normalize(profile);
                 _cachedProfileWriteUtc = writeUtc;
                 _cachedProfileLength = length;
@@ -178,88 +196,56 @@ public static class FanProfileService
         }
     }
 
+    // The UI and tray can both persist profiles. Unique atomic temporary
+    // files prevent their writes from colliding on one fixed ".tmp" path.
+    // Normalize every profile, preserve the previous file on write failure,
+    // and commit the cache only AFTER its durable replacement succeeded.
+    internal static FanProfile WriteProfileSnapshot(string path, FanProfile profile)
+    {
+        FanProfile normalized = Normalize(profile);
+        string json = JsonSerializer.Serialize(normalized,
+            FanAgentIndentedJsonContext.Default.FanProfile);
+        // UI and RuntimeHost are separate OS processes; a C# lock is not
+        // enough when both replace the same file. Coordinate the replace
+        // (and its backup path) for bounded time across the user session.
+        using var writeMutex = new Mutex(false, ProfileWriteMutexName);
+        bool acquired;
+        try { acquired = writeMutex.WaitOne(TimeSpan.FromSeconds(5)); }
+        catch (AbandonedMutexException) { acquired = true; }
+        if (!acquired)
+            throw new IOException("Fan profile save is busy; existing settings preserved.");
+        try
+        {
+            AtomicFileService.WriteText(path, json);
+            return normalized;
+        }
+        finally { writeMutex.ReleaseMutex(); }
+    }
+
     public static void Save(FanProfile profile)
     {
-        profile = Normalize(profile);
-        Directory.CreateDirectory(StateDirectory);
-        string json = JsonSerializer.Serialize(profile, IndentedJsonOptions);
-        string temp = StatePath + ".tmp";
-        File.WriteAllText(temp, json);
-        File.Move(temp, StatePath, true);
-
-        var info = new FileInfo(StatePath);
         lock (ProfileCacheGate)
         {
-            _cachedProfile = profile;
-            _cachedProfileWriteUtc = info.LastWriteTimeUtc;
-            _cachedProfileLength = info.Length;
+            FanProfile normalized = WriteProfileSnapshot(StatePath, profile);
+            profile = normalized;
+            // Another process may replace the profile between releasing
+            // the OS mutex and inspecting its last-write stamp. Never pair
+            // our previous value with another writer's metadata: the next
+            // Load must read the actual durable latest file once.
+            _cachedProfile = null;
+            _cachedProfileWriteUtc = DateTime.MinValue;
+            _cachedProfileLength = -1;
+        }
+
+        if (!LianLiSlInfinityService.Detect().Present)
+        {
+            StartAiAgentIfNeeded();
+            return;
         }
 
         EnsureStartupAgentRegistered();
-        if (profile.AutoCurveEnabled || profile.ChannelCurveEnabled.Any(x => x) || profile.CpuTempTargetEnabled)
+        if (profile.AutoCurveEnabled || Array.IndexOf(profile.ChannelCurveEnabled, true) >= 0 || profile.CpuTempTargetEnabled)
             StartAgentIfNeeded();
-    }
-
-    public static bool OpenFansFromVoice() => OpenSectionFromVoice("lianli");
-
-    public static bool OpenSectionFromVoice(string section)
-    {
-        string normalized = (section ?? string.Empty).Trim().ToLowerInvariant();
-        if (normalized.Length == 0 ||
-            normalized.Any(c => !(char.IsLetterOrDigit(c) || c == '-')))
-            return false;
-
-        string exe = ResolveMainAppPath();
-        if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
-            return false;
-
-        return ProcessRunner.StartDetached(
-            exe,
-            "--open-section=" + normalized,
-            useShellExecute: true);
-    }
-
-    public static bool ApplyVoicePreset(string preset)
-    {
-        FanProfile current = Load();
-        string key = (preset ?? string.Empty).Trim().ToLowerInvariant();
-
-        if (key is "auto" or "auto65")
-        {
-            Save(current with
-            {
-                TargetRpm = 1620,
-                CpuTempTargetEnabled = true,
-                CpuTempTargetC = 65,
-                MotherboardPwm = false,
-                AutoCurveEnabled = false,
-                ChannelCurveEnabled = new[] { false, false, false, false }
-            });
-            LianLiSlInfinityService.SetAllFanRpm(1620);
-            StartAgentIfNeeded();
-            return true;
-        }
-
-        int rpm = key switch
-        {
-            "night" or "noc" => 700,
-            "quiet" or "silent" or "tichy" => 1100,
-            "balanced" or "normal" => 1620,
-            "performance" or "gaming" or "vykon" => 2100,
-            _ => 0
-        };
-        if (rpm == 0) return false;
-
-        Save(current with
-        {
-            TargetRpm = rpm,
-            CpuTempTargetEnabled = false,
-            AutoCurveEnabled = false,
-            ChannelCurveEnabled = new[] { false, false, false, false },
-            MotherboardPwm = false
-        });
-        LianLiSlInfinityService.SetAllFanRpm(rpm);
-        return true;
     }
 
     private static string ResolveRuntimeHostPath()
@@ -305,7 +291,7 @@ public static class FanProfileService
         }
     }
 
-    private static void CleanupLegacyWatchdogTasksBestEffort()
+    private static async Task CleanupLegacyWatchdogTasksBestEffortAsync()
     {
         if (!LegacyWatchdogCleanupPolicy.ShouldAttempt(IsCurrentProcessElevated()))
             return;
@@ -321,14 +307,12 @@ public static class FanProfileService
         {
             try
             {
-                _ = ProcessRunner.RunAsync(
+                _ = await ProcessRunner.RunAsync(
                         "schtasks.exe",
                         $"/Delete /TN \"{taskName}\" /F",
                         TimeSpan.FromSeconds(3),
                         CancellationToken.None,
-                        logNonZeroExitAsError: false)
-                    .GetAwaiter()
-                    .GetResult();
+                        logNonZeroExitAsError: false).ConfigureAwait(false);
             }
             catch
             {
@@ -362,7 +346,7 @@ public static class FanProfileService
 """;
     }
 
-    private static bool EnsureFanAgentTaskRegisteredBestEffort(string exe)
+    private static async Task<bool> EnsureFanAgentTaskRegisteredBestEffortAsync(string exe)
     {
         try
         {
@@ -380,14 +364,12 @@ public static class FanProfileService
             Directory.CreateDirectory(StateDirectory);
             string xmlPath = Path.Combine(StateDirectory, "fan-agent-task.xml");
             File.WriteAllText(xmlPath, BuildFanAgentTaskXml(exe, sid), System.Text.Encoding.Unicode);
-            ProcessResult result = ProcessRunner.RunAsync(
+            ProcessResult result = await ProcessRunner.RunAsync(
                     "schtasks.exe",
                     $"/Create /F /TN \"{AgentTaskName}\" /XML \"{xmlPath}\"",
                     TimeSpan.FromSeconds(8),
                     CancellationToken.None,
-                    logNonZeroExitAsError: false)
-                .GetAwaiter()
-                .GetResult();
+                    logNonZeroExitAsError: false).ConfigureAwait(false);
             if (!result.Success)
             {
                 LogService.Error("lianli", "Fan agent scheduled task registration failed: " +
@@ -405,16 +387,80 @@ public static class FanProfileService
 
     public static void EnsureStartupAgentRegistered()
     {
+        if (!LianLiSlInfinityService.Detect().Present)
+        {
+            EnsureAiStartupAgentRegistered();
+            return;
+        }
+
+        // Save() can run on the UI thread: only the cheap due/flight checks
+        // belong here. Task Scheduler COM, schtasks and HKCU maintenance must
+        // execute off-thread and never block slider changes or navigation.
+        long uptime = Environment.TickCount64;
+        if (!StartupRegistrationDue(uptime,
+                Volatile.Read(ref _nextStartupRegistrationCheckUptimeMs)))
+            return;
+        if (Interlocked.CompareExchange(ref _startupRegistrationCheckRunning, 1, 0) != 0)
+            return;
+
+        try
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await EnsureStartupAgentRegisteredCoreAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    LogService.Error("lianli", "Fan startup registration worker failed", ex);
+                }
+                finally
+                {
+                    Volatile.Write(ref _startupRegistrationCheckRunning, 0);
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Volatile.Write(ref _startupRegistrationCheckRunning, 0);
+            LogService.Error("lianli", "Fan startup registration dispatch failed", ex);
+        }
+    }
+
+    public static void EnsureAiStartupAgentRegistered()
+    {
+        try
+        {
+            string exe = ResolveRuntimeHostPath();
+            if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe)) return;
+            using RegistryKey? run = Registry.CurrentUser.CreateSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            run?.SetValue(AiRunValueName, $"\"{exe}\" --ai-agent", RegistryValueKind.String);
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("ai-system", "AI startup registration failed", ex);
+        }
+    }
+
+    private static async Task EnsureStartupAgentRegisteredCoreAsync()
+    {
+        long uptime = Environment.TickCount64;
+        if (!StartupRegistrationDue(uptime,
+                Volatile.Read(ref _nextStartupRegistrationCheckUptimeMs)))
+            return;
+
         string exe = ResolveRuntimeHostPath();
         if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe)) return;
 
-        CleanupLegacyWatchdogTasksBestEffort();
+        await CleanupLegacyWatchdogTasksBestEffortAsync().ConfigureAwait(false);
         string protectedRuntimeHost = Path.Combine(
             AppContext.BaseDirectory,
             "SpankyhoOptimizer.RuntimeHost.exe");
         HardwareTelemetryBridgeService.EnsureRegisteredBestEffort(protectedRuntimeHost);
 
-        bool taskReady = EnsureFanAgentTaskRegisteredBestEffort(exe);
+        bool taskReady = await EnsureFanAgentTaskRegisteredBestEffortAsync(exe).ConfigureAwait(false);
         using RegistryKey? run = Registry.CurrentUser.CreateSubKey(
             @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
         if (taskReady)
@@ -422,6 +468,55 @@ public static class FanProfileService
         else
             run?.SetValue(RunValueName, $"\"{exe}\" --fan-agent", RegistryValueKind.String);
         run?.DeleteValue(WatchdogRunValueName, throwOnMissingValue: false);
+
+        // Successful registration is stable; the fallback Run entry retries
+        // sooner so a transient COM failure does not silently disable startup.
+        long delayMs = taskReady ? 10 * 60_000L : 60_000L;
+        Volatile.Write(ref _nextStartupRegistrationCheckUptimeMs,
+            Environment.TickCount64 + delayMs);
+    }
+
+    // Both GUI update checks and the live watchdog read this externally
+    // writable version marker. Never allocate from an unbounded file or
+    // interpret malformed version content as a reason to restart fans.
+    private const int MaxAgentVersionBytes = 64;
+
+    private static bool TryReadAgentVersion(string path, out string version)
+    {
+        version = string.Empty;
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open,
+                FileAccess.Read, FileShare.Read | FileShare.Delete);
+            if (stream.Length <= 0 || stream.Length > MaxAgentVersionBytes)
+                return false;
+            Span<byte> data = stackalloc byte[MaxAgentVersionBytes + 1];
+            int count = 0;
+            while (count < data.Length)
+            {
+                int read = stream.Read(data[count..]);
+                if (read == 0) break;
+                count += read;
+            }
+            if (count == 0 || count > MaxAgentVersionBytes)
+                return false;
+            for (int i = 0; i < count; i++)
+                if (data[i] != '.' && (data[i] < '0' || data[i] > '9'))
+                    return false;
+            string text = System.Text.Encoding.ASCII.GetString(data[..count]);
+            if (!Version.TryParse(text, out Version? parsed) ||
+                parsed.ToString() != text)
+                return false;
+            version = text;
+            return true;
+        }
+        catch (FileNotFoundException) { return true; }
+        catch (DirectoryNotFoundException) { return true; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                   or System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     public static void EnsureAgentUpdated()
@@ -429,9 +524,8 @@ public static class FanProfileService
         try
         {
             string currentVersion = typeof(FanProfileService).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
-            string runningVersion = File.Exists(AgentVersionPath)
-                ? File.ReadAllText(AgentVersionPath).Trim()
-                : string.Empty;
+            if (!TryReadAgentVersion(AgentVersionPath, out string runningVersion))
+                return;
 
             if (!FanAgentVersionPolicy.ShouldRequestUpdate(
                     currentVersion,
@@ -477,6 +571,11 @@ public static class FanProfileService
     {
         try
         {
+            if (!LianLiSlInfinityService.Detect().Present)
+            {
+                StartAiAgentIfNeeded();
+                return;
+            }
             if (IsHeartbeatFresh(TimeSpan.FromSeconds(20)))
                 return;
 
@@ -494,6 +593,182 @@ public static class FanProfileService
         }
     }
 
+    public static void StartAiAgentIfNeeded()
+    {
+        try
+        {
+            string exe = ResolveRuntimeHostPath();
+            if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe)) return;
+            _ = ProcessRunner.StartDetached(exe, "--ai-agent", useShellExecute: false);
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("ai-system", "AI agent start failed", ex);
+        }
+    }
+
+    // Watchdog checks this small protocol repeatedly while preserving fan
+    // control liveness. Never allocate from an untrusted/unbounded heartbeat.
+    // The agent emits PID|UTC-O (about 32 bytes) every ten seconds.
+    private const int MaxHeartbeatBytes = 96;
+
+    private static bool TryParseHeartbeatPayload(string payload, out int pid,
+        out DateTime reportedUtc)
+    {
+        pid = 0;
+        reportedUtc = default;
+        int separator = payload.IndexOf('|');
+        if (separator <= 0 || separator >= payload.Length - 1 ||
+            payload.IndexOf('|', separator + 1) >= 0 ||
+            !int.TryParse(payload.AsSpan(0, separator), NumberStyles.None,
+                CultureInfo.InvariantCulture, out pid) || pid <= 0)
+            return false;
+        return DateTime.TryParseExact(payload.AsSpan(separator + 1), "O",
+            CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind,
+            out reportedUtc) &&
+            reportedUtc.Kind == DateTimeKind.Utc && reportedUtc.Ticks > 0;
+    }
+
+    private static bool TryReadHeartbeatPid(string path, out int pid,
+        out DateTime reportedUtc)
+    {
+        pid = 0;
+        reportedUtc = default;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.Read | FileShare.Delete);
+        if (stream.Length <= 0 || stream.Length > MaxHeartbeatBytes)
+            return false;
+        // Read at most limit+1 regardless of changes after Length.
+        Span<byte> bytes = stackalloc byte[MaxHeartbeatBytes + 1];
+        int count = 0;
+        while (count < bytes.Length)
+        {
+            int read = stream.Read(bytes[count..]);
+            if (read == 0) break;
+            count += read;
+        }
+        if (count == 0 || count > MaxHeartbeatBytes) return false;
+        for (int i = 0; i < count; i++)
+            if (bytes[i] < 0x20 || bytes[i] > 0x7e) return false;
+        return TryParseHeartbeatPayload(
+            System.Text.Encoding.ASCII.GetString(bytes[..count]),
+            out pid, out reportedUtc);
+    }
+
+    private static bool IsHeartbeatEvidenceFresh(DateTime fileWriteUtc,
+        DateTime reportedUtc, DateTime nowUtc, TimeSpan maxAge) =>
+        FanWatchdogLoopPolicy.IsHeartbeatTimestampFresh(fileWriteUtc, nowUtc, maxAge) &&
+        FanWatchdogLoopPolicy.IsHeartbeatTimestampFresh(reportedUtc, nowUtc, maxAge) &&
+        // A touched file must not refresh an old payload. Allow minor clock
+        // and filesystem timestamp granularity differences.
+        reportedUtc <= fileWriteUtc.AddSeconds(2);
+
+    // Synthetic file input only; no live heartbeat, HID access, fan changes,
+    // watchdog activation or user process termination.
+    internal static string RunFanHeartbeatInputSmoke()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "spanky-heartbeat-input-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string file = Path.Combine(root, "heartbeat.txt");
+            string valid = $"12345|{new DateTime(2026, 10, 26, 21, 0, 0, DateTimeKind.Utc):O}";
+            File.WriteAllText(file, valid);
+            DateTime fixtureUtc = new(2026, 10, 26, 21, 0, 0, DateTimeKind.Utc);
+            if (!TryReadHeartbeatPid(file, out int pid, out DateTime reportedUtc) ||
+                pid != 12345 || reportedUtc != fixtureUtc ||
+                !IsHeartbeatEvidenceFresh(fixtureUtc.AddSeconds(1), reportedUtc,
+                    fixtureUtc.AddSeconds(10), TimeSpan.FromSeconds(30)))
+                throw new InvalidOperationException("Valid fan heartbeat rejected.");
+            // An unrelated metadata touch must not make a stale heartbeat
+            // appear live, and an embedded future timestamp is not trustworthy.
+            if (IsHeartbeatEvidenceFresh(fixtureUtc.AddSeconds(1),
+                    fixtureUtc.AddMinutes(-5), fixtureUtc.AddSeconds(10),
+                    TimeSpan.FromSeconds(30)) ||
+                IsHeartbeatEvidenceFresh(fixtureUtc.AddSeconds(1),
+                    fixtureUtc.AddMinutes(2), fixtureUtc.AddSeconds(10),
+                    TimeSpan.FromSeconds(30)))
+                throw new InvalidOperationException("Stale or future fan heartbeat was trusted.");
+            int rejected = 0;
+            foreach (string invalid in new[]
+            {
+                "12345",
+                "0|2026-10-26T21:00:00.0000000Z",
+                "-1|2026-10-26T21:00:00.0000000Z",
+                "not-a-pid|2026-10-26T21:00:00.0000000Z",
+                "12345|not-a-date",
+                valid + "|injected",
+                valid + "\n",
+                new string('7', MaxHeartbeatBytes + 1)
+            })
+            {
+                File.WriteAllText(file, invalid);
+                if (TryReadHeartbeatPid(file, out _, out _))
+                    throw new InvalidOperationException(
+                        "Malformed/unbounded fan heartbeat was trusted.");
+                rejected++;
+            }
+            File.WriteAllBytes(file, new byte[] { 0xFF, 0xFE, 0x00 });
+            if (TryReadHeartbeatPid(file, out _, out _))
+                throw new InvalidOperationException("Non-ASCII fan heartbeat was trusted.");
+            rejected++;
+            // The same atomic writer used by the live agent must remain
+            // readable without transient in-place partial payloads.
+            AtomicFileService.WriteText(file, valid);
+            if (!TryReadHeartbeatPid(file, out pid, out reportedUtc) || pid != 12345 ||
+                reportedUtc != fixtureUtc)
+                throw new InvalidOperationException("Atomic fan heartbeat was rejected.");
+            // Reproduce the failure case with an actual isolated file: a
+            // recently touched filesystem entry carrying an old agent time.
+            File.WriteAllText(file, $"12345|{fixtureUtc.AddMinutes(-5):O}");
+            File.SetLastWriteTimeUtc(file, fixtureUtc.AddSeconds(10));
+            if (!TryReadHeartbeatPid(file, out pid, out reportedUtc) ||
+                pid != 12345 ||
+                IsHeartbeatEvidenceFresh(File.GetLastWriteTimeUtc(file), reportedUtc,
+                    fixtureUtc.AddSeconds(11), TimeSpan.FromSeconds(30)))
+                throw new InvalidOperationException("Touched stale fan heartbeat was trusted.");
+
+            // Exercise BOTH fan-agent version readers' shared bounded
+            // admission using isolated files, never the running agent.
+            string versionFile = Path.Combine(root, "fan-agent-version.txt");
+            if (!TryReadAgentVersion(versionFile, out string absent) ||
+                absent.Length != 0)
+                throw new InvalidOperationException("Missing agent version was not first-run safe.");
+            File.WriteAllText(versionFile, "16.286.0");
+            if (!TryReadAgentVersion(versionFile, out string accepted) ||
+                accepted != "16.286.0" ||
+                !FanAgentVersionPolicy.ShouldRequestUpdate("16.287.0", accepted) ||
+                FanAgentVersionPolicy.ShouldRequestUpdate(accepted, accepted))
+                throw new InvalidOperationException("Valid fan-agent version policy regressed.");
+            int rejectedVersions = 0;
+            foreach (string invalidVersion in new[]
+            {
+                "", "not-a-version", "16.286.0|restart",
+                "16.286.0\n", "016.286.0", "16.286.-1",
+                new string('9', MaxAgentVersionBytes + 1)
+            })
+            {
+                File.WriteAllText(versionFile, invalidVersion);
+                if (TryReadAgentVersion(versionFile, out _))
+                    throw new InvalidOperationException("Malformed fan-agent version was trusted.");
+                rejectedVersions++;
+            }
+            File.WriteAllBytes(versionFile, new byte[] { 0xFF, 0xFE, 0x00 });
+            if (TryReadAgentVersion(versionFile, out _))
+                throw new InvalidOperationException("Invalid UTF-8 fan-agent version was trusted.");
+            rejectedVersions++;
+            AtomicFileService.WriteText(versionFile, "16.286.0");
+            if (!TryReadAgentVersion(versionFile, out accepted) ||
+                accepted != "16.286.0")
+                throw new InvalidOperationException("Atomic fan-agent version was rejected.");
+            return $"FAN_HEARTBEAT_BOUNDED_INPUT_SMOKE_OK rejected={rejected} maxBytes={MaxHeartbeatBytes} " +
+                   $"agentVersionRejected={rejectedVersions} agentVersionMaxBytes={MaxAgentVersionBytes} " +
+                   "validUtc=true atomic=true fanWrites=0 realHeartbeatUntouched=true";
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
+
     private static bool IsHeartbeatFresh(TimeSpan maxAge)
     {
         try
@@ -502,16 +777,20 @@ public static class FanProfileService
                 return false;
 
             DateTime last = File.GetLastWriteTimeUtc(HeartbeatPath);
-            if (DateTime.UtcNow - last > maxAge)
+            DateTime nowUtc = DateTime.UtcNow;
+            if (!FanWatchdogLoopPolicy.IsHeartbeatTimestampFresh(last, nowUtc, maxAge))
                 return false;
 
-            string payload = File.ReadAllText(HeartbeatPath).Trim();
-            string pidText = payload.Split('|')[0].Trim();
-            if (!int.TryParse(pidText, out int pid) || pid <= 0)
+            // A malformed, oversized or stale embedded timestamp is not
+            // evidence of a live agent, even when the file metadata is fresh.
+            if (!TryReadHeartbeatPid(HeartbeatPath, out int pid, out DateTime reportedUtc) ||
+                !IsHeartbeatEvidenceFresh(last, reportedUtc, nowUtc, maxAge))
                 return false;
 
             using Process process = Process.GetProcessById(pid);
-            if (process.HasExited)
+            if (process.HasExited ||
+                !FanWatchdogLoopPolicy.MatchesHeartbeatProcessStart(
+                    process.StartTime.ToUniversalTime(), reportedUtc))
                 return false;
 
             return process.ProcessName.Equals("SpankyhoOptimizer.RuntimeHost", StringComparison.OrdinalIgnoreCase) ||
@@ -525,13 +804,21 @@ public static class FanProfileService
 
     public static async Task RunWatchdogAsync(CancellationToken token = default)
     {
+        if (!LianLiSlInfinityService.Detect().Present)
+        {
+            StartAiAgentIfNeeded();
+            return;
+        }
+
         try
         {
             string currentVersion = typeof(FanProfileService).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
-            string runningVersion = File.Exists(AgentVersionPath) ? File.ReadAllText(AgentVersionPath).Trim() : string.Empty;
-            bool needsUpdate = FanAgentVersionPolicy.ShouldRequestUpdate(
-                currentVersion,
-                runningVersion);
+            // Invalid version metadata is not a trusted update signal.
+            // The ordinary heartbeat fallback still protects fan liveness.
+            bool versionTrusted = TryReadAgentVersion(AgentVersionPath,
+                out string runningVersion);
+            bool needsUpdate = versionTrusted &&
+                FanAgentVersionPolicy.ShouldRequestUpdate(currentVersion, runningVersion);
 
             if (needsUpdate)
                 EnsureAgentUpdated();
@@ -555,6 +842,12 @@ public static class FanProfileService
 
     public static async Task RunWatchdogLoopAsync(CancellationToken token = default)
     {
+        if (!LianLiSlInfinityService.Detect().Present)
+        {
+            StartAiAgentIfNeeded();
+            return;
+        }
+
         using var mutex = new Mutex(false, WatchdogLoopMutexName);
         bool owns;
         try { owns = mutex.WaitOne(0); }
@@ -596,16 +889,16 @@ public static class FanProfileService
         try
         {
             DateTime now = DateTime.UtcNow;
-            if (!force && now - _lastHeartbeatWriteUtc < TimeSpan.FromSeconds(10))
+            if (!force && !FanWatchdogLoopPolicy.IsPeriodicWorkDue(
+                    _lastHeartbeatWriteUtc, now, TimeSpan.FromSeconds(10)))
                 return;
 
-            string? dir = Path.GetDirectoryName(HeartbeatPath);
-            if (!string.IsNullOrWhiteSpace(dir))
-                Directory.CreateDirectory(dir);
+            if (!string.IsNullOrWhiteSpace(HeartbeatDirectory))
+                Directory.CreateDirectory(HeartbeatDirectory);
 
-            string temp = HeartbeatPath + ".tmp";
-            File.WriteAllText(temp, $"{Environment.ProcessId}|{now:O}");
-            File.Move(temp, HeartbeatPath, true);
+            // Same cross-process reader as the health file: the GUI polls this
+            // heartbeat, so use the shared atomic writer with its bounded retry.
+            AtomicFileService.WriteText(HeartbeatPath, $"{Environment.ProcessId}|{now:O}");
             _lastHeartbeatWriteUtc = now;
         }
         catch (Exception ex)
@@ -631,31 +924,39 @@ public static class FanProfileService
         try
         {
             DateTime now = DateTime.UtcNow;
-            if (!force && now - _lastHealthWriteUtc < TimeSpan.FromSeconds(5))
+            if (!force && !FanWatchdogLoopPolicy.IsPeriodicWorkDue(
+                    _lastHealthWriteUtc, now, TimeSpan.FromSeconds(5)))
                 return;
 
-            string? directory = Path.GetDirectoryName(AgentHealthPath);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
+            if (!string.IsNullOrWhiteSpace(HealthDirectory))
+                Directory.CreateDirectory(HealthDirectory);
 
-            string version = typeof(FanProfileService).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+            double? validTemp = telemetry.Celsius is double measured &&
+                double.IsFinite(measured) && measured > 5 && measured < 150
+                    ? measured : null;
+            string version = AgentAssemblyVersion;
             var health = new FanAgentHealth(
                 now,
                 Environment.ProcessId,
                 version,
-                hidOk && telemetry.Celsius.HasValue,
+                hidOk && validTemp.HasValue,
                 hidOk,
                 lastHidSuccessUtc,
                 lastError,
-                telemetry.Celsius,
-                rpms?.Take(4).ToArray() ?? Array.Empty<int>(),
+                validTemp,
+                // Serialized synchronously below; the four-channel buffer is not retained.
+                // Avoid cloning four RPM values on every health snapshot.
+                rpms ?? Array.Empty<int>(),
                 profile.CpuTempTargetEnabled,
                 powerMode,
                 gameActive,
                 realIdle,
-                Math.Round(loadPercent, 1),
-                telemetry.PackagePowerW,
-                telemetry.EffectiveClockMHz,
+                double.IsFinite(loadPercent) && loadPercent is >= 0 and <= 100
+                    ? Math.Round(loadPercent, 1) : -1,
+                AiPowerTelemetryEvidencePolicy.HasUsablePower(telemetry.PackagePowerW)
+                    ? telemetry.PackagePowerW : null,
+                AiPowerTelemetryEvidencePolicy.HasUsableClock(telemetry.EffectiveClockMHz)
+                    ? telemetry.EffectiveClockMHz : null,
                 ai.Enabled,
                 ai.Mode,
                 ai.AnomalyScore,
@@ -666,9 +967,12 @@ public static class FanProfileService
                 ai.LastAction,
                 ai.GamePhase);
 
-            string temp = AgentHealthPath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(health));
-            File.Move(temp, AgentHealthPath, true);
+            // The GUI reads this health JSON from a separate process. Use the
+            // shared atomic writer so a transient handle on the destination
+            // retries instead of failing the whole periodic write.
+            AtomicFileService.WriteText(AgentHealthPath,
+                JsonSerializer.Serialize(health,
+                    FanAgentCompactJsonContext.Default.FanAgentHealth));
             _lastHealthWriteUtc = now;
         }
         catch (Exception ex)
@@ -714,69 +1018,97 @@ public static class FanProfileService
         }
     }
 
-    private static bool HasUpdateRestartRequest()
-    {
-        try
-        {
-            if (!File.Exists(AgentRestartRequestPath))
-                return false;
+    private static bool HasUpdateRestartRequest() =>
+        FanAgentRestartPolicy.TryConsumeRestartRequest(
+            AgentRestartRequestPath, ReportRestartRequestReadError);
 
-            string requested = File.ReadAllText(AgentRestartRequestPath).Trim();
-            return FanAgentRestartPolicy.ShouldRestart(requested);
-        }
-        catch
-        {
-            return true;
-        }
+    private static void ReportRestartRequestReadError(Exception ex)
+    {
+        DateTime now = DateTime.UtcNow;
+        if (!FanWatchdogLoopPolicy.IsPeriodicWorkDue(
+                _lastRestartRequestReadErrorUtc, now, TimeSpan.FromMinutes(1))) return;
+        _lastRestartRequestReadErrorUtc = now;
+        LogService.Error("lianli", "Fan agent restart request cannot be consumed; keeping current agent running", ex);
     }
 
     public static async Task RunAgentAsync(CancellationToken token = default)
+        => await RunAgentCoreAsync(aiOnly: false, token).ConfigureAwait(false);
+
+    public static async Task RunAiAgentAsync(CancellationToken token = default)
+        => await RunAgentCoreAsync(aiOnly: true, token).ConfigureAwait(false);
+
+    private static async Task RunAgentCoreAsync(bool aiOnly, CancellationToken token)
     {
-        using var mutex = new Mutex(false, AgentMutexName);
+        if (!aiOnly && !LianLiSlInfinityService.Detect().Present)
+        {
+            await RunAiAgentAsync(token).ConfigureAwait(false);
+            return;
+        }
+
+        using var mutex = new Mutex(false, aiOnly ? AiAgentMutexName : AgentMutexName);
         bool owns;
         try { owns = mutex.WaitOne(0); }
         catch (AbandonedMutexException) { owns = true; }
         if (!owns) return;
 
         FanTrayIconService? tray = null;
-        SpankyVoiceListenerService? voiceListener = null;
+        DateTime nextTrayRetryUtc = DateTime.MinValue;
         bool restartRequested = false;
         try
         {
-            LegacyRamGuardCleanupService.CleanupBestEffort();
-            MarkAgentVersionRunning();
-            WriteHeartbeat(force: true);
-            EnsureStartupAgentRegistered();
-
-            try { tray = new FanTrayIconService(); }
-            catch (Exception ex) { LogService.Error("lianli", "Fan tray icon startup failed", ex); }
-
-            try
+            // RAM Guard is a separate application. Never enumerate, kill, or clean
+            // its processes/startup entries as a side effect of starting fan control.
+            // Legacy cleanup is not part of the fan agent lifecycle.
+            if (!aiOnly)
             {
-                voiceListener = new SpankyVoiceListenerService();
-                await voiceListener.StartAsync(token).ConfigureAwait(false);
-                if (VoiceConversationWarmupPolicy.ShouldWarmGemini(
-                    ChatGptPlanAuthService.IsConnected,
-                    VoiceCloudAiSettingsService.HasApiKey))
-                {
-                    _ = Task.Run(() => SpankyConversationService.WarmupAsync(token), token);
-                }
-            }
-            catch (Exception ex)
-            {
-                LogService.Error("voice", "Spanky Voice AI background listener failed", ex);
-                if (voiceListener != null)
-                {
-                    await voiceListener.DisposeAsync().ConfigureAwait(false);
-                    voiceListener = null;
-                }
+                MarkAgentVersionRunning();
+                WriteHeartbeat(force: true);
+                EnsureStartupAgentRegistered();
             }
 
-            await ApplySavedProfileAsync(token).ConfigureAwait(false);
+            if (!aiOnly)
+            {
+                try { tray = FanTrayIconService.StartOnMessageThread(); }
+                catch (Exception ex)
+                {
+                    nextTrayRetryUtc = DateTime.UtcNow.AddSeconds(5);
+                    LogService.Error("lianli", "Fan tray icon startup failed", ex);
+                }
+
+                // Apply the saved fan profile before starting the automatic control loop.
+                await ApplySavedProfileAsync(token).ConfigureAwait(false);
+            }
 
             var adaptivePower = new AdaptivePowerRuntimeService();
             var aiRuntime = new AiSmartRuntimeService();
             var aiSystemRuntime = new AiSystemResourceManagerService();
+            // FAN/HID and hot temperature polling must not wait for optional
+            // service/task/driver AI observation or A/B/A mutation work.
+            // The lane is single-flight, coalesces obsolete epochs, and is
+            // drained on exit BEFORE the FanAgent singleton mutex is released.
+            await using var aiMaintenanceLane =
+                new LatestOnlyAsyncWorkLane<FanAiTickObservation>(
+                    async (sample, ct) =>
+                    {
+                        bool evidenceFresh = sample.CanUseEvidence(
+                            DateTime.UtcNow, ForegroundProcessProbe.GetWindowIdentity());
+                        // A stuck WMI/SCM call must not freeze the single AI lane
+                        // forever. The timeout uses the same cancellation contract
+                        // as shutdown; write-ahead/journal recovery stays intact.
+                        using var tickCts = CancellationTokenSource
+                            .CreateLinkedTokenSource(ct);
+                        tickCts.CancelAfter(TimeSpan.FromSeconds(60));
+                        await aiSystemRuntime.TickAsync(
+                            sample.RealIdle,
+                            sample.CpuPercent,
+                            tickCts.Token,
+                            evidenceFresh ? sample.Status : null,
+                            evidenceFresh ? sample.Config : null,
+                            evidenceFresh).ConfigureAwait(false);
+                    },
+                    ex => LogService.Error("ai-system",
+                        "Async AI maintenance lane failed", ex),
+                    token);
             AiSmartRuntimeDecision aiDecision = new(
                 false, "OFF", "None", 0, 0, 0,
                 "AI Smart Runtime čeká na první vzorek.",
@@ -787,6 +1119,12 @@ public static class FanProfileService
             int[] zeroRpmVotes = new int[4];
             int rpmUnderTargetVotes = 0;
             double[] smoothedRpms = new double[4];
+            int[] tooltipRpmBuffer = new int[4];
+            // Phase counters and 60s Process handle snapshots are diagnostics,
+            // not fan safety inputs. No periodic diagnostic work in normal mode.
+            FanAgentStageMetrics? fanTickMetrics = LogService.PerformanceDiagnosticsEnabled
+                ? new FanAgentStageMetrics() : null;
+            DateTime lastSlowAdaptiveLogUtc = DateTime.MinValue;
             DateTime? lastHidSuccessUtc = null;
             string? lastHidError = null;
             string? lastLoggedHidError = null;
@@ -795,23 +1133,40 @@ public static class FanProfileService
             double? filteredTemp = null;
             double? previousFilteredTemp = null;
             FanProfile initial = Load();
-            int targetModeRpm = Math.Clamp(initial.TargetRpm, 700, LianLiSlInfinityService.MaximumRpm);
+            int targetModeRpm = Math.Clamp(initial.TargetRpm, 700,
+                LianLiSlInfinityService.MaximumRpm);
             int auto65BaseRpm = Math.Clamp(
                 Math.Max(initial.TargetRpm, 1620),
                 1620,
                 LianLiSlInfinityService.MaximumRpm);
 
+            // Fan safety and RPM readbacks run unchanged; passive resource
+            // diagnostics are not sampled inside this safety-critical loop.
             while (!token.IsCancellationRequested)
             {
-                if (HasUpdateRestartRequest())
+                if (!aiOnly && HasUpdateRestartRequest())
                 {
                     LogService.Info("lianli", "FAN_AGENT_UPDATE_RESTART_ACCEPTED");
                     restartRequested = true;
                     break;
                 }
 
-                WriteHeartbeat();
+                if (!aiOnly) WriteHeartbeat();
+                if (!aiOnly && tray == null && DateTime.UtcNow >= nextTrayRetryUtc)
+                {
+                    try
+                    {
+                        tray = FanTrayIconService.StartOnMessageThread();
+                        LogService.Info("lianli", "FAN_TRAY_RECOVERED");
+                    }
+                    catch (Exception ex)
+                    {
+                        nextTrayRetryUtc = DateTime.UtcNow.AddSeconds(10);
+                        LogService.Error("lianli", "Fan tray icon retry failed", ex);
+                    }
+                }
                 tray?.PumpMessages();
+
                 while (tray != null && tray.TryDequeueAction(out FanTrayAction action))
                 {
                     if (action == FanTrayAction.RestartAgent)
@@ -824,59 +1179,67 @@ public static class FanProfileService
                 }
                 if (restartRequested) break;
 
+                long phaseStart = fanTickMetrics is null ? 0 : Stopwatch.GetTimestamp();
                 FanProfile profile = Load();
+                long afterProfile = fanTickMetrics is null ? 0 : Stopwatch.GetTimestamp();
                 CpuTemperatureService.CpuTelemetrySample telemetry = HardwareTelemetryBridgeService.ReadBestTelemetry();
+                long afterTelemetry = fanTickMetrics is null ? 0 : Stopwatch.GetTimestamp();
                 int[]? liveRpms = null;
                 FanTrayState trayState = FanTrayState.Ok;
 
-                try
+                if (!aiOnly)
                 {
-                    liveRpms = LianLiSlInfinityService.ReadFanRpms();
-                    lastHidSuccessUtc = DateTime.UtcNow;
-                    lastHidError = null;
-                    if (hidWasFaulted)
+                    try
                     {
-                        hidWasFaulted = false;
-                        lastLoggedHidError = null;
-                        LogService.Info("lianli", "FAN_HID_RECOVERED");
-                    }
-
-                    for (int i = 0; i < Math.Min(4, liveRpms.Length); i++)
-                    {
-                        int rpm = liveRpms[i];
-                        smoothedRpms[i] = smoothedRpms[i] <= 0
-                            ? rpm
-                            : smoothedRpms[i] * 0.65 + rpm * 0.35;
-
-                        if (rpm > 100)
+                        liveRpms = LianLiSlInfinityService.ReadFanRpms();
+                        lastHidSuccessUtc = DateTime.UtcNow;
+                        lastHidError = null;
+                        if (hidWasFaulted)
                         {
-                            seenActiveChannel[i] = true;
-                            zeroRpmVotes[i] = 0;
+                            hidWasFaulted = false;
+                            lastLoggedHidError = null;
+                            LogService.Info("lianli", "FAN_HID_RECOVERED");
                         }
-                        else if (seenActiveChannel[i])
+
+                        for (int i = 0; i < Math.Min(4, liveRpms.Length); i++)
                         {
-                            zeroRpmVotes[i]++;
-                            if (zeroRpmVotes[i] >= 3)
-                                trayState = FanTrayState.Error;
+                            int rpm = liveRpms[i];
+                            smoothedRpms[i] = smoothedRpms[i] <= 0
+                                ? rpm
+                                : smoothedRpms[i] * 0.65 + rpm * 0.35;
+
+                            if (rpm > 100)
+                            {
+                                seenActiveChannel[i] = true;
+                                zeroRpmVotes[i] = 0;
+                            }
+                            else if (seenActiveChannel[i])
+                            {
+                                zeroRpmVotes[i]++;
+                                if (zeroRpmVotes[i] >= 3)
+                                    trayState = FanTrayState.Error;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        trayState = FanTrayState.Warning;
+                        lastHidError = ex.GetBaseException().Message;
+                        hidWasFaulted = true;
+
+                        DateTime now = DateTime.UtcNow;
+                        bool changed = !string.Equals(lastLoggedHidError, lastHidError, StringComparison.Ordinal);
+                        if (changed || FanWatchdogLoopPolicy.IsPeriodicWorkDue(
+                                lastHidErrorLogUtc, now, TimeSpan.FromSeconds(30)))
+                        {
+                            lastLoggedHidError = lastHidError;
+                            lastHidErrorLogUtc = now;
+                            LogService.Error("lianli", "Fan tray RPM read failed", ex);
                         }
                     }
                 }
-                catch (Exception ex)
-                {
-                    trayState = FanTrayState.Warning;
-                    lastHidError = ex.GetBaseException().Message;
-                    hidWasFaulted = true;
 
-                    DateTime now = DateTime.UtcNow;
-                    bool changed = !string.Equals(lastLoggedHidError, lastHidError, StringComparison.Ordinal);
-                    if (changed || now - lastHidErrorLogUtc >= TimeSpan.FromSeconds(30))
-                    {
-                        lastLoggedHidError = lastHidError;
-                        lastHidErrorLogUtc = now;
-                        LogService.Error("lianli", "Fan tray RPM read failed", ex);
-                    }
-                }
-
+                long afterHid = fanTickMetrics is null ? 0 : Stopwatch.GetTimestamp();
                 aiDecision = aiRuntime.Tick(
                     profile.AiSmartRuntimeEnabled,
                     telemetry,
@@ -888,8 +1251,11 @@ public static class FanProfileService
                     adaptivePower.LoadPercent,
                     adaptivePower.LastBlocker,
                     adaptivePower.WorkloadClass);
+                long afterAi = fanTickMetrics is null ? 0 : Stopwatch.GetTimestamp();
+                int fanWriteChannels = 0;
+                int fanWriteAttempts = 0;
 
-                if (telemetry.Celsius is double temp && temp > 5 && temp < 150)
+                if (!aiOnly && telemetry.Celsius is double temp && temp > 5 && temp < 150)
                 {
                     filteredTemp = filteredTemp.HasValue ? filteredTemp.Value * 0.72 + temp * 0.28 : temp;
                     double trend = previousFilteredTemp.HasValue ? filteredTemp.Value - previousFilteredTemp.Value : 0;
@@ -920,12 +1286,15 @@ public static class FanProfileService
                             lastAppliedRpm[0] < 0 ||
                             Math.Abs(targetModeRpm - lastAppliedRpm[0]) >= 75;
                         bool stale =
-                            DateTime.UtcNow - lastApplyUtc[0] >= TimeSpan.FromSeconds(20);
+                            FanWatchdogLoopPolicy.IsPeriodicWorkDue(
+                                lastApplyUtc[0], DateTime.UtcNow, TimeSpan.FromSeconds(20));
 
                         if (materiallyChanged || stale)
                         {
                             try
                             {
+                                fanWriteAttempts++;
+                                fanWriteChannels += 4;
                                 LianLiSlInfinityService.SetAllFanRpm(targetModeRpm);
                                 for (int channel = 0; channel < 4; channel++)
                                 {
@@ -942,10 +1311,8 @@ public static class FanProfileService
 
                         if (liveRpms != null)
                         {
-                            int[] activeReadback = liveRpms.Where(x => x > 100).ToArray();
-                            if (activeReadback.Length > 0)
+                            if (FanRpmReadbackPolicy.TryAverageActive(liveRpms, out double averageReadback))
                             {
-                                double averageReadback = activeReadback.Average();
                                 if (averageReadback < targetModeRpm - 220)
                                     rpmUnderTargetVotes++;
                                 else
@@ -955,6 +1322,8 @@ public static class FanProfileService
                                 {
                                     try
                                     {
+                                        fanWriteAttempts++;
+                                        fanWriteChannels += 4;
                                         LianLiSlInfinityService.SetAllFanRpm(targetModeRpm);
                                         rpmUnderTargetVotes = 0;
                                         lastApplyUtc[0] = DateTime.UtcNow;
@@ -973,6 +1342,8 @@ public static class FanProfileService
                     }
                     else
                     {
+                        // A single clock snapshot keeps the four stale checks consistent.
+                        DateTime curveCheckUtc = DateTime.UtcNow;
                         for (int channel = 0; channel < 4; channel++)
                         {
                             bool enabled = profile.ChannelCurveEnabled[channel] || profile.AutoCurveEnabled;
@@ -983,11 +1354,14 @@ public static class FanProfileService
                                 : CalculateCurveRpm(profile, filteredTemp.Value);
 
                             bool materiallyChanged = lastAppliedRpm[channel] < 0 || Math.Abs(rpm - lastAppliedRpm[channel]) >= 75;
-                            bool stale = DateTime.UtcNow - lastApplyUtc[channel] >= TimeSpan.FromSeconds(20);
+                            bool stale = FanWatchdogLoopPolicy.IsPeriodicWorkDue(
+                                lastApplyUtc[channel], curveCheckUtc, TimeSpan.FromSeconds(20));
                             if (!materiallyChanged && !stale) continue;
 
                             try
                             {
+                                fanWriteAttempts++;
+                                fanWriteChannels++;
                                 LianLiSlInfinityService.SetFanRpm(channel, rpm, profile.ChannelMaxRpms[channel]);
                                 lastAppliedRpm[channel] = rpm;
                                 lastApplyUtc[channel] = DateTime.UtcNow;
@@ -1005,11 +1379,12 @@ public static class FanProfileService
                     trayState = trayState == FanTrayState.Error ? trayState : FanTrayState.Warning;
                 }
 
+                long beforeAdaptivePower = fanTickMetrics is null ? 0 : Stopwatch.GetTimestamp();
                 try
                 {
                     await adaptivePower.TickAsync(
                         telemetry,
-                        liveRpms,
+                        aiOnly ? null : liveRpms,
                         profile.CpuTempTargetEnabled,
                         profile.AiSmartRuntimeEnabled,
                         aiDecision,
@@ -1020,33 +1395,83 @@ public static class FanProfileService
                     LogService.Error("power", "Adaptive runtime power tick failed", ex);
                 }
 
-                try
+                long afterPower = fanTickMetrics is null ? 0 : Stopwatch.GetTimestamp();
+                if (!aiOnly && fanTickMetrics is not null)
                 {
-                    await aiSystemRuntime.TickAsync(
-                        adaptivePower.RealIdle,
-                        adaptivePower.LoadPercent,
-                        token).ConfigureAwait(false);
+                    double adaptivePowerMs = Stopwatch.GetElapsedTime(beforeAdaptivePower, afterPower).TotalMilliseconds;
+                    double fanControlMs = Stopwatch.GetElapsedTime(afterAi, beforeAdaptivePower).TotalMilliseconds;
+                    if (adaptivePowerMs + fanControlMs >= 200 &&
+                        FanWatchdogLoopPolicy.IsPeriodicWorkDue(
+                            lastSlowAdaptiveLogUtc, DateTime.UtcNow, TimeSpan.FromMinutes(1)))
+                    {
+                        lastSlowAdaptiveLogUtc = DateTime.UtcNow;
+                        LogService.Info("lianli",
+                            $"FAN_POWER_SLOW adaptiveMs={adaptivePowerMs:F1} " +
+                            $"fanControlMs={fanControlMs:F1} " +
+                            $"fanWriteAttempts={fanWriteAttempts} fanWriteChannels={fanWriteChannels} " +
+                            $"dominant={(adaptivePowerMs >= fanControlMs ? "adaptive" : "fanControl")}");
+                    }
                 }
-                catch (Exception ex)
+                // Use already-running FanAgent; no third tray process, scheduler or polling thread.
+                AiSystemSmoothnessGuardService.SampleIfDue(
+                    adaptivePower.CpuLoadKnown ? adaptivePower.LoadPercent : double.NaN,
+                    adaptivePower.GameActive);
+                // Automatic, bounded off-thread CPU Sets/wake-latency evidence;
+                // never changes affinity or timer resolution.
+                // Always deliver the current admission state, including AI-OFF,
+                // game activation or lost CPU evidence: a ThreadPool-queued
+                // sample must not run later under an obsolete workload.
+                AiSchedulerAutoEvidenceService.QueueIfDue(
+                    adaptivePower.CurrentAiConfig is { Enabled: true, SelfOptimizationEnabled: true },
+                    adaptivePower.CpuLoadKnown ? adaptivePower.LoadPercent : double.NaN,
+                    adaptivePower.GameActive);
+
+                // AI maintenance can perform slow service/driver probes or
+                // write-ahead journal I/O. The fan safety loop publishes its
+                // latest immutable epoch without blocking on that work.
+                // The dedicated lane preserves exactly one AI writer.
+                aiMaintenanceLane.Submit(new FanAiTickObservation(
+                    DateTime.UtcNow,
+                    adaptivePower.RealIdle,
+                    adaptivePower.LoadPercent,
+                    adaptivePower.CpuLoadKnown,
+                    adaptivePower.CurrentStatus,
+                    adaptivePower.CurrentAiConfig));
+
+                // Reuse the fixed-size four-channel buffer instead of allocating
+                // an array and a LINQ iterator every 1-5-second agent tick.
+                int[]? tooltipRpms = liveRpms == null ? null : tooltipRpmBuffer;
+                if (tooltipRpms != null)
                 {
-                    LogService.Error("ai-system", "AI System resource runtime tick failed", ex);
+                    for (int channel = 0; channel < tooltipRpms.Length; channel++)
+                        tooltipRpms[channel] = (int)Math.Round(smoothedRpms[channel] / 15d) * 15;
                 }
 
-                int[]? tooltipRpms = liveRpms == null
-                    ? null
-                    : smoothedRpms.Select(x => (int)Math.Round(x / 15d) * 15).ToArray();
+                // Avoid assembling CPU/RPM/mode strings every 1–1.5s when
+                // Explorer won't be notified. Status changes bypass the
+                // regular 5-second pacing and are visible immediately.
+                if (!aiOnly && tray != null)
+                {
+                    if (tray.ShouldComposeTooltip(trayState))
+                    {
+                        tray.Update(
+                            BuildTrayTooltip(
+                                telemetry,
+                                tooltipRpms,
+                                adaptivePower.ModeName,
+                                profile.CpuTempTargetEnabled,
+                                adaptivePower.GameActive,
+                                aiDecision),
+                            trayState);
+                    }
+                    else
+                    {
+                        // No skipped tray click/menu handling on suppressed updates.
+                        tray.PumpMessages();
+                    }
+                }
 
-                tray?.Update(
-                    BuildTrayTooltip(
-                        telemetry,
-                        tooltipRpms,
-                        adaptivePower.ModeName,
-                        profile.CpuTempTargetEnabled,
-                        adaptivePower.GameActive,
-                        aiDecision),
-                    trayState);
-
-                WriteHealthStatus(
+                if (!aiOnly) WriteHealthStatus(
                     telemetry,
                     tooltipRpms,
                     profile,
@@ -1058,11 +1483,18 @@ public static class FanProfileService
                     liveRpms != null,
                     lastHidSuccessUtc,
                     lastHidError);
+                long afterHealth = !aiOnly && fanTickMetrics is not null ? Stopwatch.GetTimestamp() : 0;
+                if (!aiOnly && fanTickMetrics is not null)
+                {
+                    fanTickMetrics.Record(phaseStart, afterProfile, afterTelemetry,
+                        afterHid, afterAi, afterPower, afterHealth);
+                    fanTickMetrics.ReportIfDue();
+                }
 
-                bool dynamicFanControl =
+                bool dynamicFanControl = !aiOnly && (
                     profile.CpuTempTargetEnabled ||
                     profile.AutoCurveEnabled ||
-                    profile.ChannelCurveEnabled.Any(x => x);
+                    Array.IndexOf(profile.ChannelCurveEnabled, true) >= 0);
                 int loopDelayMs =
                     telemetry.Celsius is double currentTemp && currentTemp >= 70
                         ? 1000
@@ -1079,17 +1511,16 @@ public static class FanProfileService
         }
         finally
         {
-            if (voiceListener != null)
-            {
-                try { await voiceListener.DisposeAsync().ConfigureAwait(false); } catch { }
-            }
             tray?.Dispose();
             CpuTemperatureService.Dispose();
             try { mutex.ReleaseMutex(); } catch { }
-            try { File.Delete(HeartbeatPath); } catch { }
-            try { File.Delete(AgentHealthPath); } catch { }
+            if (!aiOnly)
+            {
+                try { File.Delete(HeartbeatPath); } catch { }
+                try { File.Delete(AgentHealthPath); } catch { }
+            }
 
-            if (restartRequested)
+            if (restartRequested && !aiOnly)
             {
                 await Task.Delay(350, CancellationToken.None).ConfigureAwait(false);
                 StartAgentIfNeeded();
@@ -1187,7 +1618,7 @@ public static class FanProfileService
                 else
                 {
                     var temp = HardwareTelemetryBridgeService.ReadBestTemperature();
-                    bool anyPerChannelCurve = profile.ChannelCurveEnabled.Any(x => x);
+                    bool anyPerChannelCurve = Array.IndexOf(profile.ChannelCurveEnabled, true) >= 0;
 
                     if (!profile.AutoCurveEnabled && !anyPerChannelCurve)
                     {
@@ -1243,17 +1674,7 @@ public static class FanProfileService
         string cpu = telemetry.Celsius is double c ? $"{c:0}°C" : "—°C";
         string fanText;
 
-        if (rpms == null || rpms.Length == 0)
-        {
-            fanText = "RPM —";
-        }
-        else
-        {
-            int[] active = rpms.Take(4).Where(x => x > 100).ToArray();
-            fanText = active.Length == 0
-                ? "RPM 0"
-                : "Fan " + string.Join("/", active) + " RPM";
-        }
+        fanText = FanRpmTooltipPolicy.FormatFirstFour(rpms);
 
         string mode = auto65 ? "AUTO65" : powerMode;
         if (gameActive)
@@ -1261,6 +1682,57 @@ public static class FanProfileService
         if (ai.Enabled)
             mode += ai.AnomalyScore >= 55 ? $" • AI {ai.AnomalyScore:0}" : " • AI AUTO";
         return $"CPU {cpu} • {fanText} • {mode}";
+    }
+
+    // Same-host measured allocation cost of building tooltip strings on each
+    // one-second agent tick vs only on due/safety-transition ticks.
+    internal static string RunTrayCompositionBenchmark()
+    {
+        var telemetry = new CpuTemperatureService.CpuTelemetrySample(
+            56, "fixture", "CPU", 15, 3800, 65);
+        var ai = new AiSmartRuntimeDecision(
+            false, "OFF", "None", 0, 0, 0,
+            "smoke", "n=0", "none", 0, false, false);
+        int[] rpms = { 1620, 1620, 1620, 1620 };
+        const int iterations = 120;
+        string latest = string.Empty;
+        for (int i = 0; i < 20; i++)
+            latest = BuildTrayTooltip(telemetry, rpms, "Balanced", true, false, ai);
+        long baselineStart = GC.GetAllocatedBytesForCurrentThread();
+        long clock = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int i = 0; i < iterations; i++)
+        {
+            rpms[0] = 1600 + i;
+            latest = BuildTrayTooltip(telemetry, rpms, "Balanced", true, false, ai);
+        }
+        double baselineMs = System.Diagnostics.Stopwatch.GetElapsedTime(clock).TotalMilliseconds;
+        long baselineAllocated = GC.GetAllocatedBytesForCurrentThread() - baselineStart;
+        var start = new DateTime(2026, 10, 12, 8, 0, 0, DateTimeKind.Utc);
+        DateTime lastUpdated = DateTime.MinValue;
+        bool hasPublished = false;
+        int rendered = 0;
+        long throttledStart = GC.GetAllocatedBytesForCurrentThread();
+        clock = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int i = 0; i < iterations; i++)
+        {
+            DateTime now = start.AddSeconds(i);
+            if (!FanTrayIconService.NeedsTooltipCompose(
+                    hasPublished, FanTrayState.Ok, FanTrayState.Ok, now - lastUpdated))
+                continue;
+            rpms[0] = 1600 + i;
+            latest = BuildTrayTooltip(telemetry, rpms, "Balanced", true, false, ai);
+            lastUpdated = now;
+            hasPublished = true;
+            rendered++;
+        }
+        double throttledMs = System.Diagnostics.Stopwatch.GetElapsedTime(clock).TotalMilliseconds;
+        long throttledAllocated = GC.GetAllocatedBytesForCurrentThread() - throttledStart;
+        if (rendered != 24 || baselineAllocated <= throttledAllocated ||
+            string.IsNullOrWhiteSpace(latest))
+            throw new InvalidOperationException("Fan tooltip composition allocation budget failed.");
+        return $"FAN_TRAY_FORMAT_BENCH_OK ticks={iterations} originalFormats={iterations} " +
+            $"throttledFormats={rendered} originalMs={baselineMs:F3} throttledMs={throttledMs:F3} " +
+            $"originalAllocatedB={baselineAllocated} throttledAllocatedB={throttledAllocated}";
     }
 
     public static int CalculateTargetTemperatureRpm(int currentRpm, double temperature, int targetC) =>
@@ -1318,25 +1790,92 @@ public static class FanProfileService
             profile.ChannelTargetRpms[channel]);
     }
 
+    // Fan safety hot path: preserve the exact old four-point interpolation
+    // without allocating a new (temperature,RPM)[] on each channel/tick.
     private static int InterpolateCurve(double temperature,
         int t1, int r1, int t2, int r2, int t3, int r3, int t4, int r4, int fallback)
     {
-        var p = new[] { (T: t1, R: r1), (T: t2, R: r2), (T: t3, R: r3), (T: t4, R: r4) };
-        if (temperature <= p[0].T) return p[0].R;
-        if (temperature >= p[3].T) return p[3].R;
+        if (temperature <= t1) return r1;
+        if (temperature >= t4) return r4;
+        // Negated comparisons also preserve the legacy NaN fallback to the
+        // first segment (rather than silently using the profile's target RPM).
+        if (!(temperature > t2)) return InterpolateCurveSegment(temperature, t1, r1, t2, r2);
+        if (!(temperature > t3)) return InterpolateCurveSegment(temperature, t2, r2, t3, r3);
+        if (!(temperature > t4)) return InterpolateCurveSegment(temperature, t3, r3, t4, r4);
+        return fallback;
+    }
 
-        for (int i = 0; i < p.Length - 1; i++)
+    private static int InterpolateCurveSegment(double temperature, int fromT, int fromR, int toT, int toR)
+    {
+        double span = Math.Max(1, toT - fromT);
+        double t = (temperature - fromT) / span;
+        return Math.Clamp(
+            (int)Math.Round(fromR + (toR - fromR) * t),
+            LianLiSlInfinityService.MinimumSafeRpm,
+            LianLiSlInfinityService.MaximumRpm);
+    }
+
+    // Regression of the allocation-free fan controller against the former
+    // exact algorithm, including boundaries and non-finite sensor values.
+    // No HID writes: these are pure arithmetic checks.
+    internal static string RunFanCurveAllocationSmoke()
+    {
+        static int LegacyCurve(double temp, int t1, int r1, int t2, int r2,
+            int t3, int r3, int t4, int r4, int fallback)
         {
-            if (temperature > p[i + 1].T) continue;
-            double span = Math.Max(1, p[i + 1].T - p[i].T);
-            double t = (temperature - p[i].T) / span;
-            return Math.Clamp(
-                (int)Math.Round(p[i].R + (p[i + 1].R - p[i].R) * t),
-                LianLiSlInfinityService.MinimumSafeRpm,
-                LianLiSlInfinityService.MaximumRpm);
+            var points = new[] { (T: t1, R: r1), (T: t2, R: r2),
+                                 (T: t3, R: r3), (T: t4, R: r4) };
+            if (temp <= points[0].T) return points[0].R;
+            if (temp >= points[3].T) return points[3].R;
+            for (int i = 0; i < points.Length - 1; i++)
+            {
+                if (temp > points[i + 1].T) continue;
+                double span = Math.Max(1, points[i + 1].T - points[i].T);
+                double ratio = (temp - points[i].T) / span;
+                return Math.Clamp((int)Math.Round(
+                    points[i].R + (points[i + 1].R - points[i].R) * ratio),
+                    LianLiSlInfinityService.MinimumSafeRpm,
+                    LianLiSlInfinityService.MaximumRpm);
+            }
+            return fallback;
         }
 
-        return fallback;
+        const int cases = 4096;
+        for (int i = 0; i < cases; i++)
+        {
+            double temp = i % 127 - 16 + (i % 5) / 5d;
+            if (i == 0) temp = double.NaN;
+            if (i == 1) temp = double.PositiveInfinity;
+            if (i == 2) temp = double.NegativeInfinity;
+            int r2 = 1050 + i % 320;
+            int oldRpm = LegacyCurve(temp, 30, 700, 47, r2, 67, 1790, 89, 2220, 1450);
+            int newRpm = InterpolateCurve(temp, 30, 700, 47, r2, 67, 1790, 89, 2220, 1450);
+            if (oldRpm != newRpm)
+                throw new InvalidOperationException(
+                    $"Fan RPM curve mismatch case={i} temp={temp} old={oldRpm} new={newRpm}");
+        }
+
+        const int rounds = 16384;
+        int baselineChecksum = 0, optimizedChecksum = 0;
+        long startAllocated = GC.GetAllocatedBytesForCurrentThread();
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int i = 0; i < rounds; i++)
+            baselineChecksum += LegacyCurve(32 + i % 64, 30, 700, 47, 1100, 67, 1790, 89, 2220, 1450);
+        double beforeMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        long beforeB = GC.GetAllocatedBytesForCurrentThread() - startAllocated;
+
+        startAllocated = GC.GetAllocatedBytesForCurrentThread();
+        start = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int i = 0; i < rounds; i++)
+            optimizedChecksum += InterpolateCurve(32 + i % 64, 30, 700, 47, 1100, 67, 1790, 89, 2220, 1450);
+        double afterMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        long afterB = GC.GetAllocatedBytesForCurrentThread() - startAllocated;
+        if (baselineChecksum != optimizedChecksum || beforeB <= afterB)
+            throw new InvalidOperationException("Fan curve arithmetic/allocation regression.");
+        return $"FAN_CURVE_NO_ALLOC_SMOKE_OK cases={cases} rounds={rounds} " +
+               $"baselineB={beforeB} optimizedB={afterB} " +
+               $"baselineMs={beforeMs:F3} optimizedMs={afterMs:F3} " +
+               "rpmIdentical=true noHidWrites=true";
     }
 
     private static FanProfile Normalize(FanProfile p)

@@ -25,6 +25,7 @@ public sealed partial class MainWindow
     private string _lianLiPreviewB = "#101020";
     private bool _lianLiPreviewAnimated;
     private int _lianLiPreviewPhase;
+    private readonly SemaphoreSlim _lianLiActionGate = new(1, 1);
 
     private sealed record LianLiEffect(string Name, byte Mode, string Subtitle, string PreviewA, string PreviewB, bool Animated);
 
@@ -55,6 +56,7 @@ public sealed partial class MainWindow
     };
     private async Task BuildLianLiPageAsync(CancellationToken token)
     {
+        int generation = _navigationGeneration;
         FanProfile profile = FanProfileService.Load();
         FanAgentHealth? initialHealth = FanProfileService.ReadHealthStatus();
         bool healthFresh =
@@ -81,11 +83,15 @@ public sealed partial class MainWindow
             var tempTask = Task.Run(HardwareTelemetryBridgeService.ReadBestTemperature, token);
             await Task.WhenAll(infoTask, tempTask);
             token.ThrowIfCancellationRequested();
+            if (generation != _navigationGeneration || _section != "lianli") return;
 
             present = (await infoTask).Present;
             temp = await tempTask;
             LogService.Info("performance", "LIANLI_COLD_FALLBACK directDetect=true");
         }
+
+        if (!present)
+            return;
 
         var foregroundPerf = System.Diagnostics.Stopwatch.StartNew();
         ContentStack.Children.Add(BuildFanDashboard(present, temp));
@@ -108,10 +114,10 @@ public sealed partial class MainWindow
         });
         ContentStack.Children.Add(rgbHost);
 
-        SafeTaskService.Forget(RefreshLianLiStatusAsync(), "lianli", "Deferred fan controller refresh");
-        SafeTaskService.Forget(RunFanTelemetryLoopAsync(token), "lianli", "Fan CPU temperature telemetry");
+        SafeTaskService.Forget(RefreshLianLiStatusAsync(generation), "lianli", "Deferred fan controller refresh");
+        SafeTaskService.Forget(RunFanTelemetryLoopAsync(token, generation), "lianli", "Fan CPU temperature telemetry");
         SafeTaskService.Forget(
-            LoadLianLiRgbStudioDeferredAsync(rgbHost, present, profile, token),
+            LoadLianLiRgbStudioDeferredAsync(rgbHost, present, profile, token, generation),
             "lianli",
             "Deferred RGB Studio render");
     }
@@ -120,11 +126,12 @@ public sealed partial class MainWindow
         Grid host,
         bool enabled,
         FanProfile profile,
-        CancellationToken token)
+        CancellationToken token,
+        int generation)
     {
         await Task.Yield();
         token.ThrowIfCancellationRequested();
-        if (_section != "lianli")
+        if (generation != _navigationGeneration || _section != "lianli" || !ContentStack.Children.Contains(host))
             return;
 
         var perf = System.Diagnostics.Stopwatch.StartNew();
@@ -132,7 +139,7 @@ public sealed partial class MainWindow
         long shellUiMs = perf.ElapsedMilliseconds;
 
         token.ThrowIfCancellationRequested();
-        if (_section != "lianli")
+        if (generation != _navigationGeneration || _section != "lianli" || !ContentStack.Children.Contains(host))
             return;
 
         host.Children.Clear();
@@ -140,7 +147,7 @@ public sealed partial class MainWindow
 
         await Task.Yield();
         token.ThrowIfCancellationRequested();
-        if (_section != "lianli")
+        if (generation != _navigationGeneration || _section != "lianli" || !ContentStack.Children.Contains(host))
             return;
 
         var previewPerf = System.Diagnostics.Stopwatch.StartNew();
@@ -150,7 +157,7 @@ public sealed partial class MainWindow
 
         await Task.Yield();
         token.ThrowIfCancellationRequested();
-        if (_section != "lianli")
+        if (generation != _navigationGeneration || _section != "lianli" || !ContentStack.Children.Contains(host))
             return;
 
         const int batchSize = 2;
@@ -161,7 +168,7 @@ public sealed partial class MainWindow
         for (int i = 0; i < LianLiEffects.Length; i++)
         {
             token.ThrowIfCancellationRequested();
-            if (_section != "lianli")
+            if (generation != _navigationGeneration || _section != "lianli" || !ContentStack.Children.Contains(host))
                 return;
 
             int index = i;
@@ -213,7 +220,7 @@ public sealed partial class MainWindow
             "performance",
             $"LIANLI_RGB_BATCHED shellUiMs={shellUiMs} previewUiMs={previewUiMs} tileUiMs={tileUiMs} maxBatchUiMs={maxBatchUiMs} totalMs={totalMs} effects={LianLiEffects.Length}");
         SafeTaskService.Forget(
-            RunRgbPreviewLoopAsync(token),
+            RunRgbPreviewLoopAsync(token, generation),
             "lianli",
             "Fan RGB preview animation");
     }
@@ -240,7 +247,7 @@ public sealed partial class MainWindow
         cards.Children.Add(BuildFanMetricCard("RPM RANGE", "500–2100", "bezpečný rozsah", 1));
 
         var cpuStack = new StackPanel { Spacing = 2 };
-        cpuStack.Children.Add(new TextBlock { Text = "CPU TEMP", FontSize = 9.5, CharacterSpacing = 95, Foreground = AccentBrush() });
+        cpuStack.Children.Add(new TextBlock { Text = "CPU TEMP", FontSize = 10.5, CharacterSpacing = 95, Foreground = AccentBrush() });
         _lianLiCpuTempText = new TextBlock
         {
             Text = temp.Celsius.HasValue ? $"{temp.Celsius.Value:0.0} °C" : "N/A",
@@ -262,7 +269,7 @@ public sealed partial class MainWindow
         {
             Padding = new Thickness(13, 10, 13, 10),
             CornerRadius = new CornerRadius(11),
-            Background = SurfaceElevatedBrush(),
+            Background = _darkTheme ? GlassSurfaceElevatedBrush() : SurfaceElevatedBrush(),
             BorderBrush = SectionBorderBrush(),
             BorderThickness = new Thickness(1),
             Child = cpuStack
@@ -275,7 +282,7 @@ public sealed partial class MainWindow
         var footer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var refresh = new Button { Content = "Obnovit zařízení" };
         ApplyPillButtonAppearance(refresh);
-        refresh.Click += (_, _) => SafeTaskService.Forget(RefreshLianLiStatusAsync(), "lianli", "Refresh fan controller");
+        refresh.Click += (_, _) => SafeTaskService.Forget(RefreshLianLiStatusAsync(_navigationGeneration), "lianli", "Refresh fan controller");
         footer.Children.Add(refresh);
         _lianLiAgentStatusText = new TextBlock
         {
@@ -294,7 +301,7 @@ public sealed partial class MainWindow
     private Border BuildFanMetricCard(string label, string value, string sub, int column)
     {
         var stack = new StackPanel { Spacing = 2 };
-        stack.Children.Add(new TextBlock { Text = label, FontSize = 9.5, CharacterSpacing = 95, Foreground = AccentBrush() });
+        stack.Children.Add(new TextBlock { Text = label, FontSize = 10.5, CharacterSpacing = 95, Foreground = AccentBrush() });
         stack.Children.Add(new TextBlock { Text = value, FontSize = 22, FontWeight = FontWeights.Bold, Foreground = TextPrimaryBrush() });
         stack.Children.Add(new TextBlock { Text = sub, FontSize = 10.5, Foreground = TextSecondaryBrush(), TextTrimming = TextTrimming.CharacterEllipsis });
 
@@ -302,7 +309,7 @@ public sealed partial class MainWindow
         {
             Padding = new Thickness(13, 10, 13, 10),
             CornerRadius = new CornerRadius(11),
-            Background = SurfaceElevatedBrush(),
+            Background = _darkTheme ? GlassSurfaceElevatedBrush() : SurfaceElevatedBrush(),
             BorderBrush = SectionBorderBrush(),
             BorderThickness = new Thickness(1),
             Child = stack
@@ -329,7 +336,7 @@ public sealed partial class MainWindow
         {
             Padding = new Thickness(12, 7, 12, 7),
             CornerRadius = new CornerRadius(9),
-            Background = SurfaceAltBrush(),
+            Background = _darkTheme ? GlassSurfaceLowBrush() : SurfaceAltBrush(),
             BorderBrush = SectionBorderBrush(),
             BorderThickness = new Thickness(1),
             Child = new TextBlock { Text = "MAX 2100 RPM", FontWeight = FontWeights.SemiBold, Foreground = AccentBrush() }
@@ -368,7 +375,7 @@ public sealed partial class MainWindow
         for (int i = 0; i < 4; i++)
         {
             var stack = new StackPanel { Spacing = 2 };
-            stack.Children.Add(new TextBlock { Text = $"KANÁL {i + 1}", FontSize = 9.5, CharacterSpacing = 90, Foreground = AccentBrush() });
+            stack.Children.Add(new TextBlock { Text = $"KANÁL {i + 1}", FontSize = 10.5, CharacterSpacing = 90, Foreground = AccentBrush() });
             var rpmText = new TextBlock { Text = "— RPM", FontSize = 19, FontWeight = FontWeights.Bold, Foreground = TextPrimaryBrush() };
             _lianLiRpmTexts[i] = rpmText;
             stack.Children.Add(rpmText);
@@ -376,7 +383,7 @@ public sealed partial class MainWindow
             {
                 Padding = new Thickness(11, 8, 11, 8),
                 CornerRadius = new CornerRadius(9),
-                Background = SurfaceAltBrush(),
+                Background = _darkTheme ? GlassSurfaceLowBrush() : SurfaceAltBrush(),
                 BorderBrush = SectionBorderBrush(),
                 BorderThickness = new Thickness(1),
                 Child = stack
@@ -388,9 +395,7 @@ public sealed partial class MainWindow
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var apply = new Button { Content = "Použít RPM", IsEnabled = enabled };
-        ApplyPillButtonAppearance(apply);
-        apply.Background = ButtonVioletBrush();
-        apply.Foreground = OnAccentTextBrush();
+        ApplyMaterialButtonAppearance(apply, primary: true);
         apply.Click += (_, _) =>
         {
             int rpm = (int)(Math.Round(slider.Value / 50d) * 50d);
@@ -400,10 +405,12 @@ public sealed partial class MainWindow
                 MotherboardPwm = false,
                 CpuTempTargetEnabled = false
             };
-            FanProfileService.Save(saved);
             SafeTaskService.Forget(
-                RunLianLiActionAsync(() => LianLiSlInfinityService.SetAllFanRpm(rpm),
-                    $"Ventilátory nastaveny na {rpm} RPM • profil uložen"),
+                RunLianLiActionAsync(() =>
+                {
+                    LianLiSlInfinityService.SetAllFanRpm(rpm);
+                    FanProfileService.Save(saved);
+                }, $"Ventilátory nastaveny na {rpm} RPM • profil uložen"),
                 "lianli", "Set fan RPM");
         };
 
@@ -416,9 +423,12 @@ public sealed partial class MainWindow
                 MotherboardPwm = true,
                 CpuTempTargetEnabled = false
             };
-            FanProfileService.Save(saved);
             SafeTaskService.Forget(
-                RunLianLiActionAsync(LianLiSlInfinityService.SetAllMotherboardPwm, "Řízení předáno základní desce • profil uložen"),
+                RunLianLiActionAsync(() =>
+                {
+                    LianLiSlInfinityService.SetAllMotherboardPwm();
+                    FanProfileService.Save(saved);
+                }, "Řízení předáno základní desce • profil uložen"),
                 "lianli", "Enable motherboard PWM");
         };
 
@@ -427,39 +437,81 @@ public sealed partial class MainWindow
             Content = profile.CpuTempTargetEnabled ? "AUTO 65 °C • ZAPNUTO" : "AUTO ≤65 °C",
             IsEnabled = enabled
         };
-        ApplyPillButtonAppearance(auto65);
-        if (profile.CpuTempTargetEnabled)
-        {
-            auto65.Background = ButtonVioletBrush();
-            auto65.Foreground = OnAccentTextBrush();
-        }
+        ApplyMaterialButtonAppearance(auto65, primary: profile.CpuTempTargetEnabled);
+        int auto65Busy = 0;
         auto65.Click += (_, _) =>
         {
-            FanProfile current = FanProfileService.Load();
-            bool turnOn = !current.CpuTempTargetEnabled;
+            if (Interlocked.Exchange(ref auto65Busy, 1) != 0) return;
+            int actionGeneration = _navigationGeneration;
+            auto65.IsEnabled = false;
+            SafeTaskService.Forget(ApplyAuto65Async(), "lianli", "Verified AUTO 65 toggle");
 
-            FanProfile saved = current with
+            async Task ApplyAuto65Async()
             {
-                CpuTempTargetEnabled = turnOn,
-                CpuTempTargetC = 65,
-                MotherboardPwm = false,
-                AutoCurveEnabled = false,
-                ChannelCurveEnabled = new[] { false, false, false, false }
-            };
-            FanProfileService.Save(saved);
+                CancellationToken windowToken = _windowLifetimeCts.Token;
+                try
+                {
+                    await EnsureLianLiSupportedAsync(windowToken).ConfigureAwait(false);
+                    var result = await Task.Run(() =>
+                    {
+                        FanProfile current = FanProfileService.Load();
+                        bool turnOn = !current.CpuTempTargetEnabled;
+                        FanProfile saved = current with
+                        {
+                            CpuTempTargetEnabled = turnOn,
+                            CpuTempTargetC = 65,
+                            MotherboardPwm = false,
+                            AutoCurveEnabled = false,
+                            ChannelCurveEnabled = new[] { false, false, false, false }
+                        };
+                        FanProfileService.Save(saved);
+                        FanProfile persisted = FanProfileService.Load();
+                        if (persisted.CpuTempTargetEnabled != turnOn)
+                            throw new InvalidOperationException("AUTO 65 °C read-back nepotvrdil uložený stav.");
+                        if (turnOn)
+                            FanProfileService.StartAgentIfNeeded();
+                        return (TurnOn: turnOn, Saved: saved);
+                    }, windowToken).ConfigureAwait(false);
 
-            auto65.Content = turnOn ? "AUTO 65 °C • ZAPNUTO" : "AUTO ≤65 °C";
-            auto65.Background = turnOn ? ButtonVioletBrush() : null;
-            auto65.Foreground = turnOn ? OnAccentTextBrush() : TextPrimaryBrush();
-
-            if (turnOn)
-            {
-                FanProfileService.StartAgentIfNeeded();
-                SetFanStatus("AUTO 65 °C aktivní • minimum 1620 RPM • otáčky se budou průběžně přizpůsobovat CPU teplotě", true);
-            }
-            else
-            {
-                SetFanStatus("AUTO 65 °C vypnuto • zůstává poslední nastavená rychlost", true);
+                    if (windowToken.IsCancellationRequested) return;
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        if (windowToken.IsCancellationRequested || actionGeneration != _navigationGeneration || _section != "lianli" || auto65.Parent == null) return;
+                        auto65.Content = result.TurnOn ? "AUTO 65 °C • ZAPNUTO" : "AUTO ≤65 °C";
+                        auto65.Background = result.TurnOn
+                            ? (_darkTheme ? GlassAccentTintBrush() : ButtonVioletBrush())
+                            : (_darkTheme ? GlassPanelBrush() : null);
+                        auto65.BorderBrush = result.TurnOn
+                            ? (_darkTheme ? GlassBorderStrongBrush() : ButtonVioletBorderBrush())
+                            : (_darkTheme ? GlassEdgeBrush() : BorderThemeBrush());
+                        auto65.Foreground = result.TurnOn
+                            ? (_darkTheme ? TextPrimaryBrush() : OnAccentTextBrush())
+                            : TextPrimaryBrush();
+                        SetFanStatus(
+                            result.TurnOn
+                                ? "AUTO 65 °C aktivní • minimum 1620 RPM • otáčky se budou průběžně přizpůsobovat CPU teplotě"
+                                : "AUTO 65 °C vypnuto • zůstává poslední nastavená rychlost",
+                            true);
+                    });
+                }
+                catch (OperationCanceledException) when (windowToken.IsCancellationRequested) { }
+                catch (Exception ex)
+                {
+                    LogService.Error("lianli", "AUTO 65 toggle failed", ex);
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        if (actionGeneration == _navigationGeneration && _section == "lianli" && auto65.Parent != null)
+                            SetFanStatus("AUTO 65 °C: " + ex.Message, false);
+                    });
+                }
+                finally
+                {
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        Interlocked.Exchange(ref auto65Busy, 0);
+                        if (actionGeneration == _navigationGeneration && _section == "lianli" && auto65.Parent != null) auto65.IsEnabled = enabled;
+                    });
+                }
             }
         };
 
@@ -476,18 +528,57 @@ public sealed partial class MainWindow
             IsOn = profile.AiSmartRuntimeEnabled,
             IsEnabled = enabled
         };
+        NormalizeToggleAppearance(aiSmart);
+        bool aiSmartSuppress = false;
         aiSmart.Toggled += (_, _) =>
         {
-            FanProfile current = FanProfileService.Load();
-            FanProfileService.Save(current with { AiSmartRuntimeEnabled = aiSmart.IsOn });
-            if (aiSmart.IsOn)
-                FanProfileService.StartAgentIfNeeded();
+            if (aiSmartSuppress || !aiSmart.IsEnabled) return;
+            int actionGeneration = _navigationGeneration;
+            bool requested = aiSmart.IsOn;
+            SafeTaskService.Forget(ApplyAiSmartAsync(), "fan", "Verified AI Smart Runtime toggle");
 
-            SetFanStatus(
-                aiSmart.IsOn
-                    ? "AI Smart Runtime aktivní • lokální predikce, anomaly detection, smart fan/power"
-                    : "AI Smart Runtime vypnutý • klasická AUTO65/power pravidla zůstávají",
-                true);
+            async Task ApplyAiSmartAsync()
+            {
+                aiSmart.IsEnabled = false;
+                try
+                {
+                    await EnsureLianLiSupportedAsync(_windowLifetimeCts.Token).ConfigureAwait(false);
+                    FanProfile current = FanProfileService.Load();
+                    FanProfileService.Save(current with { AiSmartRuntimeEnabled = requested });
+                    FanProfile persisted = FanProfileService.Load();
+                    if (persisted.AiSmartRuntimeEnabled != requested)
+                        throw new InvalidOperationException($"AI Smart Runtime read-back nesouhlasí. Požadováno={requested}, skutečnost={persisted.AiSmartRuntimeEnabled}.");
+
+                    if (requested)
+                        FanProfileService.StartAgentIfNeeded();
+
+                    if (actionGeneration == _navigationGeneration && _section == "lianli" && aiSmart.Parent != null)
+                        SetFanStatus(
+                            requested
+                                ? "AI Smart Runtime aktivní • lokální predikce, anomaly detection, smart fan/power"
+                                : "AI Smart Runtime vypnutý • klasická AUTO65/power pravidla zůstávají",
+                            true);
+                    LogService.Info("fan", $"AI_SMART_TOGGLE_OK requested={requested}");
+                    await Task.CompletedTask;
+                }
+                catch (Exception ex)
+                {
+                    bool actual = FanProfileService.Load().AiSmartRuntimeEnabled;
+                    if (actionGeneration == _navigationGeneration && _section == "lianli" && aiSmart.Parent != null)
+                    {
+                        aiSmartSuppress = true;
+                        try { aiSmart.IsOn = actual; }
+                        finally { aiSmartSuppress = false; }
+                    }
+                    LogService.Error("fan", $"AI_SMART_TOGGLE_FAIL requested={requested} actual={actual}", ex);
+                    await ShowMessageAsync("AI Smart Runtime", ex.Message);
+                }
+                finally
+                {
+                    if (actionGeneration == _navigationGeneration && _section == "lianli" && aiSmart.Parent != null)
+                        aiSmart.IsEnabled = enabled;
+                }
+            }
         };
         body.Children.Add(aiSmart);
 
@@ -513,6 +604,77 @@ public sealed partial class MainWindow
             IsOn = profile.AutoCurveEnabled,
             IsEnabled = enabled
         };
+        NormalizeToggleAppearance(auto);
+        bool autoSuppress = false;
+        bool autoBusy = false;
+        bool autoAccepted = profile.AutoCurveEnabled;
+        auto.Toggled += (_, _) =>
+        {
+            if (autoSuppress || !auto.IsEnabled) return;
+            if (autoBusy)
+            {
+                autoSuppress = true;
+                try { auto.IsOn = autoAccepted; }
+                finally { autoSuppress = false; }
+                return;
+            }
+
+            int actionGeneration = _navigationGeneration;
+            bool requested = auto.IsOn;
+            SafeTaskService.Forget(ApplyAutoCurveToggleAsync(), "lianli", "Verified auto fan curve toggle");
+
+            async Task ApplyAutoCurveToggleAsync()
+            {
+                autoBusy = true;
+                auto.IsEnabled = false;
+                FanProfile original = FanProfileService.Load();
+                try
+                {
+                    await EnsureLianLiSupportedAsync(_windowLifetimeCts.Token).ConfigureAwait(false);
+                    FanProfileService.Save(original with { AutoCurveEnabled = requested, MotherboardPwm = false });
+                    FanProfile persisted = FanProfileService.Load();
+                    if (persisted.AutoCurveEnabled != requested)
+                        throw new InvalidOperationException($"Auto fan curve read-back nesouhlasí. Požadováno={requested}, skutečnost={persisted.AutoCurveEnabled}.");
+
+                    autoAccepted = requested;
+                    if (requested)
+                        FanProfileService.StartAgentIfNeeded();
+
+                    if (actionGeneration == _navigationGeneration && _section == "lianli" && auto.Parent != null)
+                        SetFanStatus(
+                            requested ? "Auto křivka zapnuta • profil uložen a agent aktivní" : "Auto křivka vypnuta • profil uložen",
+                            true);
+                    LogService.Info("lianli", $"AUTO_CURVE_TOGGLE_OK requested={requested}");
+                    await Task.CompletedTask;
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        if (LianLiSlInfinityService.Detect().Present)
+                            FanProfileService.Save(original);
+                    }
+                    catch { }
+                    bool actual = FanProfileService.Load().AutoCurveEnabled;
+                    autoAccepted = actual;
+                    if (actionGeneration == _navigationGeneration && _section == "lianli" && auto.Parent != null)
+                    {
+                        autoSuppress = true;
+                        try { auto.IsOn = actual; }
+                        finally { autoSuppress = false; }
+                    }
+
+                    LogService.Error("lianli", $"AUTO_CURVE_TOGGLE_FAIL requested={requested} actual={actual}", ex);
+                    await ShowMessageAsync("Automatická křivka", ex.Message);
+                }
+                finally
+                {
+                    if (actionGeneration == _navigationGeneration && _section == "lianli" && auto.Parent != null)
+                        auto.IsEnabled = enabled;
+                    autoBusy = false;
+                }
+            }
+        };
         body.Children.Add(auto);
 
         var curveGrid = new Grid { ColumnSpacing = 10, RowSpacing = 8 };
@@ -520,11 +682,11 @@ public sealed partial class MainWindow
         curveGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(34) });
         curveGrid.ColumnDefinitions.Add(new ColumnDefinition());
         curveGrid.ColumnDefinitions.Add(new ColumnDefinition());
-        curveGrid.Children.Add(new TextBlock { Text = "#", Foreground = TextSecondaryBrush(), FontSize = 10 });
-        var tempHead = new TextBlock { Text = "CPU TEPLOTA", Foreground = AccentBrush(), FontSize = 9.5, CharacterSpacing = 80 };
+        curveGrid.Children.Add(new TextBlock { Text = "#", Foreground = TextSecondaryBrush(), FontSize = 10.5 });
+        var tempHead = new TextBlock { Text = "CPU TEPLOTA", Foreground = AccentBrush(), FontSize = 10.5, CharacterSpacing = 80 };
         Grid.SetColumn(tempHead, 1);
         curveGrid.Children.Add(tempHead);
-        var rpmHead = new TextBlock { Text = "CÍLOVÉ RPM", Foreground = AccentBrush(), FontSize = 9.5, CharacterSpacing = 80 };
+        var rpmHead = new TextBlock { Text = "CÍLOVÉ RPM", Foreground = AccentBrush(), FontSize = 10.5, CharacterSpacing = 80 };
         Grid.SetColumn(rpmHead, 2);
         curveGrid.Children.Add(rpmHead);
 
@@ -589,9 +751,7 @@ public sealed partial class MainWindow
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var apply = new Button { Content = "Uložit křivku", IsEnabled = enabled };
-        ApplyPillButtonAppearance(apply);
-        apply.Background = ButtonVioletBrush();
-        apply.Foreground = OnAccentTextBrush();
+        ApplyMaterialButtonAppearance(apply, primary: true);
         apply.Click += (_, _) =>
         {
             int[] t = new int[4];
@@ -608,37 +768,39 @@ public sealed partial class MainWindow
                 return;
             }
 
-            FanProfile saved = FanProfileService.Load() with
-            {
-                AutoCurveEnabled = auto.IsOn,
-                MotherboardPwm = false,
-                CurveTemp1 = t[0],
-                CurveRpm1 = r[0],
-                CurveTemp2 = t[1],
-                CurveRpm2 = r[1],
-                CurveTemp3 = t[2],
-                CurveRpm3 = r[2],
-                CurveTemp4 = t[3],
-                CurveRpm4 = r[3]
-            };
-            FanProfileService.Save(saved);
+            bool enableCurve = auto.IsOn;
+            SafeTaskService.Forget(
+                RunLianLiActionAsync(() =>
+                {
+                    FanProfile saved = FanProfileService.Load() with
+                    {
+                        AutoCurveEnabled = enableCurve,
+                        MotherboardPwm = false,
+                        CurveTemp1 = t[0],
+                        CurveRpm1 = r[0],
+                        CurveTemp2 = t[1],
+                        CurveRpm2 = r[1],
+                        CurveTemp3 = t[2],
+                        CurveRpm3 = r[2],
+                        CurveTemp4 = t[3],
+                        CurveRpm4 = r[3]
+                    };
 
-            if (saved.AutoCurveEnabled)
-            {
-                FanProfileService.StartAgentIfNeeded();
-                CpuTemperatureService.CpuTemperatureSample sample = HardwareTelemetryBridgeService.ReadBestTemperature();
-                int target = sample.Celsius is double c
-                    ? FanProfileService.CalculateCurveRpm(saved, c)
-                    : saved.TargetRpm;
-                SafeTaskService.Forget(
-                    RunLianLiActionAsync(() => LianLiSlInfinityService.SetAllFanRpm(target),
-                        $"Auto křivka zapnuta • aktuální cíl {target} RPM"),
-                    "lianli", "Apply auto fan curve");
-            }
-            else
-            {
-                SetFanStatus("Auto křivka vypnuta • profil uložen", true);
-            }
+                    if (enableCurve)
+                    {
+                        CpuTemperatureService.CpuTemperatureSample sample = HardwareTelemetryBridgeService.ReadBestTemperature();
+                        int target = sample.Celsius is double c
+                            ? FanProfileService.CalculateCurveRpm(saved, c)
+                            : saved.TargetRpm;
+                        LianLiSlInfinityService.SetAllFanRpm(target);
+                    }
+
+                    FanProfileService.Save(saved);
+                    if (enableCurve)
+                        FanProfileService.StartAgentIfNeeded();
+                },
+                enableCurve ? "Auto křivka uložena a aktivní" : "Auto křivka vypnuta • profil uložen"),
+                "lianli", "Apply auto fan curve");
         };
 
         var balanced = new Button { Content = "Výchozí křivka", IsEnabled = enabled };
@@ -672,7 +834,7 @@ public sealed partial class MainWindow
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(260) });
 
         var effects = new StackPanel { Spacing = 8 };
-        effects.Children.Add(new TextBlock { Text = "LIGHTING EFFECT", FontSize = 9.5, CharacterSpacing = 100, Foreground = AccentBrush() });
+        effects.Children.Add(new TextBlock { Text = "LIGHTING EFFECT", FontSize = 10.5, CharacterSpacing = 100, Foreground = AccentBrush() });
 
         var effectBox = new ComboBox { MinWidth = 260, IsEnabled = enabled };
         int selectedEffectIndex = 0;
@@ -709,7 +871,7 @@ public sealed partial class MainWindow
         {
             Height = 112,
             CornerRadius = new CornerRadius(14),
-            Background = SurfaceAltBrush(),
+            Background = _darkTheme ? GlassSurfaceLowBrush() : SurfaceAltBrush(),
             BorderBrush = SectionBorderBrush(),
             BorderThickness = new Thickness(1),
             Child = new TextBlock
@@ -752,6 +914,7 @@ public sealed partial class MainWindow
         body.Children.Add(controls);
 
         var direction = new ToggleSwitch { Header = "Směr efektu", OffContent = "← Vlevo", OnContent = "Vpravo →", IsOn = profile.EffectDirection != 0, IsEnabled = enabled };
+        NormalizeToggleAppearance(direction);
         body.Children.Add(direction);
         effectBox.SelectionChanged += (_, _) =>
         {
@@ -770,9 +933,7 @@ public sealed partial class MainWindow
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var apply = new Button { Content = "Použít efekt", IsEnabled = enabled };
-        ApplyPillButtonAppearance(apply);
-        apply.Background = ButtonVioletBrush();
-        apply.Foreground = OnAccentTextBrush();
+        ApplyMaterialButtonAppearance(apply, primary: true);
         apply.Click += (_, _) =>
         {
             int index = Math.Clamp(effectBox.SelectedIndex, 0, LianLiEffects.Length - 1);
@@ -796,11 +957,13 @@ public sealed partial class MainWindow
                 HexColor = hex.Text.ToUpperInvariant(),
                 BrightnessPercent = brightnessValue
             };
-            FanProfileService.Save(saved);
-
             SafeTaskService.Forget(
                 RunLianLiActionAsync(
-                    () => LianLiSlInfinityService.SetAllEffect(effect.Mode, speedValue, directionValue, r, g, b, brightnessValue),
+                    () =>
+                    {
+                        LianLiSlInfinityService.SetAllEffect(effect.Mode, speedValue, directionValue, r, g, b, brightnessValue);
+                        FanProfileService.Save(saved);
+                    },
                     $"{effect.Name} • {hex.Text.ToUpperInvariant()} • {brightnessValue} % • profil uložen"),
                 "lianli", "Apply RGB effect");
         };
@@ -808,9 +971,13 @@ public sealed partial class MainWindow
         ApplyPillButtonAppearance(sync);
         sync.Click += (_, _) =>
         {
-            FanProfileService.Save(FanProfileService.Load() with { ArgbSync = true });
+            FanProfile saved = FanProfileService.Load() with { ArgbSync = true };
             SafeTaskService.Forget(
-                RunLianLiActionAsync(() => LianLiSlInfinityService.SetArgbSync(true), "ARGB sync zapnut • profil uložen"),
+                RunLianLiActionAsync(() =>
+                {
+                    LianLiSlInfinityService.SetArgbSync(true);
+                    FanProfileService.Save(saved);
+                }, "ARGB sync zapnut • profil uložen"),
                 "lianli", "Enable ARGB sync");
         };
 
@@ -826,9 +993,9 @@ public sealed partial class MainWindow
         return (surface, modeRow, effectBox);
     }
 
-    private async Task RunFanTelemetryLoopAsync(CancellationToken token)
+    private async Task RunFanTelemetryLoopAsync(CancellationToken token, int generation)
     {
-        while (!token.IsCancellationRequested && _section == "lianli")
+        while (!token.IsCancellationRequested && generation == _navigationGeneration && _section == "lianli")
         {
             FanAgentHealth? health = await Task.Run(FanProfileService.ReadHealthStatus, token).ConfigureAwait(false);
             bool healthFresh = health != null && DateTime.UtcNow - health.UpdatedUtc <= TimeSpan.FromSeconds(10);
@@ -847,7 +1014,7 @@ public sealed partial class MainWindow
 
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "lianli" || _lianLiCpuTempText == null) return;
+                if (generation != _navigationGeneration || _section != "lianli" || _lianLiCpuTempText == null) return;
 
                 double? tempC = healthFresh ? health!.CpuTempC : fallbackSample?.Celsius;
                 int[]? rpms = healthFresh ? health!.Rpms : fallbackRpms;
@@ -907,15 +1074,15 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task RunRgbPreviewLoopAsync(CancellationToken token)
+    private async Task RunRgbPreviewLoopAsync(CancellationToken token, int generation)
     {
-        while (!token.IsCancellationRequested && _section == "lianli")
+        while (!token.IsCancellationRequested && generation == _navigationGeneration && _section == "lianli")
         {
             await Task.Delay(40, token).ConfigureAwait(false);
             if (token.IsCancellationRequested) break;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "lianli" || _lianLiPreviewBrush == null || !_lianLiPreviewAnimated) return;
+                if (generation != _navigationGeneration || _section != "lianli" || _lianLiPreviewBrush == null || !_lianLiPreviewAnimated) return;
                 _lianLiPreviewPhase = (_lianLiPreviewPhase + 1) % 120;
                 double t = (Math.Sin(_lianLiPreviewPhase * Math.PI / 60d - Math.PI / 2d) + 1d) * 0.5d;
                 Color a = ParseColor(_lianLiPreviewA);
@@ -925,30 +1092,89 @@ public sealed partial class MainWindow
             });
         }
     }
-    private async Task RefreshLianLiStatusAsync()
+    private async Task RefreshLianLiStatusAsync(int generation)
     {
-        var info = await Task.Run(LianLiSlInfinityService.Detect);
-        DispatcherQueue.TryEnqueue(() =>
+        CancellationToken token = _windowLifetimeCts.Token;
+        try
         {
-            if (_lianLiStatus == null) return;
-            SetFanStatus(info.Present
-                ? "Připojeno • Lian Li UNI FAN SL-Infinity • Direct HID"
-                : "Lian Li controller 0CF2:A102 nebyl nalezen.", info.Present);
-        });
+            var info = await Task.Run(LianLiSlInfinityService.Detect, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "lianli" || _lianLiStatus == null) return;
+                if (!info.Present)
+                {
+                    SetFanStatus("Lian Li controller 0CF2:A102 nebyl nalezen.", false);
+                    SafeTaskService.Forget(ShowSectionAsync("overview"), "lianli", "Leave unsupported fan page");
+                    return;
+                }
+                SetFanStatus(info.Present
+                    ? "Připojeno • Lian Li UNI FAN SL-Infinity • Direct HID"
+                    : "Lian Li controller 0CF2:A102 nebyl nalezen.", info.Present);
+            });
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Normal window shutdown.
+        }
     }
 
     private async Task RunLianLiActionAsync(Action action, string success)
     {
+        CancellationToken token = _windowLifetimeCts.Token;
+        int generation = _navigationGeneration;
+        var status = _lianLiStatus;
+        bool entered = false;
         try
         {
-            await Task.Run(action).ConfigureAwait(false);
-            DispatcherQueue.TryEnqueue(() => SetFanStatus(success, true));
+            entered = await _lianLiActionGate.WaitAsync(0, token).ConfigureAwait(false);
+            if (!entered)
+            {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!token.IsCancellationRequested && generation == _navigationGeneration && _section == "lianli" && ReferenceEquals(_lianLiStatus, status))
+                        SetFanStatus("Ventilátory: předchozí příkaz ještě probíhá.", false);
+                });
+                return;
+            }
+
+            await EnsureLianLiSupportedAsync(token).ConfigureAwait(false);
+            await Task.Run(action, token).ConfigureAwait(false);
+            if (!token.IsCancellationRequested)
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (generation == _navigationGeneration && _section == "lianli" && ReferenceEquals(_lianLiStatus, status)) SetFanStatus(success, true);
+                });
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Normal window shutdown.
         }
         catch (Exception ex)
         {
             LogService.Error("lianli", "Direct controller action failed", ex);
-            DispatcherQueue.TryEnqueue(() => SetFanStatus("Ventilátory: " + ex.Message, false));
+            if (!token.IsCancellationRequested)
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (generation == _navigationGeneration && _section == "lianli" && ReferenceEquals(_lianLiStatus, status)) SetFanStatus("Ventilátory: " + ex.Message, false);
+                });
         }
+        finally
+        {
+            if (entered) _lianLiActionGate.Release();
+        }
+    }
+
+    private static async Task EnsureLianLiSupportedAsync(CancellationToken token)
+    {
+        var info = await Task.Run(LianLiSlInfinityService.Detect, token).ConfigureAwait(false);
+        if (!info.Present)
+            throw new InvalidOperationException("Lian Li controller 0CF2:A102 nebyl nalezen.");
+    }
+
+    private static bool IsLianLiSupported()
+    {
+        return LianLiSlInfinityService.Detect().Present;
     }
 
     private void SetFanStatus(string text, bool ok)

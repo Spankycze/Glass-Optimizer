@@ -95,7 +95,7 @@ public sealed partial class MainWindow
                     return (Ready: true, Text: $"{d.Name}  •  {d.DriveFormat}  •  {d.VolumeLabel}\nVolno {d.AvailableFreeSpace / 1073741824} GB z {d.TotalSize / 1073741824} GB");
                 }
                 catch { return (Ready: false, Text: string.Empty); }
-            }).Where(x => x.Ready).Select(x => x.Text).ToArray(), CancellationToken.None).ConfigureAwait(false);
+            }).Where(x => x.Ready).Select(x => x.Text).ToArray(), token).ConfigureAwait(false);
             if (smokeGate != null)
             {
                 smokeEntered!.TrySetResult(true);
@@ -117,6 +117,9 @@ public sealed partial class MainWindow
                 LogService.Info("performance", $"STORAGE_SNAPSHOT_DATA_READY rows={rows.Length} commitMs={commit.ElapsedMilliseconds} generation={generation}");
             });
         }
+        // Navigating away cancels this snapshot; that is expected control flow,
+        // not a storage failure, and must not be logged as an error.
+        catch (OperationCanceledException) when (token.IsCancellationRequested || _windowLifetimeCts.IsCancellationRequested) { }
         catch (Exception ex) { LogService.Error("storage", "DriveInfo snapshot failed", ex); }
         finally
         {
@@ -128,56 +131,85 @@ public sealed partial class MainWindow
             smokeFinished?.TrySetResult(true);
         }
     }
+    private StackPanel? _activityProcessRowsHost;
+    private Border? _activityProcessSurface;
+
     private void BuildActivityPage()
     {
-        var phase = System.Diagnostics.Stopwatch.StartNew();
-        var perf = PerformanceTelemetryService.GetSnapshot();
-        long snapshotMs = phase.ElapsedMilliseconds;
-
-        var diagnostics = new StackPanel { Spacing = 6 };
-        diagnostics.Children.Add(new TextBlock { Text = $"Working Set: {perf.WorkingSetMb} MB   •   Managed: {perf.ManagedMb} MB   •   Handles: {perf.Handles}", FontSize = 13, TextWrapping = TextWrapping.Wrap });
-        diagnostics.Children.Add(new TextBlock { Text = $"GC Gen0/1/2: {perf.Gen0}/{perf.Gen1}/{perf.Gen2}   •   Startup stage: {StartupDiagnostics.LastStage}", FontSize = 12, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap });
-        long diagnosticsMs = phase.ElapsedMilliseconds - snapshotMs;
-
-        ContentStack.Children.Add(BuildSectionHero("activity", "Live telemetry", "Performance Diagnostics", "Aktuální procesní telemetrie Optimizeru", QuickButton("Obnovit", async () => await ShowSectionAsync("activity"))));
-        long heroMs = phase.ElapsedMilliseconds - snapshotMs - diagnosticsMs;
-        LogService.Info("perf", $"MEM area=activity ws={perf.WorkingSetMb}MB private={perf.PrivateMb}MB managed={perf.ManagedMb}MB handles={perf.Handles} gc={perf.Gen0}/{perf.Gen1}/{perf.Gen2}");
+        ContentStack.Children.Add(BuildSectionHero("activity", "Aktivita systému", "Běžící procesy", "Přehled procesů podle využití paměti", QuickButton("Obnovit", async () => { ActivityProcessSnapshotService.Invalidate(); await ShowSectionAsync("activity"); })));
 
         var stack = new StackPanel { Spacing = 8 };
         stack.Children.Add(new TextBlock { Text = "Načítám běžící procesy…", Foreground = TextSecondaryBrush() });
-        ContentStack.Children.Add(BuildSectionSurface("activity", "Aktivita systému", "Největší běžící procesy podle využití paměti", stack));
+        _activityProcessRowsHost = stack;
+        _activityProcessSurface = BuildSectionSurface("activity", "Aktivita systému", "Největší běžící procesy podle využití paměti", stack);
+        ContentStack.Children.Add(_activityProcessSurface);
         ContentStack.Children.Add(ActionCard("Monitor prostředků", "Otevře vestavěný Windows Resource Monitor.", "Otevřít", delegate { ProcessRunner.Open("resmon.exe"); return Task.CompletedTask; }));
-        long shellMs = phase.ElapsedMilliseconds - snapshotMs - diagnosticsMs - heroMs;
-        SafeTaskService.Forget(LoadActivityProcessesAsync(stack, _loadCts?.Token ?? CancellationToken.None), "activity", "Process inventory");
-        LogService.Info("performance", $"ACTIVITY_UI_PHASE snapshotMs={snapshotMs} diagnosticsMs={diagnosticsMs} heroMs={heroMs} shellMs={shellMs} totalMs={phase.ElapsedMilliseconds}");
+        SafeTaskService.Forget(LoadActivityProcessesAsync(stack, _loadCts?.Token ?? _windowLifetimeCts.Token), "activity", "Process inventory");
     }
 
 
+    internal async Task RunActivityUiPopulationSmokeAsync()
+    {
+        await ShowSectionAsync("activity");
+        var firstHost = _activityProcessRowsHost;
+        var firstSurface = _activityProcessSurface;
+        if (firstHost == null || firstSurface == null ||
+            !ContentStack.Children.Contains(firstSurface))
+            throw new InvalidOperationException("Activity process card is not attached.");
+
+        static bool HasProcessRows(StackPanel? host) =>
+            host != null && host.Children.Count > 0 &&
+            host.Children.OfType<TextBlock>().Any(row =>
+                row.Text.Contains("PID ", StringComparison.Ordinal));
+
+        for (int i = 0; i < 60 && !HasProcessRows(firstHost); i++)
+            await Task.Delay(25);
+        if (!HasProcessRows(firstHost))
+            throw new InvalidOperationException(
+                "Activity process snapshot loaded but visible process rows were never committed.");
+
+        await ShowSectionAsync("settings");
+        await ShowSectionAsync("activity");
+        var secondHost = _activityProcessRowsHost;
+        if (secondHost == null || ReferenceEquals(firstHost, secondHost))
+            throw new InvalidOperationException("Activity reused an obsolete process-list host.");
+
+        for (int i = 0; i < 60 && !HasProcessRows(secondHost); i++)
+            await Task.Delay(25);
+        if (!HasProcessRows(secondHost) || !ReferenceEquals(_activityProcessRowsHost, secondHost) ||
+            _activityProcessSurface == null ||
+            !ContentStack.Children.Contains(_activityProcessSurface))
+            throw new InvalidOperationException(
+                "Activity process-list refresh did not populate the current card.");
+
+        LogService.Info("performance",
+            $"ACTIVITY_UI_POPULATION_SMOKE_OK firstRows={firstHost.Children.Count} " +
+            $"secondRows={secondHost.Children.Count} staleHostPreserved=true");
+    }
+
     private async Task LoadActivityProcessesAsync(StackPanel host, CancellationToken token)
     {
+        int generation = _navigationGeneration;
         try
         {
-            var rows = await Task.Run(() =>
-            {
-                var processes = System.Diagnostics.Process.GetProcesses();
-                try
-                {
-                    return processes.Select(p =>
-                    {
-                        try { return (Name: p.ProcessName, Id: p.Id, Mb: p.WorkingSet64 / 1024 / 1024); }
-                        catch { return (Name: string.Empty, Id: 0, Mb: 0L); }
-                    }).Where(x => x.Id != 0).OrderByDescending(x => x.Mb).Take(30).ToArray();
-                }
-                finally { foreach (var proc in processes) proc.Dispose(); }
-            }, CancellationToken.None).ConfigureAwait(false);
-            if (token.IsCancellationRequested || _section != "activity") return;
+            var rows = await ActivityProcessSnapshotService.GetAsync(token).ConfigureAwait(false);
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "activity") return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "activity") return;
+                if (token.IsCancellationRequested ||
+                    generation != _navigationGeneration ||
+                    _section != "activity" ||
+                    !ReferenceEquals(_activityProcessRowsHost, host) ||
+                    _activityProcessSurface == null ||
+                    !ContentStack.Children.Contains(_activityProcessSurface))
+                    return;
                 host.Children.Clear();
                 foreach (var row in rows) host.Children.Add(new TextBlock { Text = $"{row.Name}  •  PID {row.Id}  •  {row.Mb} MB", FontSize = 12 });
             });
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception ex) { LogService.Error("activity", "Process inventory failed", ex); }
     }
 

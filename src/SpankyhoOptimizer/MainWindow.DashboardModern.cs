@@ -75,6 +75,21 @@ public sealed partial class MainWindow
         };
         Grid.SetColumn(visual, 1);
         grid.Children.Add(visual);
+        // The fixed 270px decorative panel must not squeeze action buttons
+        // and descriptions when the window is narrow. Hide only this visual;
+        // keep every real control and status in the primary column.
+        bool compactHero = false;
+        grid.SizeChanged += (_, args) =>
+        {
+            if (args.NewSize.Width <= 0) return;
+            bool narrow = args.NewSize.Width < 640;
+            if (compactHero == narrow) return;
+            compactHero = narrow;
+            visual.Visibility = narrow ? Visibility.Collapsed : Visibility.Visible;
+            grid.ColumnDefinitions[1].Width = new GridLength(narrow ? 0 : 270);
+            grid.ColumnSpacing = narrow ? 0 : 22;
+            grid.MinHeight = narrow ? 100 : 150;
+        };
         return BuildDashboardCard(grid, new Thickness(20, 16, 20, 16));
     }
     private FrameworkElement BuildDashboardMetric(
@@ -87,7 +102,7 @@ public sealed partial class MainWindow
         stack.Children.Add(new TextBlock
         {
             Text = label.ToUpperInvariant(),
-            FontSize = 9.5,
+            FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
             CharacterSpacing = 70,
             Foreground = TextSecondaryBrush()
@@ -102,7 +117,7 @@ public sealed partial class MainWindow
         });        stack.Children.Add(new TextBlock
         {
             Text = detail,
-            FontSize = 10,
+            FontSize = 10.5,
             Foreground = TextSecondaryBrush(),
             TextWrapping = TextWrapping.Wrap,
             MaxLines = 2,
@@ -122,15 +137,41 @@ public sealed partial class MainWindow
     private Grid BuildDashboardMetricGrid(params FrameworkElement[] tiles)
     {
         var grid = new Grid { ColumnSpacing = 7, RowSpacing = 7 };
-        int columns = Math.Min(4, Math.Max(1, tiles.Length));
-        for (int i = 0; i < columns; i++) grid.ColumnDefinitions.Add(new ColumnDefinition());
-        int rows = (tiles.Length + columns - 1) / columns;
-        for (int i = 0; i < rows; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });        for (int i = 0; i < tiles.Length; i++)
+        foreach (FrameworkElement tile in tiles) grid.Children.Add(tile);
+
+        // A fixed four-column layout clipped labels in the compact window.
+        // Reflow existing tiles on resize instead of reconstructing cards,
+        // preserving live bindings and keeping UI allocation costs low.
+        int currentColumns = -1;
+        void Arrange(int columns)
         {
-            Grid.SetColumn(tiles[i], i % columns);
-            Grid.SetRow(tiles[i], i / columns);
-            grid.Children.Add(tiles[i]);
+            columns = Math.Min(Math.Max(1, tiles.Length), columns);
+            if (columns == currentColumns) return;
+            currentColumns = columns;
+            grid.ColumnDefinitions.Clear();
+            grid.RowDefinitions.Clear();
+            for (int i = 0; i < columns; i++)
+                grid.ColumnDefinitions.Add(new ColumnDefinition());
+            int rows = (tiles.Length + columns - 1) / columns;
+            for (int i = 0; i < rows; i++)
+                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            for (int i = 0; i < tiles.Length; i++)
+            {
+                Grid.SetColumn(tiles[i], i % columns);
+                Grid.SetRow(tiles[i], i / columns);
+            }
         }
+
+        Arrange(Math.Min(4, Math.Max(1, tiles.Length)));
+        grid.SizeChanged += (_, args) =>
+        {
+            double width = args.NewSize.Width;
+            if (width <= 0) return;
+            int columns = width < 480 ? 2 : width < 760 ? 3 : 4;
+            // Four equal cards look better as two balanced rows than 3 + 1.
+            if (tiles.Length == 4 && columns == 3) columns = 2;
+            Arrange(columns);
+        };
         return grid;
     }
 
@@ -152,31 +193,17 @@ public sealed partial class MainWindow
             TextWrapping = TextWrapping.Wrap
         });
 
-        var row = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 10,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        row.Children.Add(new Border
-        {
-            Width = 4,
-            Height = 26,
-            CornerRadius = new CornerRadius(2),
-            Background = UseNeutralSectionChrome ? ThemeColor(128,128,128) : ButtonVioletBrush(),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        row.Children.Add(text);
-
+        // A single quiet divider and a clear two-line hierarchy instead of
+        // the old colored rail and nested decorative heading surface.
         return new Border
         {
-            Margin = new Thickness(0, 10, 0, 6),
-            Padding = UseNeutralSectionChrome ? new Thickness(4, 10, 4, 8) : new Thickness(11, 8, 11, 8),
-            CornerRadius = new CornerRadius(10),
-            BorderThickness = new Thickness(UseNeutralSectionChrome ? 0 : (_darkTheme ? 1.25 : 1)),
+            Tag = "flat-section-heading",
+            Margin = new Thickness(0, 8, 0, 5),
+            Padding = new Thickness(4, 6, 4, 8),
+            BorderThickness = new Thickness(0, 0, 0, 1),
             BorderBrush = SectionBorderBrush(),
-            Background = SectionHeaderBackgroundBrush(),
-            Child = row
+            Background = null,
+            Child = text
         };
     }
 
@@ -197,12 +224,20 @@ public sealed partial class MainWindow
             Foreground = _darkTheme ? ThemeColor(184, 192, 205) : TextSecondaryBrush(),
             TextWrapping = TextWrapping.Wrap
         });
-        var expander = new Expander        {
+        var expander = new Expander
+        {
             Header = header,
             IsExpanded = expanded,
             Content = content,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
+        if (UseGlassChrome)
+        {
+            expander.Resources["ExpanderHeaderBackground"] = GlassSurfaceLowBrush();
+            expander.Resources["ExpanderHeaderBackgroundPointerOver"] = GlassHoverBrush();
+            expander.Resources["ExpanderHeaderBackgroundPressed"] = GlassPressedBrush();
+            expander.Resources["ExpanderHeaderBorderBrush"] = GlassBorderBrush();
+        }
         return BuildDashboardCard(expander, new Thickness(15, 10, 15, 10));
     }
 }

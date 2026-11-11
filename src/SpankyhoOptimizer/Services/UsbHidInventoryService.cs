@@ -97,20 +97,20 @@ public static class UsbHidInventoryService
                 var result = new List<UsbHidDeviceInfo>();
                 using var searcher = new ManagementObjectSearcher(
                     "SELECT DeviceID,Name,PNPClass,Manufacturer,Status,ConfigManagerErrorCode FROM Win32_PnPEntity");
-                foreach (ManagementObject x in searcher.Get())
+                var rows = searcher.Get();
+                WmiEnumerationScope.ForEach<ManagementObject>(rows, rows, token, x =>
                 {
-                    token.ThrowIfCancellationRequested();
                     string id = x["DeviceID"]?.ToString() ?? string.Empty;
                     string cls = x["PNPClass"]?.ToString() ?? string.Empty;
                     string name = x["Name"]?.ToString() ?? id;
-                    if (!IsUsbHid(id, cls, name)) continue;
+                    if (!IsUsbHid(id, cls, name)) return;
 
                     string manufacturer = x["Manufacturer"]?.ToString() ?? "Unknown";
                     string status = x["Status"]?.ToString() ?? "Unknown";
                     int error = Convert.ToInt32(x["ConfigManagerErrorCode"] ?? 0, CultureInfo.InvariantCulture);
                     result.Add(new UsbHidDeviceInfo(
                         id, name, cls, manufacturer, status, error, IsControllerOrHub(cls, name)));
-                }
+                });
 
                 LogService.Info("usb", $"USB_HID_PROVIDER provider=WMI devices={result.Count}");
                 return (IReadOnlyList<UsbHidDeviceInfo>)result

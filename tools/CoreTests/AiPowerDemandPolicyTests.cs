@@ -43,6 +43,24 @@ public sealed class AiPowerDemandPolicyTests
             false, 45, 80, 3600, 0, AiWorkloadClass.Interactive, confidence: 5));
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(-1.0)]
+    [InlineData(101.0)]
+    public void InvalidCpuTelemetryNeverSelectsEconomyPowerPlan(double load)
+    {
+        Assert.True(AiPowerDemandPolicy.HasPerformanceDemand(
+            false, load, null, null, 0, AiWorkloadClass.Background));
+    }
+
+    [Fact]
+    public void InvalidThermalEvidenceCannotTriggerGuard()
+    {
+        Assert.False(AiPowerDemandPolicy.ShouldThermalGuard(false, 80, double.NaN, 90));
+        Assert.False(AiPowerDemandPolicy.ShouldThermalGuard(false, 80, 40, double.NaN));
+    }
+
     [Fact]
     public void ThermalGuardNeedsConfidenceAndNonGameModerateLoad()
     {

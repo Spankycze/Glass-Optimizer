@@ -13,6 +13,7 @@ public sealed partial class MainWindow
 
     private void BuildCursorPage()
     {
+        int generation = _navigationGeneration;
         // Community-only cursor experience. Render immediately from cached metadata;
         // the slower Windows/file-system readback is refreshed after first paint.
         var phase = System.Diagnostics.Stopwatch.StartNew();
@@ -64,10 +65,10 @@ public sealed partial class MainWindow
                     return CursorCommunityPackService.CurrentCommunityPackName;
                 }).ConfigureAwait(false);
 
-                if (_section != "cursor") return;
+                if (generation != _navigationGeneration || _section != "cursor") return;
                 DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
                 {
-                    if (_section != "cursor") return;
+                    if (generation != _navigationGeneration || _section != "cursor" || activePackText.Parent == null) return;
                     activePackText.Text = string.IsNullOrWhiteSpace(detectedName)
                         ? "Žádný community cursor pack není aktuálně označený jako aktivní."
                         : "Aktivní community pack: " + detectedName;
@@ -77,10 +78,10 @@ public sealed partial class MainWindow
             catch (Exception ex)
             {
                 LogService.Error("cursor", "Deferred community cursor readback failed", ex);
-                if (_section != "cursor") return;
+                if (generation != _navigationGeneration || _section != "cursor") return;
                 DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
                 {
-                    if (_section != "cursor") return;
+                    if (generation != _navigationGeneration || _section != "cursor" || activePackText.Parent == null) return;
                     activePackText.Text = "Aktivní cursor pack se nepodařilo ověřit: " + ex.Message;
                     activePackText.Foreground = WarningBrush();
                     ShowActionFeedback("Community Cursors", ActionFeedbackKind.Failed, ex.Message);
@@ -106,11 +107,21 @@ public sealed partial class MainWindow
 
     private async Task RunCursorStartupWatchdogAsync()
     {
-        await Task.Delay(1600).ConfigureAwait(false);
+        if (!CursorThemeService.StartupWatchdog) return;
+        string skin = CursorThemeService.CurrentSkin;
+        if (skin.Equals("WindowsDefault", StringComparison.OrdinalIgnoreCase)) return;
+
+        System.Threading.CancellationToken token = _windowLifetimeCts.Token;
         try
         {
-            await Task.Run(CursorThemeService.EnsureCurrentApplied).ConfigureAwait(false);
-            LogService.Info("cursor", "CURSOR_STARTUP_WATCHDOG_OK skin=" + CursorThemeService.CurrentSkin);
+            await Task.Delay(4000, token).ConfigureAwait(false);
+            await Task.Run(CursorThemeService.EnsureCurrentApplied, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            LogService.Info("cursor", "CURSOR_STARTUP_WATCHDOG_OK skin=" + skin);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Normal window shutdown.
         }
         catch (Exception ex)
         {

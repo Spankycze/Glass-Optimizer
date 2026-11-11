@@ -1,4 +1,4 @@
-param([switch]$ForceFull)
+param([switch]$ForceFull,[switch]$AllowDebugShutdown)
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 function Write-BuildStatus([string]$Kind,[string]$Text){
@@ -9,6 +9,12 @@ function Write-BuildStatus([string]$Kind,[string]$Text){
   Write-Host '] ' -NoNewline -ForegroundColor DarkGray
   Write-Host "$icon " -NoNewline -ForegroundColor $color
   Write-Host $Text -ForegroundColor White
+  if($Kind -eq 'OK'){
+    # Standard successful dev builds activate the one-per-project source watcher.
+    # No user opt-in, Windows startup entry, Task Scheduler or browser changes.
+    try{& (Join-Path $script:root 'devtools/ensure-auto-watch.ps1')}
+    catch{Write-Warning ('DEV_AUTO_WATCH_OPTIONAL '+$_.Exception.Message)}
+  }
 }
 
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -31,6 +37,10 @@ function Get-SpankyXamlReuseArgs {
   return @()
 }
 function Stop-SpankyDebugProcesses {
+  # NEVER close an existing user app in the default iterative build path.
+  # Even when the debug output is locked, the staged build is safer than
+  # restarting any running Optimizer. Only explicit local opt-in may stop it.
+  if(-not $AllowDebugShutdown){return}
   $running=@(Get-Process -Name 'SpankyhoOptimizer' -ErrorAction SilentlyContinue)
   $paths=@{}
   foreach($proc in $running){
@@ -123,9 +133,11 @@ function Invoke-StagedDebugBuild {
     return
   }
   New-Item -ItemType Directory -Path $stagedDebugDir -Force | Out-Null
-  $stageProjectRefs=$(if(Test-SpankyCoreFresh){'-p:BuildProjectReferences=false'}else{'-p:BuildProjectReferences=true'})
+  # Staged output must carry its own matching Core reference; never borrow
+  # a freshness hint from an unrelated normal-output directory.
+  $stageProjectRefs='-p:BuildProjectReferences=true'
   Write-Host ('FAST_BUILD_STAGED_OUTPUT ' + $stagedDebugDir)
-  Write-Host ('FAST_BUILD_STAGED_PROJECT_REFS ' + $(if(Test-SpankyCoreFresh){'skip'}else{'build'}))
+  Write-Host 'FAST_BUILD_STAGED_PROJECT_REFS build'
   $xamlReuseArgs=@(Get-SpankyXamlReuseArgs)
   if($xamlReuseArgs.Count){Write-Host 'FAST_XAML_REUSE staged=on'}
   dotnet build $app -c Debug -r win-x64 --no-restore --nologo -m -v:q -o $stagedDebugDir `
@@ -139,13 +151,20 @@ function Invoke-FullFallback([string]$reason){
   Write-Host ('FAST_FALLBACK_FULL ' + $reason)
   $scriptPath=Join-Path $root 'build-dev.ps1'
   $psi=[Diagnostics.ProcessStartInfo]::new()
-  $psi.FileName='powershell.exe'
-  $psi.Arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$scriptPath+'" -ForceBuild'
+  # The full-build fallback requires PowerShell 7 (.NET SDK tooling). Windows
+  # PowerShell 5.1 can fail before compiling and hides useful build diagnostics.
+  $psi.FileName='pwsh.exe'
+  $psi.Arguments='-NoProfile -File "'+$scriptPath+'" -ForceBuild'
   $psi.UseShellExecute=$false
   $psi.CreateNoWindow=$true
+  $psi.RedirectStandardOutput=$true
+  $psi.RedirectStandardError=$true
   $p=[Diagnostics.Process]::new()
   $p.StartInfo=$psi
   if(-not $p.Start()){throw 'Full fallback child process failed to start.'}
+  # Drain both streams asynchronously: no hidden child errors or pipe deadlock.
+  $stdoutTask=$p.StandardOutput.ReadToEndAsync()
+  $stderrTask=$p.StandardError.ReadToEndAsync()
   $watch=[Diagnostics.Stopwatch]::StartNew()
   while(-not $p.WaitForExit(15000)){
     Write-Host ('FAST_FALLBACK_HEARTBEAT elapsed={0:n0}s pid={1}' -f $watch.Elapsed.TotalSeconds,$p.Id)
@@ -155,9 +174,19 @@ function Invoke-FullFallback([string]$reason){
     }
   }
   $exitCode=$p.ExitCode
+  $childOutput=$stdoutTask.GetAwaiter().GetResult()
+  $childErrors=$stderrTask.GetAwaiter().GetResult()
   $watch.Stop()
   $p.Dispose()
-  if($exitCode -ne 0){throw ('Full fallback build failed. exit={0}' -f $exitCode)}
+  if($exitCode -ne 0){
+    foreach($line in @(($childOutput+"`n"+$childErrors) -split "`r?`n" | Select-Object -Last 30)){
+      if($line){Write-Host $line}
+    }
+    throw ('Full fallback build failed. exit={0}' -f $exitCode)
+  }
+  if($childOutput -match 'DEV_BUILD_(?:OK|STAGED_LOCK_OK)'){
+    Write-Host (($childOutput -split "`r?`n" | Where-Object {$_ -match 'DEV_BUILD_(?:OK|STAGED_LOCK_OK)'} | Select-Object -Last 1))
+  }
   Write-BuildStatus 'OK' ('full fallback {0:n2}s' -f $watch.Elapsed.TotalSeconds)
 }
 if($ForceFull){Invoke-FullFallback 'explicit force'; return}
@@ -179,9 +208,9 @@ if((Test-SpankyDebugProcessStillRunning) -and (Test-SpankyStagedDebugFresh)){
   return
 }
 
-# A normal debug instance can be stopped and rebuilt in-place. Elevated instances
-# cannot be terminated from the non-elevated build shell, so switch to the existing
-# staged output before any lock assertion or in-place Core/App copy can fail.
+# A running Optimizer remains untouched by default. Use staging instead of
+# stopping debug/elevated apps or their related RuntimeHosts. Explicit opt-in
+# is reserved for a separate locally approved maintenance operation.
 Stop-SpankyDebugProcesses
 if(Test-SpankyDebugProcessStillRunning){
   Write-BuildStatus 'WARN' 'debug output locked; using staged build'
@@ -216,7 +245,8 @@ if((Test-SpankyUiFresh) -and -not(Test-SpankyCoreFresh) -and (Test-Path $debugEx
   $oldCore=Join-Path $appOut 'SpankyhoOptimizer.Core.dll'
   Assert-SpankyDebugOutputUnlocked
   $oldApi=$(if(Test-Path $oldCore){Get-PublicApiHash $oldCore}else{$null})
-  $coreAssets=Join-Path $root 'src\SpankyhoOptimizer.Core\obj\project.assets.json'
+  $coreObjRoot=if($env:SPANKY_CORE_DEV_OBJ){$env:SPANKY_CORE_DEV_OBJ}else{Join-Path $root 'src\SpankyhoOptimizer.Core\obj'}
+  $coreAssets=Join-Path $coreObjRoot 'project.assets.json'
   if(-not(Test-Path $coreAssets)){dotnet restore $core --nologo | Out-Host; if($LASTEXITCODE -ne 0){Invoke-FullFallback 'core restore failed'; return}}
   dotnet build $core -c Debug --no-restore --nologo -m -v:q -p:RunAnalyzersDuringBuild=false | Out-Host
   if($LASTEXITCODE -ne 0){Invoke-FullFallback 'core compile failed'; return}
@@ -231,7 +261,10 @@ if((Test-SpankyUiFresh) -and -not(Test-SpankyCoreFresh) -and (Test-Path $debugEx
 $obj=Join-Path $root 'src\SpankyhoOptimizer\obj\project.assets.json'
 if(-not(Test-Path $obj)){Invoke-FullFallback 'missing app restore/assets'; return}
 $sw=[Diagnostics.Stopwatch]::StartNew()
-$skipProjectRefs=(Test-SpankyCoreFresh) -and (Test-Path (Join-Path $appOut 'SpankyhoOptimizer.Core.dll'))
+$coreObjRoot=if($env:SPANKY_CORE_DEV_OBJ){$env:SPANKY_CORE_DEV_OBJ}else{Join-Path $root 'src\SpankyhoOptimizer.Core\obj'}
+$coreRef=Join-Path $coreObjRoot 'Debug\net10.0-windows10.0.26100.0\ref\SpankyhoOptimizer.Core.dll'
+$skipProjectRefs=(Test-SpankyCoreFresh) -and (Test-Path (Join-Path $appOut 'SpankyhoOptimizer.Core.dll')) -and (Test-Path $coreRef)
+if(-not(Test-Path $coreRef)){Write-Host 'FAST_CORE_REFERENCE_REBUILD_REQUIRED'}
 $projectRefArg=$(if($skipProjectRefs){'-p:BuildProjectReferences=false'}else{'-p:BuildProjectReferences=true'})
 Write-BuildStatus 'INFO' ('project refs: ' + $(if($skipProjectRefs){'skip'}else{'build'}))
 $xamlReuseArgs=@(Get-SpankyXamlReuseArgs)

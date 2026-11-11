@@ -69,4 +69,18 @@ public sealed class CoreBehaviorTests
                 TimeSpan.FromSeconds(1),
                 cts.Token));
     }
+
+    [Fact]
+    public async Task OperationCoordinator_translates_internal_timeout_to_timeout_exception()
+    {
+        string key = "timeout-" + Guid.NewGuid().ToString("N");
+
+        TimeoutException ex = await Assert.ThrowsAsync<TimeoutException>(() =>
+            OperationCoordinator.RunExclusiveAsync(
+                key,
+                async token => await Task.Delay(TimeSpan.FromSeconds(5), token),
+                TimeSpan.FromMilliseconds(40)));
+
+        Assert.Contains(key, ex.Message, StringComparison.Ordinal);
+    }
 }

@@ -26,9 +26,9 @@ public sealed partial class MainWindow
             ["usb"] = "usb",
             ["lianli"] = "lianli",
             ["startup"] = "startup",
+            ["themes"] = "ui",
             ["ui"] = "ui",
             ["update"] = "update",
-            ["browsers"] = "browsers",
             ["spicetify"] = "spicetify",
             ["apps"] = "apps",
             ["privacy"] = "privacy",
@@ -52,22 +52,23 @@ public sealed partial class MainWindow
     private static string SectionIconName(string tag) =>
         HardwareIconMap.TryGetValue(tag ?? string.Empty, out string? name) ? name : "overview";
 
-    private static readonly object HardwareIconSourceCacheGate = new();
-    private static readonly Dictionary<string, ImageSource> HardwareIconSourceCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object SharedIconSourceCacheGate = new();
+    private static readonly Dictionary<string, ImageSource> SharedIconSourceCache = new(StringComparer.OrdinalIgnoreCase);
 
-    private static ImageSource SectionIconSource(string tag)
+    private static ImageSource CachedIconSource(string name)
     {
-        string name = SectionIconName(tag);
-        lock (HardwareIconSourceCacheGate)
+        lock (SharedIconSourceCacheGate)
         {
-            if (HardwareIconSourceCache.TryGetValue(name, out ImageSource? cached))
+            if (SharedIconSourceCache.TryGetValue(name, out ImageSource? cached))
                 return cached;
 
             var source = new SvgImageSource(new Uri($"ms-appx:///Assets/SidebarIcons/{name}.svg", UriKind.Absolute));
-            HardwareIconSourceCache[name] = source;
+            SharedIconSourceCache[name] = source;
             return source;
         }
     }
+
+    private static ImageSource SectionIconSource(string tag) => CachedIconSource(SectionIconName(tag));
 
     private static string FallbackGlyph(string tag) => tag switch
     {
@@ -82,9 +83,9 @@ public sealed partial class MainWindow
         "usb" => "\uE88E",
         "lianli" => "\uE9CA",
         "startup" => "\uE768",
+        "themes" => "\uE8A7",
         "ui" => "\uE8A7",
         "update" => "\uE895",
-        "browsers" => "\uE774",
         "spicetify" => "\uE8D6",
         "apps" => "\uE71D",
         "privacy" => "\uE72E",
@@ -111,9 +112,9 @@ public sealed partial class MainWindow
             ["usb"] = "usb",
             ["lianli"] = "lianli",
             ["startup"] = "startup",
+            ["themes"] = "ui",
             ["ui"] = "ui",
             ["update"] = "update",
-            ["browsers"] = "browsers",
             ["spicetify"] = "spicetify",
             ["apps"] = "apps",
             ["privacy"] = "privacy",
@@ -130,29 +131,22 @@ public sealed partial class MainWindow
     private static string SidebarIconName(string section) =>
         SidebarIconMap.TryGetValue(section ?? string.Empty, out string? name) ? name : "overview";
 
-    private static readonly object SidebarIconSourceCacheGate = new();
-    private static readonly Dictionary<string, ImageSource> SidebarIconSourceCache = new(StringComparer.OrdinalIgnoreCase);
+    private static ImageSource SidebarIconSource(string name) => CachedIconSource(name);
 
-    private static ImageSource SidebarIconSource(string name)
-    {
-        lock (SidebarIconSourceCacheGate)
-        {
-            if (SidebarIconSourceCache.TryGetValue(name, out ImageSource? cached))
-                return cached;
+    // The same Segoe Fluent fallback face is used by every SVG-backed icon.
+    // Keep a single UI-thread-created WinUI FontFamily for all icon hosts
+    // instead of allocating and resolving it 21 times on cold sidebar build.
+    private static FontFamily? _sharedFallbackIconFont;
+    private static FontFamily SharedFallbackIconFont =>
+        _sharedFallbackIconFont ??= new FontFamily("Segoe Fluent Icons");
 
-            var source = new SvgImageSource(new Uri($"ms-appx:///Assets/SidebarIcons/{name}.svg", UriKind.Absolute));
-            SidebarIconSourceCache[name] = source;
-            return source;
-        }
-    }
-
-    private static FrameworkElement SidebarIcon(string section, double size)
+    private static FrameworkElement SidebarIcon(string section, double size, bool navigation = false)
     {
         string name = SidebarIconName(section);
         var fallback = new FontIcon
         {
             Glyph = FallbackGlyph(section),
-            FontFamily = new FontFamily("Segoe Fluent Icons"),
+            FontFamily = SharedFallbackIconFont,
             FontSize = Math.Max(16, size * 0.82),
             Width = 32,
             Height = 32,
@@ -164,8 +158,8 @@ public sealed partial class MainWindow
 
         var image = new Image
         {
-            Width = size,
-            Height = size,
+            Width = navigation ? 28 : Math.Max(size, 29),
+            Height = navigation ? 28 : Math.Max(size, 29),
             Opacity = 1,
             Stretch = Stretch.Uniform,
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -197,14 +191,11 @@ public sealed partial class MainWindow
 
         var host = new Grid
         {
-            Width = 36,
-            Height = 36,
+            Width = navigation ? 30 : 36,
+            Height = navigation ? 30 : 36,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
-        image.Width = Math.Max(size, 29);
-        image.Height = Math.Max(size, 29);
-        image.Opacity = 1;
         host.Children.Add(fallback);
         host.Children.Add(image);
         return host;
@@ -242,7 +233,7 @@ public sealed partial class MainWindow
         var fallback = new FontIcon
         {
             Glyph = FallbackGlyph(tag),
-            FontFamily = new FontFamily("Segoe Fluent Icons"),
+            FontFamily = SharedFallbackIconFont,
             FontSize = Math.Max(14, size * 0.72),
             Width = size,
             Height = size,

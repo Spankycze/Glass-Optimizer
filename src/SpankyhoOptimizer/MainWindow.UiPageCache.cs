@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.UI.Xaml;
@@ -13,14 +13,30 @@ public sealed partial class MainWindow
     private TweakVirtualRowViewModel[]? _uiVirtualRowsCache;
     private Dictionary<TweakDefinition, TweakVirtualRowViewModel>? _uiVirtualMapCache;
     private DateTime _uiPageCacheUsedAt;
+    private bool _uiContextRefreshQueued;
 
     private bool TryAttachUiPageCache()
     {
         if (_uiPageCache == null || _uiVirtualRowsCache == null || _uiVirtualMapCache == null)
             return false;
 
-        if (_contextMenuUiCache != null)
-            RefreshContextMenuUiStateIfStale(_contextMenuUiCache);
+        if (!_uiContextRefreshQueued && _contextMenuUiCache is { Busy: false } &&
+            DateTime.UtcNow - _contextMenuUiCacheAt > ContextMenuStateFreshness)
+        {
+            // Registry-backed context menu checks must not block cached-page navigation.
+            // Revalidate only after navigation has returned to the UI dispatcher.
+            var contextState = _contextMenuUiCache;
+            int navigationGeneration = _navigationGeneration;
+            _uiContextRefreshQueued = true;
+            bool accepted = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                _uiContextRefreshQueued = false;
+                if (navigationGeneration == _navigationGeneration && _section == "ui" &&
+                    ReferenceEquals(_contextMenuUiCache, contextState))
+                    ScheduleContextMenuUiStateRefresh(contextState);
+            });
+            if (!accepted) _uiContextRefreshQueued = false;
+        }
 
         foreach (var child in _uiPageCache)
             AttachCachedElement(child);
@@ -36,7 +52,7 @@ public sealed partial class MainWindow
 
     private void CaptureUiPageCache()
     {
-        _uiPageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _uiPageCache = SnapshotChildren(ContentStack);
         _uiVirtualRowsCache = _virtualTweakRows;
         _uiVirtualMapCache = new Dictionary<TweakDefinition, TweakVirtualRowViewModel>(_virtualTweakRowMap);
         _uiPageCacheUsedAt = DateTime.UtcNow;

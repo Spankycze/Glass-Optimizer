@@ -13,22 +13,10 @@ public static class AppUninstallService
 {
     private static readonly Dictionary<string, string[]> CleanupMap = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["Firefox"] = new[]
-        {
-            @"%APPDATA%\Mozilla\Firefox",
-            @"%LOCALAPPDATA%\Mozilla\Firefox",
-            @"%PROGRAMDATA%\Mozilla"
-        },
-        ["Google Chrome"] = new[]
-        {
-            @"%LOCALAPPDATA%\Google\Chrome",
-            @"%PROGRAMDATA%\Google\Chrome"
-        },
         ["Discord"] = new[]
         {
             @"%APPDATA%\discord",
-            @"%LOCALAPPDATA%\Discord",
-            @"%LOCALAPPDATA%\SquirrelTemp"
+            @"%LOCALAPPDATA%\Discord"
         },
         ["Steam"] = new[]
         {
@@ -54,9 +42,52 @@ public static class AppUninstallService
         }
     };
 
+    internal static string RunCleanupIdentitySmoke()
+    {
+        string[] unrelated = { "SteamVR", "Steam Client Service", "Discord Canary",
+            "Discord PTB", "BetterDiscord", "Battle.net Helper",
+            "Epic Games Launcher Tools", "Ubisoft Connect Beta" };
+        string[] supported = { "Steam", "Discord", "Battle.net",
+            "Epic Games Launcher", "Ubisoft Connect" };
+
+        foreach (string name in unrelated)
+        {
+            var item = new DetectedDesktopApp(name, "Installed", null, "Uninstall registry");
+            if (AppDetectionService.IsSupportedAppName(name) ||
+                GetCleanupPaths(item).Any())
+                throw new InvalidOperationException(
+                    "Unrelated installed app was mistaken for a cleanup target: " + name);
+        }
+
+        foreach (string name in supported)
+        {
+            var item = new DetectedDesktopApp(name, "Installed", null, "Uninstall registry");
+            if (!AppDetectionService.IsSupportedAppName(name) ||
+                !GetCleanupPaths(item).Any())
+                throw new InvalidOperationException(
+                    "Canonical app lost its known cleanup profile: " + name);
+        }
+
+        var discord = new DetectedDesktopApp("Discord", "Communication", null, "Known path");
+        if (GetCleanupPaths(discord).Any(path =>
+            string.Equals(Path.GetFileName(Path.TrimEndingDirectorySeparator(path)),
+                "SquirrelTemp", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("Global SquirrelTemp must not be deleted for Discord.");
+
+        return "APP_UNINSTALL_IDENTITY_SMOKE_OK canonical=5 unrelatedRejected=8 " +
+               "sharedSquirrelTempPreserved=true realUninstalls=0 realDeletes=0";
+    }
+
     public static async Task<AppUninstallResult> UninstallWithCleanupAsync(DetectedDesktopApp app, CancellationToken token = default)
     {
-        string safeName = (app.Name ?? string.Empty).Replace(((char)34).ToString(), string.Empty).Trim();
+        // Fail closed at the mutation boundary, even if callers bypass the
+        // curated detection list. Never launch WinGet for a lookalike product.
+        if (!AppDetectionService.IsSupportedAppName(app.Name))
+            return new AppUninstallResult(false,
+                "Aplikace není jednoznačně rozpoznaná pro bezpečnou odinstalaci a úklid.",
+                Array.Empty<string>());
+
+        string safeName = app.Name.Trim();
         if (safeName.Length == 0)
             return new AppUninstallResult(false, "Chybí název aplikace.", Array.Empty<string>());
 
@@ -111,7 +142,7 @@ public static class AppUninstallService
     {
         foreach (var pair in CleanupMap)
         {
-            if (!app.Name.Contains(pair.Key, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(app.Name.Trim(), pair.Key, StringComparison.OrdinalIgnoreCase))
                 continue;
 
             foreach (string raw in pair.Value)

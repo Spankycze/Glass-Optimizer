@@ -13,7 +13,11 @@ public static class AiPowerDemandPolicy
         AiWorkloadClass workload = AiWorkloadClass.Unknown,
         double confidence = 100)
     {
-        double load = Math.Clamp(loadPercent, 0, 100);
+        // An invalid CPU sample cannot justify switching to an economical
+        // power plan; retain performance rather than misclassifying as idle.
+        if (!double.IsFinite(loadPercent) || loadPercent < 0 || loadPercent > 100)
+            return true;
+        double load = loadPercent;
         if (gameActive || workload == AiWorkloadClass.Game)
             return true;
 
@@ -24,9 +28,13 @@ public static class AiPowerDemandPolicy
         double supportingLoad = conservative ? 40 : 25;
 
         if (load >= loadThreshold) return true;
-        if (packagePowerW is double watts && watts >= powerThreshold && load >= supportingLoad) return true;
-        if (clockMHz is double mhz && mhz >= clockThreshold && load >= supportingLoad) return true;
-        if (!conservative && confidence >= 60 && anomalyScore >= 75 && load >= 50) return true;
+        if (AiPowerTelemetryEvidencePolicy.HasUsablePower(packagePowerW) &&
+            packagePowerW!.Value >= powerThreshold && load >= supportingLoad) return true;
+        if (AiPowerTelemetryEvidencePolicy.HasUsableClock(clockMHz) &&
+            clockMHz!.Value >= clockThreshold && load >= supportingLoad) return true;
+        if (!conservative && AiPowerTelemetryEvidencePolicy.HasUsableConfidence(confidence) &&
+            AiPowerTelemetryEvidencePolicy.HasUsableAnomaly(anomalyScore) &&
+            confidence >= 60 && anomalyScore >= 75 && load >= 50) return true;
         return false;
     }
 
@@ -36,7 +44,9 @@ public static class AiPowerDemandPolicy
         double loadPercent,
         double confidence)
     {
-        if (gameActive || confidence < 55 || !double.IsFinite(predictedTemp10s))
+        if (gameActive || !AiPowerTelemetryEvidencePolicy.HasUsableConfidence(confidence) || confidence < 55 ||
+            !AiPowerTelemetryEvidencePolicy.HasUsablePredictedTemperature(predictedTemp10s) || !double.IsFinite(loadPercent) ||
+            loadPercent < 0 || loadPercent > 100)
             return false;
 
         double load = Math.Clamp(loadPercent, 0, 100);

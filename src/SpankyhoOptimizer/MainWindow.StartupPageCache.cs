@@ -11,6 +11,7 @@ public sealed partial class MainWindow
     private static readonly TimeSpan StartupPageCacheTtl = TimeSpan.FromSeconds(12);
     private List<UIElement>? _startupPageCache;
     private DateTime _startupPageCacheAt;
+    private Action? _startupSystemRowsLoad;
 
     private bool TryAttachStartupPageCache()
     {
@@ -40,6 +41,12 @@ public sealed partial class MainWindow
             });
         }
 
+        // A queued load can be canceled when the user switches sections;
+        // a cached, already-open expander would not raise Expanding again.
+        if (_startupSystemExpander is { IsExpanded: true } && _startupSystemList == null)
+            _startupSystemRowsLoad?.Invoke();
+        if (_backgroundActivityExpander is { IsExpanded: true })
+            _backgroundActivityResume?.Invoke();
         _startupPageCacheAt = DateTime.UtcNow;
         if (perf.ElapsedMilliseconds >= 3)
             LogService.Info("performance",
@@ -49,7 +56,7 @@ public sealed partial class MainWindow
 
     private void CaptureStartupPageCache()
     {
-        _startupPageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _startupPageCache = SnapshotChildren(ContentStack);
         _startupPageCacheAt = DateTime.UtcNow;
     }
 
@@ -59,5 +66,13 @@ public sealed partial class MainWindow
         _startupPageCacheAt = default;
         _startupVirtualList = null;
         _startupSystemList = null;
+        _startupSystemExpander = null;
+        _startupSystemRowsLoad = null;
+        _backgroundActivityExpander = null;
+        _backgroundActivityResume = null;
+        _backgroundActivityLoadedAt = default;
+        _backgroundActivityLoadedHost = null;
+        _backgroundActivityLoadingGeneration = -1;
+        _backgroundActivityLoadingHost = null;
     }
 }

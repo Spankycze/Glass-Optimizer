@@ -2,18 +2,6 @@ namespace SpankyhoOptimizer.Services;
 
 public static class RuntimeHostStartupPolicy
 {
-    public static bool ShouldLogVoiceRuntime(bool watchdog) =>
-        ShouldLogVoiceRuntime(watchdog, watchdogLoop: false, hardwareBridge: false);
-
-    public static bool ShouldLogVoiceRuntime(bool watchdog, bool watchdogLoop) =>
-        ShouldLogVoiceRuntime(watchdog, watchdogLoop, hardwareBridge: false);
-
-    public static bool ShouldLogVoiceRuntime(
-        bool watchdog,
-        bool watchdogLoop,
-        bool hardwareBridge) =>
-        !watchdog && !watchdogLoop && !hardwareBridge;
-
     public static bool ShouldRunInSession(
         int sessionId,
         bool watchdog,

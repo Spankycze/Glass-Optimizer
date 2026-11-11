@@ -35,9 +35,12 @@ internal static class WinhancePortCatalog
         yield return StringRegistryTweak("wh.ui.iconcachesize", "ui", "Explorer", "Icon cache = 4096", "Zvětší maximální Windows icon cache, což může omezit opakované rebuildy a chybné ikony.", RegistryHive.LocalMachine, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer", "MaxCachedIcons", "4096", false, TweakRisk.Optional, true);
         yield return ThumbnailAutoCleanupTweak(); yield return TweakFactory.Dword("wh.ui.allappslist", "ui", "Start", "All apps = seznam", "Na novém Start menu zobrazí All apps jako klasický seznam místo kategorií/gridu.", RegistryHive.CurrentUser,
             "Software\\Microsoft\\Windows\\CurrentVersion\\Start", "AllAppsViewMode", 2, null, true, false, TweakRisk.Optional, true, "Nízký", null, 26100, "Any", false);
-        yield return TweakFactory.Command("wh.ui.trayshowall", "ui", "Taskbar", "Zobrazit všechny tray ikony", "Promítne všechny aktuálně registrované ikony přímo na taskbar místo overflow menu.",
-            ct => WinhanceUiService.AreAllTrayIconsShownAsync(ct), async (on, ct) => { await WinhanceUiService.SetAllTrayIconsAsync(on, ct); await WindowsActions.RestartExplorerAsync(ct); },
-            false, TweakRisk.Optional, false, "Nízký", "Nově přidané aplikace mohou později vytvořit vlastní tray preference.", 22000, "Any", false, true);
+        yield return TweakFactory.Command("wh.ui.trayshowall", "ui", "Taskbar", "Zobrazit všechny tray ikony",
+            "Zobrazí zaregistrované ikony, ponechá nabídku skrytých pro nově spuštěné aplikace. Bez restartu Průzkumníka.",
+            ct => WinhanceUiService.AreAllTrayIconsShownAsync(ct),
+            (on, ct) => WinhanceUiService.SetAllTrayIconsAsync(on, ct),
+            false, TweakRisk.Optional, false, "Nízký",
+            "Vypnuté aplikace nemají aktivní tray ikonu. Nové ikony mohou být zpočátku v nabídce skrytých ikon.", 22000, "Any", false, true);
     }
     private static TweakDefinition PowerShellRemoteSigned() => TweakFactory.Command(
         "wh.sys.psremote", "system", "Vývojář", "PowerShell policy = RemoteSigned",

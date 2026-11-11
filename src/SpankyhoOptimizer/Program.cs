@@ -12,12 +12,35 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Explorer helpers must run before WinUI startup and without a shell process.
+        if (ContextMenuNativeActions.TryHandle(args)) return;
+
+        // The machine-wide data root feeds SYSTEM tasks (power-plan guard),
+        // AI ownership journals and the local update bridge. Never leave it
+        // writable by standard users, even on an older installation.
+        DataRootSecurityService.EnsureHardenedAcl();
+
+        if (HasArg(args, "--background-update"))
+        {
+            BackgroundUpdateService.RunOnceAsync().GetAwaiter().GetResult();
+            return;
+        }
+
         if (HasArg(args, "--fan-agent"))
         {
             if (TryForwardToRuntimeHost("--fan-agent"))
                 return;
 
             FanProfileService.RunAgentAsync().GetAwaiter().GetResult();
+            return;
+        }
+
+        if (HasArg(args, "--ai-agent"))
+        {
+            if (TryForwardToRuntimeHost("--ai-agent"))
+                return;
+
+            FanProfileService.RunAiAgentAsync().GetAwaiter().GetResult();
             return;
         }
 
@@ -49,7 +72,7 @@ public static class Program
             if (!File.Exists(host))
                 return false;
 
-            Process.Start(new ProcessStartInfo
+            using Process? started = Process.Start(new ProcessStartInfo
             {
                 FileName = host,
                 Arguments = argument,
@@ -57,7 +80,7 @@ public static class Program
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             });
-            return true;
+            return started != null;
         }
         catch
         {

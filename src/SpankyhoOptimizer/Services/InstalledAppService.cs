@@ -70,6 +70,13 @@ public static class InstalledAppService
         "Microsoft.Win32WebViewHost", "Microsoft.WindowsAppRuntime.CBS"
     };
 
+    // Shared protection rule for the catalog, user request and privileged
+    // worker. Cached UI metadata must never be the sole protection boundary.
+    internal static bool IsProtectedPackageName(string packageName) =>
+        !string.IsNullOrWhiteSpace(packageName) &&
+        ProtectedNames.Any(x => packageName.Equals(x, StringComparison.OrdinalIgnoreCase) ||
+            packageName.StartsWith(x + ".", StringComparison.OrdinalIgnoreCase));
+
     public static IReadOnlyList<InstalledAppInfo>? TryGetMemorySnapshot(bool includeLogos = false)
     {
         lock (CacheLock)
@@ -92,16 +99,32 @@ public static class InstalledAppService
         var memory = TryGetMemorySnapshot(includeLogos: false);
         if (memory != null) return memory;
 
+        // The UI uses TryGetMemorySnapshot for first paint. Merely returning
+        // the disk snapshot left that UI snapshot null, producing another
+        // loading hero and a redundant page build after every cold hydration.
+        int generation;
+        lock (CacheLock) generation = _inventoryGeneration;
         if (!UserScopedCacheService.TryRead<InstalledAppInfo[]>(
                 PersistentSummaryKey, DisplaySummaryTtl, out var persisted, out var age) ||
             persisted is not { Length: > 0 })
             return null;
 
         bool stale = age > PersistentSummaryTtl;
-        lock (CacheLock) _summaryNeedsBackgroundRefresh = stale;
+        lock (CacheLock)
+        {
+            // A refresh/explicit uninstall may have invalidated cache while
+            // the disk read was running. Never resurrect an obsolete snapshot.
+            if (generation != _inventoryGeneration) return null;
+            if (_summaryCache != null &&
+                DateTime.UtcNow - _summaryCacheAt < TimeSpan.FromMinutes(5))
+                return _summaryCache;
+            _summaryCache = persisted;
+            _summaryCacheAt = DateTime.UtcNow;
+            _summaryNeedsBackgroundRefresh = stale;
+        }
         LogService.Info("debloat", stale
-            ? $"DEBLOAT_STALE_DISPLAY_HIT count={persisted.Length} ageSec={age.TotalSeconds:0}"
-            : $"DEBLOAT_PERSISTENT_DISPLAY_HIT count={persisted.Length} ageSec={age.TotalSeconds:0}");
+            ? $"DEBLOAT_STALE_DISPLAY_HIT count={persisted.Length} ageSec={age.TotalSeconds:0} hydrated=true"
+            : $"DEBLOAT_PERSISTENT_DISPLAY_HIT count={persisted.Length} ageSec={age.TotalSeconds:0} hydrated=true");
         return persisted;
     }
 
@@ -417,7 +440,7 @@ public static class InstalledAppService
                     if (logoCacheHit) logoCacheHits++; else logoCacheMisses++;
                     if (logoRebased) logoRebaseHits++;
                 }
-                var protectedApp = ProtectedNames.Any(x => name.Equals(x, StringComparison.OrdinalIgnoreCase) || name.StartsWith(x + ".", StringComparison.OrdinalIgnoreCase));
+                var protectedApp = IsProtectedPackageName(name);
                 var category = Classify(name, publisher, protectedApp);
                 var recommended = !protectedApp && RecommendedNames.Contains(name);
                 var risk = protectedApp ? DebloatRisk.Protected : recommended ? DebloatRisk.Safe : name.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase) ? DebloatRisk.Advanced : DebloatRisk.Optional;
@@ -634,17 +657,24 @@ public static class InstalledAppService
         UserScopedCacheService.Write(PersistentLogoMapKey, snapshot);
     }
 
-    public static Task<bool> IsPackageInstalledAsync(string packageFullName, CancellationToken token = default)
+    public static Task<bool> IsPackageInstalledAsync(
+        string packageFullName, CancellationToken token = default, bool allUsers = false)
     {
         return Task.Run(() =>
         {
             token.ThrowIfCancellationRequested();
-            try
-            {
-                var pm = new PackageManager();
-                return pm.FindPackageForUser(string.Empty, packageFullName) != null;
-            }
-            catch (ArgumentException) { return false; }
+            // All-users removal requires all-users read-back at both worker
+            // and caller boundaries. A failed query is not proof of removal.
+            if (string.IsNullOrWhiteSpace(packageFullName))
+                throw new ArgumentException("Identita balíčku nesmí být prázdná.", nameof(packageFullName));
+            var pm = new PackageManager();
+            return allUsers
+                ? pm.FindPackages().Any(p =>
+                {
+                    token.ThrowIfCancellationRequested();
+                    return string.Equals(p.Id.FullName, packageFullName, StringComparison.OrdinalIgnoreCase);
+                })
+                : pm.FindPackageForUser(string.Empty, packageFullName) != null;
         }, token);
     }
 

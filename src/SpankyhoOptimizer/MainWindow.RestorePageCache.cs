@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -28,7 +28,7 @@ public sealed partial class MainWindow
         foreach (var element in _restorePageCache) AttachCachedElement(element);
         _restorePageCacheUsedAt = DateTime.UtcNow;
         if (_restoreSurfaceHost != null && _restoreSurfaceStage < 2)
-            QueueRestoreSurfaceBatch(_restoreSurfaceHost, _restoreHistoryHost, _restoreBatchHost, token);
+            QueueRestoreSurfaceBatch(_restoreSurfaceHost, _restoreHistoryHost, _restoreBatchHost, _navigationGeneration, token);
         if (DateTime.UtcNow - _restoreHistoryRefreshAt > TimeSpan.FromSeconds(5) &&
             Interlocked.CompareExchange(ref _restoreHistoryRefreshInFlight, 1, 0) == 0)
             SafeTaskService.Forget(RefreshRestoreHistoryCachedAsync(token), "restore", "Restore history refresh");
@@ -37,18 +37,27 @@ public sealed partial class MainWindow
 
     private void CaptureRestorePageCache()
     {
-        _restorePageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _restorePageCache = SnapshotChildren(ContentStack);
         _restorePageCacheAt = DateTime.UtcNow;
         _restorePageCacheUsedAt = _restorePageCacheAt;
     }
 
     private async System.Threading.Tasks.Task RefreshRestoreHistoryCachedAsync(CancellationToken token)
     {
+        int generation = _navigationGeneration;
+        StackPanel? historyHost = _restoreHistoryHost;
+        StackPanel? batchHost = _restoreBatchHost;
         try
         {
-            if (_restoreHistoryHost != null && _restoreBatchHost != null)
-                await LoadRestoreHistoryAsync(_restoreHistoryHost, _restoreBatchHost, token);
-            _restoreHistoryRefreshAt = DateTime.UtcNow;
+            if (historyHost != null && batchHost != null)
+                await LoadRestoreHistoryAsync(historyHost, batchHost, token);
+
+            if (!token.IsCancellationRequested &&
+                generation == _navigationGeneration &&
+                _section == "restore" &&
+                ReferenceEquals(_restoreHistoryHost, historyHost) &&
+                ReferenceEquals(_restoreBatchHost, batchHost))
+                _restoreHistoryRefreshAt = DateTime.UtcNow;
         }
         finally { Interlocked.Exchange(ref _restoreHistoryRefreshInFlight, 0); }
     }

@@ -1,4 +1,5 @@
-using System;
+﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,7 +11,31 @@ namespace SpankyhoOptimizer;
 
 public sealed partial class MainWindow
 {
-    private Grid? _aiRuntimeVoiceHost;
+    // Pure UI-regression assertions: no current or future-dated JSON snapshot
+    // may show ONLINE, CPU activity or a valid AI action after clock changes.
+    private static string RunAiRuntimeUiFreshnessSmoke()
+    {
+        DateTime now = new(2026, 10, 22, 7, 0, 0, DateTimeKind.Utc);
+        var fanTtl = TimeSpan.FromSeconds(10);
+        var systemTtl = TimeSpan.FromMinutes(5);
+        var powerPageTtl = TimeSpan.FromSeconds(12);
+        bool Fresh(DateTime value, TimeSpan ttl) =>
+            AiSystemSmoothnessGuardService.IsFresh(value, now, ttl);
+        foreach (var ttl in new[] { fanTtl, systemTtl, powerPageTtl })
+        {
+            if (!Fresh(now, ttl) || !Fresh(now - ttl, ttl) ||
+                Fresh(now - ttl - TimeSpan.FromTicks(1), ttl) ||
+                Fresh(now.AddTicks(1), ttl) ||
+                Fresh(new DateTime(now.Ticks, DateTimeKind.Unspecified), ttl) ||
+                Fresh(default, ttl))
+                throw new InvalidOperationException(
+                    "AI Runtime current/future status freshness policy regressed.");
+        }
+        return "AI_RUNTIME_UI_FRESHNESS_SMOKE_OK fan10s=true system5m=true " +
+               "power12s=true futureRejected=true utcRequired=true writes=0";
+    }
+
+    private readonly SemaphoreSlim _aiRuntimeRestoreGate = new(1, 1);
 
     private Task BuildAiSystemRuntimePageAsync(CancellationToken token)
     {
@@ -20,34 +45,38 @@ public sealed partial class MainWindow
         heroActions.Children.Add(PrimaryQuickButton("Ventilátory", () => ShowSectionAsync("lianli")));
         heroActions.Children.Add(QuickButton("Obnovit vše", async () =>
         {
-            await AiSystemResourceManagerService.RestoreAllNowAsync(token);
-            await RefreshAiRuntimePageAsync();
+            // Restoration must not be cancelled midway merely because the
+            // user navigates away. Reject duplicate presses while a restore
+            // transaction is already in flight.
+            if (!await _aiRuntimeRestoreGate.WaitAsync(0)) return;
+            try
+            {
+                await Task.Run(() =>
+                    AiSystemResourceManagerService.RestoreAllNowAsync(_windowLifetimeCts.Token),
+                    _windowLifetimeCts.Token);
+                if (_section == "ai-runtime")
+                    await RefreshAiRuntimePageAsync();
+            }
+            catch (OperationCanceledException) when (_windowLifetimeCts.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                LogService.Error("ai-runtime", "Restore all failed", ex);
+                if (!_windowLifetimeCts.IsCancellationRequested)
+                    await ShowMessageAsync("Obnova AI nastavení",
+                        "Obnova nebyla dokončena. Původní stav se musí ještě ověřit. " + ex.Message);
+            }
+            finally { _aiRuntimeRestoreGate.Release(); }
         }));
 
         ContentStack.Children.Add(BuildModernSectionHero(
             "ai-runtime",
             "AI System Runtime",
-            "Automatická správa napájení, tweaků, ventilátorů a systémových prostředků.",
+            "Přehled, řízení a ochrana na jedné stránce.",
             "AI RUNTIME",
-            "CPU • ventilátory • služby • tasky • volitelné ovladače",
+            "PŘEHLED • SPRÁVA WINDOWS • CLOUD • OCHRANA",
             heroActions));
 
-        var voiceCloudHost = new Grid();
-        _aiRuntimeVoiceHost = voiceCloudHost;
-        voiceCloudHost.Children.Add(new TextBlock
-        {
-            Text = "Načítám Voice AI / Cloud Brain…",
-            FontSize = 12,
-            Foreground = TextSecondaryBrush(),
-            Margin = new Thickness(2, 6, 2, 6)
-        });
-        var voiceCard = BuildDashboardExpander("Hlas a připojení AI", "Rozpoznávání řeči, účty a cloudové připojení", voiceCloudHost, expanded: false);
-        SafeTaskService.Forget(
-            LoadAiVoiceCloudDeferredAsync(voiceCloudHost, token),
-            "ai-runtime",
-            "Deferred Voice AI panel");
-
-        var bodyHost = new StackPanel { Spacing = ContentStack.Spacing };
+        var bodyHost = new StackPanel { Spacing = ContentStack.Spacing, Tag = "AiRuntimeBodyHost" };
         bodyHost.Children.Add(new TextBlock
         {
             Text = "Načítám stav AI runtime…",
@@ -55,7 +84,7 @@ public sealed partial class MainWindow
             Foreground = TextSecondaryBrush()
         });
         ContentStack.Children.Add(bodyHost);
-        ContentStack.Children.Add(voiceCard);
+
         SafeTaskService.Forget(
             LoadAiRuntimeBodyDeferredAsync(bodyHost, _navigationGeneration, token),
             "ai-runtime",
@@ -70,49 +99,63 @@ public sealed partial class MainWindow
         AiSystemRuntimeHealth? SystemHealth,
         AiCloudProfileStatus CloudStatus,
         GoogleDriveAuthStatus GoogleAuth,
-        AiSelfOptimizationHealth? SelfHealth,
-        AiNetworkRuntimeHealth? NetworkHealth,
         AdaptivePowerRuntimeStatus? PowerStatus);
 
-    private static AiRuntimePageSnapshot ReadAiRuntimePageSnapshot(CancellationToken token)
+    // Two independent read-only groups can load concurrently. The cold
+    // health/profile JSON and cloud/power/baseline metadata were previously
+    // read in series (227 ms in the last cold AI Runtime UI smoke), though
+    // their providers share no mutable state. Keep all IO off the UI thread.
+    private static async Task<AiRuntimePageSnapshot> ReadAiRuntimePageSnapshotAsync(
+        CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        FanProfile profile = FanProfileService.Load();
-        FanAgentHealth? fanHealth = FanProfileService.ReadHealthStatus();
+        var systemGroup = Task.Run(() =>
+        {
+            token.ThrowIfCancellationRequested();
+            FanProfile profile = FanProfileService.Load();
+            FanAgentHealth? fanHealth = FanProfileService.ReadHealthStatus();
+            token.ThrowIfCancellationRequested();
+            AiSystemRuntimeConfig config = AiSystemResourceManagerService.LoadConfig();
+            AiSystemRuntimeHealth? systemHealth = AiSystemResourceManagerService.ReadHealth();
+            token.ThrowIfCancellationRequested();
+            return (Profile: profile, FanHealth: fanHealth, Config: config,
+                Health: systemHealth);
+        }, token);
+        var externalGroup = Task.Run(() =>
+        {
+            token.ThrowIfCancellationRequested();
+            GoogleDriveAuthStatus google = GoogleDriveOAuthService.ReadStatus();
+            AiCloudProfileStatus cloud = AiCloudProfileService.ReadStatus(google);
+            token.ThrowIfCancellationRequested();
+            AdaptivePowerRuntimeStatus? power = AdaptivePowerRuntimeService.ReadStatus();
+            token.ThrowIfCancellationRequested();
+            return (Cloud: cloud, Auth: google, Power: power);
+        }, token);
+        await Task.WhenAll(systemGroup, externalGroup).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
-        AiSystemRuntimeConfig config = AiSystemResourceManagerService.LoadConfig();
-        AiSystemRuntimeHealth? systemHealth = AiSystemResourceManagerService.ReadHealth();
-        token.ThrowIfCancellationRequested();
-        AiCloudProfileStatus cloud = AiCloudProfileService.ReadStatus();
-        GoogleDriveAuthStatus google = GoogleDriveOAuthService.ReadStatus();
-        AiSelfOptimizationHealth? self = AiSelfOptimizationService.ReadHealth();
-        token.ThrowIfCancellationRequested();
-        AiNetworkRuntimeHealth? network = AiNetworkRuntimeService.ReadHealth();
-        AdaptivePowerRuntimeStatus? power = AdaptivePowerRuntimeService.ReadStatus();
-        return new(profile, fanHealth, config, systemHealth, cloud, google, self, network, power);
+        var a = await systemGroup.ConfigureAwait(false);
+        var b = await externalGroup.ConfigureAwait(false);
+        return new(a.Profile, a.FanHealth, a.Config, a.Health,
+            b.Cloud, b.Auth, b.Power);
     }
 
     private async Task LoadAiRuntimeBodyDeferredAsync(
         StackPanel host, int generation, CancellationToken token)
     {
-        var perf = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             // Profile IO and first-use JSON/JIT work must never occupy the dispatcher.
-            AiRuntimePageSnapshot snapshot = await Task.Run(
-                () => ReadAiRuntimePageSnapshot(token), token);
+            AiRuntimePageSnapshot snapshot =
+                await ReadAiRuntimePageSnapshotAsync(token);
             token.ThrowIfCancellationRequested();
             if (generation != _navigationGeneration || _section != "ai-runtime")
                 return;
 
-            long dataMs = perf.ElapsedMilliseconds;
             host.Children.Clear();
-            var render = await RenderAiRuntimeBodyAsync(host, snapshot, generation, token);
+            await RenderAiRuntimeBodyAsync(host, snapshot, generation, token);
             token.ThrowIfCancellationRequested();
             if (generation != _navigationGeneration || _section != "ai-runtime") return;
             SchedulePageScrollPolicyRefresh();
-            LogService.Info("performance",
-                $"AI_RUNTIME_BODY_DEFERRED dataMs={dataMs} uiMs={render.UiMs} maxStageUiMs={render.MaxStageUiMs} renderWallMs={perf.ElapsedMilliseconds - dataMs} generation={generation} workerData=true batched=true");
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception ex)
@@ -132,22 +175,11 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task<(long UiMs, long MaxStageUiMs)> RenderAiRuntimeBodyAsync(
+    private async Task RenderAiRuntimeBodyAsync(
         StackPanel host, AiRuntimePageSnapshot snapshot, int generation, CancellationToken token)
     {
-        var stagePerf = System.Diagnostics.Stopwatch.StartNew();
-        long totalUiMs = 0;
-        long maxStageUiMs = 0;
-        void FinishStage(string name)
+        async Task NextStageAsync(string _)
         {
-            long ms = stagePerf.ElapsedMilliseconds;
-            totalUiMs += ms;
-            maxStageUiMs = Math.Max(maxStageUiMs, ms);
-            LogService.Info("performance", $"AI_RUNTIME_BODY_STAGE stage={name} uiMs={ms}");
-        }
-        async Task NextStageAsync(string completed)
-        {
-            FinishStage(completed);
             token.ThrowIfCancellationRequested();
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
@@ -155,7 +187,6 @@ public sealed partial class MainWindow
                 throw new OperationCanceledException("Runtime dispatcher is shutting down.", token);
             await tcs.Task.WaitAsync(token);
             ThrowIfNavigationStale(generation, token);
-            stagePerf.Restart();
         }
 
         FanProfile profile = snapshot.Profile;
@@ -164,129 +195,180 @@ public sealed partial class MainWindow
         AiSystemRuntimeHealth? systemHealth = snapshot.SystemHealth;
         AiCloudProfileStatus cloudStatus = snapshot.CloudStatus;
         GoogleDriveAuthStatus googleAuth = snapshot.GoogleAuth;
-        AiSelfOptimizationHealth? selfHealth = snapshot.SelfHealth;
         AdaptivePowerRuntimeStatus? powerStatus = snapshot.PowerStatus;
-        bool fresh = health != null &&
-            DateTime.UtcNow - health.UpdatedUtc <= TimeSpan.FromSeconds(10);
-        bool systemFresh = systemHealth != null &&
-            DateTime.UtcNow - systemHealth.UpdatedUtc <= TimeSpan.FromMinutes(5);
-        bool powerFresh = powerStatus != null &&
-            DateTime.UtcNow - powerStatus.UpdatedUtc <= TimeSpan.FromMinutes(2);
+        // Persisted health may be future-dated after a clock correction.
+        // Reuse the existing strict UTC freshness policy: fail closed, never
+        // display a frozen future sample as ONLINE / current CPU evidence.
+        DateTime nowUtc = DateTime.UtcNow;
+        bool fresh = health != null && AiSystemSmoothnessGuardService.IsFresh(
+            health.UpdatedUtc, nowUtc, TimeSpan.FromSeconds(10));
+        bool systemFresh = systemHealth != null && AiSystemSmoothnessGuardService.IsFresh(
+            systemHealth.UpdatedUtc, nowUtc, TimeSpan.FromMinutes(5));
+        bool powerFresh = AdaptivePowerRuntimeService.IsStatusFresh(
+            powerStatus, nowUtc, TimeSpan.FromMinutes(2));
         string workload = powerFresh ? powerStatus!.Workload : "—";
-        string powerMode = powerFresh ? powerStatus!.Mode : "—";
-
         string agentState = fresh ? "ONLINE" : "STALE";
-        string confidence = fresh && health!.AiEnabled ? $"{health.AiConfidence:0} %" : "—";
-        string anomaly = fresh && health!.AiEnabled ? $"{health.AiAnomalyScore:0}" : "—";
-        string prediction = fresh && health!.AiEnabled ? $"{health.AiPredictedTemp10s:0.0} °C" : "—";
-
         host.Children.Add(BuildDashboardMetricGrid(
-            BuildDashboardMetric("Fan Agent", agentState, fresh ? $"PID {health!.ProcessId}" : "Čekám na health data", fresh ? "SpankySuccessBrush" : "SpankyWarningBrush"),
-            BuildDashboardMetric("Uspané", systemFresh ? systemHealth!.Sleeping.ToString() : "—", "Služby + tasky bez práce", "SpankySuccessBrush"),
-            BuildDashboardMetric("Blokované", systemFresh ? systemHealth!.Blocked.ToString() : "—", "Runtime safety guard", systemFresh && systemHealth!.Blocked > 0 ? "SpankyWarningBrush" : "SpankySuccessBrush"),
-            BuildDashboardMetric("AI confidence", confidence, $"Workload {workload} • CPU za 10 s {prediction}", "SpankyInfoBrush")));
+            BuildDashboardMetric("Fan Agent", agentState, fresh ? "Spuštěno" : "Stav není aktuální", fresh ? "SpankySuccessBrush" : "SpankyWarningBrush"),
+            BuildDashboardMetric("Uspané", systemFresh ? systemHealth!.Sleeping.ToString() : "—", "Služby a úlohy", "SpankySuccessBrush"),
+            BuildDashboardMetric("Napájení", systemConfig.PowerPlanEnabled ? "AI" : "Ručně", "Správa plánu", "SpankyInfoBrush"),
+            BuildDashboardMetric("CPU", fresh ? $"{health!.LoadPercent:0} %" : "—", workload, "SpankyInfoBrush")));
 
         await NextStageAsync("metrics");
         var runtimePanel = new StackPanel { Spacing = 10 };
         var master = new ToggleSwitch
         {
-            Header = "AI System Runtime",
-            OnContent = "Zapnuto",
-            OffContent = "Vypnuto",
+            Header = "Automatická správa AI",
+            OnContent = "AUTO",
+            OffContent = "OFF",
             IsOn = profile.AiSmartRuntimeEnabled && systemConfig.Enabled
         };
+        NormalizeToggleAppearance(master);
         master.Toggled += (_, _) => SafeTaskService.Forget(
-            SaveAiMasterAsync(master.IsOn), "ai-runtime", "Save AI master");
-        runtimePanel.Children.Add(master);
-
+            SaveAiMasterToggleVerifiedAsync(master), "ai-runtime", "Save AI master");
+        host.Children.Add(new Border
+        {
+            Background = SectionCardBackgroundBrush(),
+            BorderBrush = SectionBorderBrush(),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(16, 12, 16, 12),
+            Margin = new Thickness(0, 10, 0, 10),
+            Child = new StackPanel
+            {
+                Spacing = 5,
+                Children =
+                {
+                    master,
+                    new TextBlock
+                    {
+                        Text = "Jeden přepínač AI řízení. Nastavení jednotlivých funkcí zůstane uložené.",
+                        TextWrapping = TextWrapping.Wrap,
+                        FontSize = 12,
+                        Foreground = TextSecondaryBrush()
+                    }
+                }
+            }
+        });
         runtimePanel.Children.Add(new TextBlock
         {
-            Text = fresh && health!.AiEnabled
-                ? $"Režim: {health.AiMode} • workload {workload} • power {powerMode} • load {health.LoadPercent:0}% • {health.PackagePowerW:0} W • {health.AiPrediction}" +
-                  (systemFresh
-                      ? $" • System: {systemHealth!.LastAction} • maintenance {(systemHealth.LastRealIdle || systemHealth.LastLoadPercent <= 5 ? "READY" : "WAIT")} ({systemHealth.LastLoadPercent:0}% load) • cycle {systemHealth.LastCycleMs:0.0} ms • S/T/D {systemHealth.LastServiceScanMs:0.0}/{systemHealth.LastTaskScanMs:0.0}/{systemHealth.LastDriverScanMs:0.0} ms"
-                      : string.Empty)
-                : "AI runtime nemá čerstvá health data. Fan Agent se obnoví přes Task Scheduler restart-on-failure.",
+            Text = AiActivePowerRuntimeSummaryPolicy.Describe(
+                powerStatus, systemConfig.Enabled,
+                systemConfig.PowerPlanEnabled, DateTime.UtcNow),
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
             Foreground = TextSecondaryBrush()
         });
 
-        host.Children.Add(BuildDashboardExpander(
-            "AI System Runtime",
-            "Automatické napájení, síť a systémové prostředky",
-            runtimePanel,
-            expanded: true));
+        // Honest decisions, not a claimed live AI action: the GUI only has
+        // the latest persisted Agent health snapshot. A stale report is
+        // explicitly unknown, and an active game prevents new experiments.
+        string decisionSummary = !systemConfig.Enabled
+            ? "Vypnuto • automatické zásahy zastavené"
+            : !systemFresh
+                ? "Čekám na aktuální údaje RuntimeHostu • žádné domnělé úspory"
+                : systemHealth!.LastGameActive
+                    ? "Hraní • chráním hru a odkládám nové experimenty"
+                    : !systemHealth.LastRealIdle
+                        ? "Práce na PC • sleduji stav, nové experimenty odkládám"
+                        : "Klidový režim • případné změny vyžadují platné měření A/B/A";
+        runtimePanel.Children.Add(new TextBlock
+        {
+            Text = "Rozhodnutí AI (poslední vzorek): " + decisionSummary,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Foreground = TextSecondaryBrush()
+        });
+        if (systemFresh && !string.IsNullOrWhiteSpace(systemHealth!.LastAction) &&
+            !string.Equals(systemHealth.LastAction, "none", StringComparison.OrdinalIgnoreCase))
+            runtimePanel.Children.Add(new TextBlock
+            {
+                Text = "Poslední akce: " + systemHealth.LastAction,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 11,
+                Foreground = TextSecondaryBrush()
+            });
+
+        // Only current, timestamped A/B/A evidence is credited. A historical
+        // trial is a single observation, never accumulated whole-PC savings.
+        if (systemFresh && systemHealth!.RecentVerifiedWins > 0 &&
+            systemHealth.LatestVerifiedAtUtc is DateTime verifiedUtc &&
+            verifiedUtc.Kind == DateTimeKind.Utc &&
+            verifiedUtc <= DateTime.UtcNow &&
+            DateTime.UtcNow - verifiedUtc <= TimeSpan.FromDays(7) &&
+            double.IsFinite(systemHealth.LatestMeasuredCpuBenefitPp) &&
+            systemHealth.LatestMeasuredCpuBenefitPp > 0)
+        {
+            string ramBenefit = systemHealth.LatestMeasuredAvailableRamBenefitMiB is double ramMiB &&
+                double.IsFinite(ramMiB) && ramMiB >= AiPassiveMemoryTrialPolicy.MinimumObservedDifferenceMiB
+                ? $" • RAM: +{ramMiB:0.#} MiB (ověřené pozorování)" : "";
+            runtimePanel.Children.Add(new TextBlock
+            {
+                Text = $"Ověřený přínos AI: {systemHealth.LatestVerifiedTarget}" +
+                       $" • CPU -{systemHealth.LatestMeasuredCpuBenefitPp:0.###} procentního bodu" +
+                       ramBenefit + $" • {verifiedUtc.ToLocalTime():g}" +
+                       " (jeden ověřený A/B/A pokus, ne trvalá úspora ani součet výkonu PC).",
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12,
+                Foreground = TextSecondaryBrush()
+            });
+        }
+
+        // Power/verified-benefit evidence belongs with the status area,
+        // not inside another visually nested section.
+        host.Children.Add(runtimePanel);
 
         await NextStageAsync("runtime");
         var scope = new StackPanel { Spacing = 8 };
         scope.Children.Add(BuildRuntimeToggleRow(
             "Power Plan",
-            "AI řídí napájení podle zátěže, teploty a hraní. Vypnutí obnoví hodnoty změněné AI.",
+            "Plán napájení podle aktuální zátěže; po vypnutí obnova původního stavu.",
             systemConfig.PowerPlanEnabled,
-            enabled => SafeTaskService.Forget(
-                SaveAiScopeAsync(c => c with { PowerPlanEnabled = enabled }, enabled),
-                "ai-runtime", "Save power scope")));
+            enabled => SaveAiScopeAsync(c => c with { PowerPlanEnabled = enabled }, enabled)));
         scope.Children.Add(BuildRuntimeToggleRow(
-            "Internet podle naměřeného výkonu",
-            "AI dělá A/B/A měření TCP autotuningu a ponechá jen stabilní zlepšení. Vlastní DNS, MTU, gateway a NIC vlastnosti automaticky nepřepisuje.",
-            systemConfig.NetworkEnabled,
-            enabled => SafeTaskService.Forget(
-                SaveAiScopeAsync(c => c with { NetworkEnabled = enabled }, enabled),
-                "ai-runtime", "Save network scope")));
-        AiNetworkRuntimeHealth? networkHealth = snapshot.NetworkHealth;
-        if (networkHealth != null)
-        {
-            scope.Children.Add(new TextBlock
-            {
-                Text = $"Síť: {networkHealth.Phase} • ponechaná změna: {(networkHealth.Managed ? "ano" : "žádná")}\n{networkHealth.LastAction}" +
-                    NetworkEvidenceText(networkHealth) +
-                    (string.IsNullOrWhiteSpace(networkHealth.LastError) ? string.Empty : $"\n{networkHealth.LastError}"),
-                FontSize = 12, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap
-            });
-        }
-        scope.Children.Add(QuickButton("Otevřít síť a její měření", () => ShowSectionAsync("network")));
+            "Automatické priority procesů (CPU)",
+            "Bezpečné snížení priority vybraných procesů; po vypnutí obnova.",
+            systemConfig.AutomaticProcessPriorityEnabled,
+            enabled => SaveAiRuntimeConfigVerified(
+                c => c with { AutomaticProcessPriorityEnabled = enabled },
+                c => c.AutomaticProcessPriorityEnabled, enabled, restartAgent: true)));
+        scope.Children.Add(BuildRuntimeToggleRow(
+            "Automatická GPU priorita her",
+            "Aktivní hra: Normal → Above Normal; obnova při opuštění hry. FPS nejsou zaručené.",
+            systemConfig.AutomaticGameGpuPriorityEnabled,
+            enabled => SaveAiRuntimeConfigVerified(
+                c => c with { AutomaticGameGpuPriorityEnabled = enabled },
+                c => c.AutomaticGameGpuPriorityEnabled, enabled, restartAgent: true)));
+        scope.Children.Add(QuickButton("Otevřít síť", () => ShowSectionAsync("network")));
         scope.Children.Add(new TextBlock
         {
-            Text = "System/UI/Explorer/Security tweaky zůstávají ruční. AI je automaticky nemění ani nebenchmarkuje.",
+            Text = "System/UI/Explorer/Security tweaky zůstávají ruční. AI je automaticky nemění.",
             FontSize = 12,
             Foreground = TextSecondaryBrush(),
             TextWrapping = TextWrapping.Wrap
         });
         scope.Children.Add(BuildRuntimeToggleRow(
             "Služby",
-            "Jen Windows služby z bezpečného allowlistu. AI ověří stabilní background tlak, změří Candidate B, vrátí Reference A a změnu ponechá jen po potvrzeném A/B/A zlepšení.",
+            "Jen povolené volitelné služby Windows a pomocná služba Steamu při delší nečinnosti. AI ověřuje přínos a původní stav umí obnovit.",
             systemConfig.ServicesEnabled,
-            enabled =>
-            {
-                AiSystemRuntimeConfig cfg = AiSystemResourceManagerService.LoadConfig();
-                AiSystemResourceManagerService.SaveConfig(cfg with { ServicesEnabled = enabled });
-                FanProfileService.StartAgentIfNeeded();
-            }));
+            enabled => SaveAiRuntimeConfigVerified(
+                c => c with { ServicesEnabled = enabled }, c => c.ServicesEnabled, enabled, restartAgent: true)));
         scope.Children.Add(BuildRuntimeToggleRow(
-            "Scheduled Tasks",
-            "Jen systémové tasky pod Microsoft\\Windows. AI kontroluje running/trigger stav a stejně jako u služeb vyžaduje potvrzené A/B/A zlepšení s rollbackem.",
+            "Plánované úlohy",
+            "Jen bezpečně vybrané úlohy Windows a volitelný agent Firefoxu. Zásah až po ověření nečinnosti; při návratu používání obnova.",
             systemConfig.ScheduledTasksEnabled,
-            enabled =>
-            {
-                AiSystemRuntimeConfig cfg = AiSystemResourceManagerService.LoadConfig();
-                AiSystemResourceManagerService.SaveConfig(cfg with { ScheduledTasksEnabled = enabled });
-                FanProfileService.StartAgentIfNeeded();
-            }));
+            enabled => SaveAiRuntimeConfigVerified(
+                c => c with { ScheduledTasksEnabled = enabled }, c => c.ScheduledTasksEnabled, enabled, restartAgent: true)));
         scope.Children.Add(BuildRuntimeToggleRow(
             "Ovladače / zařízení",
-            "Jen allowlist volitelných Demand-start legacy driverů (Start=3), bez připojeného zařízení a po nejméně 30 minutách pozorování. Změna platí až po rebootu a AI ji nevydává za okamžitě změřený výkon.",
+            "Jen volitelné neaktivní ovladače; změny případně až po restartu Windows.",
             systemConfig.OptionalDevicesEnabled,
-            enabled =>
-            {
-                AiSystemRuntimeConfig cfg = AiSystemResourceManagerService.LoadConfig();
-                AiSystemResourceManagerService.SaveConfig(cfg with { OptionalDevicesEnabled = enabled });
-                FanProfileService.StartAgentIfNeeded();
-            }));
+            enabled => SaveAiRuntimeConfigVerified(
+                c => c with { OptionalDevicesEnabled = enabled }, c => c.OptionalDevicesEnabled, enabled, restartAgent: true)));
 
-        var maintenanceCard = BuildDashboardExpander(
+        var maintenanceCard = BuildAiRuntimeFlatCard(
             "Správa Windows",
-            "Služby a tasky vyžadují A/B/A důkaz; drivery mají konzervativní next-boot režim. Všechny AI-owned změny mají rollback a respektují ruční override.",
+            "Všechny funkce mají vlastní AUTO/OFF a bezpečné vrácení změn.",
             scope,
             expanded: true);
 
@@ -299,7 +381,7 @@ public sealed partial class MainWindow
             Margin = new Thickness(2, 4, 2, 4)
         });
         SafeTaskService.Forget(
-            LoadAiRuntimeActionsDeferredAsync(actionsHost, token),
+            LoadAiRuntimeActionsDeferredAsync(actionsHost, generation, token),
             "ai-runtime",
             "Deferred AI actions render");
 
@@ -307,17 +389,16 @@ public sealed partial class MainWindow
         var cloud = new StackPanel { Spacing = 8 };
         cloud.Children.Add(BuildRuntimeToggleRow(
             "Google Drive cloud profil",
-            googleAuth.SignedIn
-                ? $"Přihlášeno • {cloudStatus.ItemCount} položek • Drive / Spankyho Optimizer / AI"
-                : googleAuth.Configured
+            !string.IsNullOrEmpty(googleAuth.LastError)
+                ? googleAuth.LastError
+                : googleAuth.SignedIn
+                    ? $"Přihlášeno • {cloudStatus.ItemCount} položek • Drive / Glass Optimizer / AI"
+                    : googleAuth.Configured
                     ? "OAuth připraven • přihlas se přes Google"
                     : "Google přihlášení zatím není v buildu nakonfigurované.",
             systemConfig.CloudSyncEnabled,
-            enabled =>
-            {
-                AiSystemRuntimeConfig cfg = AiSystemResourceManagerService.LoadConfig();
-                AiSystemResourceManagerService.SaveConfig(cfg with { CloudSyncEnabled = enabled });
-            }));
+            enabled => SaveAiRuntimeConfigVerified(
+                c => c with { CloudSyncEnabled = enabled }, c => c.CloudSyncEnabled, enabled)));
         var cloudButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         cloudButtons.Children.Add(PrimaryQuickButton(
             googleAuth.SignedIn ? "Google přihlášen" : "Přihlásit přes Google",
@@ -331,13 +412,21 @@ public sealed partial class MainWindow
                 }
                 await RefreshAiRuntimePageAsync();
             }));
-        cloudButtons.Children.Add(QuickButton("Odhlásit", () =>
+        cloudButtons.Children.Add(QuickButton("Odhlásit", async () =>
         {
-            GoogleDriveOAuthService.SignOut();
-            return RefreshAiRuntimePageAsync();
+            // Revoking the local token involves disk operations. Keep the
+            // entire sign-out transaction off the WinUI dispatcher.
+            bool signedOut = await Task.Run(GoogleDriveOAuthService.SignOut,
+                _windowLifetimeCts.Token);
+            await RefreshAiRuntimePageAsync();
+            if (!signedOut)
+                await ShowMessageAsync("Google Drive",
+                    "Odhlášení se nepodařilo. Uložené přihlášení může být stále aktivní.");
         }));
         cloud.Children.Add(cloudButtons);
-        await NextStageAsync("cloud-auth");
+        // Keep the cancellation boundary, but the auth button group is tiny.
+        // A separate low-priority dispatcher turn here delays completed cards.
+        ThrowIfNavigationStale(generation, token);
 
         var syncButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         syncButtons.Children.Add(QuickButton("Synchronizovat teď", async () =>
@@ -352,9 +441,9 @@ public sealed partial class MainWindow
             await RefreshAiRuntimePageAsync();
         }));
         cloud.Children.Add(syncButtons);
-        var cloudCard = BuildDashboardExpander(
-            "Google Drive",
-            cloudStatus.LastSyncUtc is DateTime sync ? $"Poslední sync {sync.ToLocalTime():g}" : "Cloud profil ještě nebyl synchronizovaný",
+        var cloudCard = BuildAiRuntimeFlatCard(
+            "Cloud a záloha",
+            cloudStatus.LastSyncUtc is DateTime sync ? $"Synchronizováno {sync.ToLocalTime():g}" : "Volitelná záloha nastavení",
             cloud,
             expanded: true);
 
@@ -362,373 +451,458 @@ public sealed partial class MainWindow
         var self = new StackPanel { Spacing = 8 };
         self.Children.Add(BuildRuntimeToggleRow(
             "Self-optimalizace Optimizeru",
-            selfHealth == null
-                ? "Měří jen vlastní RuntimeHost/Optimizer a upravuje pouze vlastní polling."
-                : $"{selfHealth.State} • CPU {selfHealth.ProcessCpuPercent:0.00}% • RAM {selfHealth.WorkingSetMb:0.0} MB • GC {selfHealth.ManagedMemoryMb:0.0} MB • {selfHealth.Threads} vláken • {selfHealth.Handles} handles • tlak {selfHealth.PressureScore:0.00} • interval {selfHealth.MaintenanceIntervalSeconds}s",
+            "Automaticky omezuje vlastní zbytečnou práci na pozadí. Ostatní aplikace ani tvoje RAM nemění.",
             systemConfig.SelfOptimizationEnabled,
-            enabled =>
-            {
-                AiSystemRuntimeConfig cfg = AiSystemResourceManagerService.LoadConfig();
-                AiSystemResourceManagerService.SaveConfig(cfg with { SelfOptimizationEnabled = enabled });
-            }));
-        var selfCard = BuildDashboardExpander(
-            "Self-optimalizace",
-            "Optimalizuje jen vlastní AI runtime a Spankyho Optimizer",
+            enabled => SaveAiRuntimeConfigVerified(
+                c => c with { SelfOptimizationEnabled = enabled }, c => c.SelfOptimizationEnabled, enabled)));
+        var selfCard = BuildAiRuntimeFlatCard(
+            "Výkon Optimizeru",
+            "Sleduje a šetří prostředky pouze vlastní aplikace",
             self,
             expanded: true);
 
-        await NextStageAsync("self");
+        // The self-optimization card is already materialized locally;
+        // build the adjacent safety card without another dispatcher round trip.
+        ThrowIfNavigationStale(generation, token);
         var safety = new StackPanel { Spacing = 8 };
         safety.Children.Add(new TextBlock
         {
-            Text = "Bezpečnostní pravidla",
-            FontSize = 14,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = TextPrimaryBrush()
-        });
-        safety.Children.Add(new TextBlock
-        {
-            Text = "Žádné náhodné vypínání. Kritické Windows služby a drivery jsou blokované. Každý automatický zásah bude mít cooldown, readback a rollback. Při chybě se stav vrátí a položka se označí jako nevhodná pro automatiku.",
+            Text = "Povolené změny se ověřují a lze je vrátit. Kritické součásti Windows jsou chráněné.",
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
             Foreground = TextSecondaryBrush()
         });
-        safety.Children.Add(QuickButton("Reset learned protection", async () =>
+        safety.Children.Add(QuickButton("Zrušit naučené blokace", async () =>
         {
-            AiSystemResourceManagerService.ResetLearnedProtection();
-            await RefreshAiRuntimePageAsync();
+            // Removing learned protection allows previously failed candidates
+            // into future trials. It must be an explicit confirmed action.
+            var explanation = new TextBlock
+            {
+                Text = "Dříve neúspěšné volitelné optimalizace se mohou znovu vyhodnocovat. " +
+                       "Aktuální nastavení Windows se tímto krokem nemění.",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = TextPrimaryBrush()
+            };
+            if (!await ShowStyledContentAsync("Ochrana AI",
+                    "Opravdu chceš povolit nové pokusy u dříve zablokovaných položek?",
+                    explanation, "Zrušit blokace"))
+                return;
+            try
+            {
+                int changed = await Task.Run(
+                    AiSystemResourceManagerService.ResetLearnedProtection,
+                    _windowLifetimeCts.Token);
+                if (_section == "ai-runtime")
+                    await RefreshAiRuntimePageAsync();
+                await ShowMessageAsync("Ochrana AI",
+                    changed == 0 ? "Žádné naučené blokace nebyly změněny." :
+                    $"Naučené blokace byly zrušeny u {changed} položek.");
+            }
+            catch (OperationCanceledException) when (_windowLifetimeCts.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                LogService.Error("ai-runtime", "Learned protection reset failed", ex);
+                if (!_windowLifetimeCts.IsCancellationRequested)
+                    await ShowMessageAsync("Ochrana AI",
+                        "Naučené blokace se nepodařilo bezpečně změnit. " + ex.Message);
+            }
         }));
-        var safetyCard = BuildDashboardExpander(
-            "Safety / rollback",
-            "AI nesmí rozbít síť, USB, storage ani boot",
+        var safetyCard = BuildAiRuntimeFlatCard(
+            "Ochrana a obnova",
+            "Bez zásahů do kritických služeb, sítě, úložiště nebo startu systému",
             safety,
             expanded: true);
 
-        var dashboard = new Grid
-        {
-            ColumnSpacing = 12,
-            RowSpacing = 12
-        };
-        dashboard.ColumnDefinitions.Add(new ColumnDefinition());
-        dashboard.ColumnDefinitions.Add(new ColumnDefinition());
-        dashboard.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        dashboard.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-        Grid.SetColumn(maintenanceCard, 0);
-        Grid.SetRow(maintenanceCard, 0);
+        // One readable vertical hierarchy, not four uneven nested expanders
+        // squeezed into two columns. Everything is always visible.
+        var dashboard = new StackPanel { Spacing = 10 };
         dashboard.Children.Add(maintenanceCard);
-
-        Grid.SetColumn(cloudCard, 1);
-        Grid.SetRow(cloudCard, 0);
         dashboard.Children.Add(cloudCard);
-
-        Grid.SetColumn(selfCard, 0);
-        Grid.SetRow(selfCard, 1);
         dashboard.Children.Add(selfCard);
-
-        Grid.SetColumn(safetyCard, 1);
-        Grid.SetRow(safetyCard, 1);
         dashboard.Children.Add(safetyCard);
 
         host.Children.Add(dashboard);
         host.Children.Add(actionsHost);
-        FinishStage("safety-attach");
-        return (totalUiMs, maxStageUiMs);
+
+        // One verified switch controls only the registry guard. Network/NIC
+        // evidence is deliberately excluded from AI Runtime and from this toggle.
+        try
+        {
+            var registrySnapshot = await Task.Run(() =>
+            {
+                var values = WindowsDefaultGuardService.ScanReadOnly(token,
+                    includeNetworkObservation: false);
+                token.ThrowIfCancellationRequested();
+                var approvedGroups = values.Where(value => value.Approved)
+                    .Select(value => value.GroupId)
+                    .Distinct(StringComparer.Ordinal).Count();
+                var health = WindowsDefaultGuardService.DescribeAiWindowsRegistryHealth(
+                    values, WindowsDefaultGuardService.CanRepairMachineRegistry())
+                    .Split('\n')[0].Trim();
+                return (Health: health, ApprovedGroups: approvedGroups);
+            }, token);
+            ThrowIfNavigationStale(generation, token);
+            scope.Children.Add(BuildRuntimeToggleRow(
+                "Hlídání registrů Windows",
+                registrySnapshot.Health + " • 11 pravidel / 7 skupin. " +
+                (registrySnapshot.ApprovedGroups is > 0 and < 7
+                    ? $"Dříve zapnuto {registrySnapshot.ApprovedGroups}/7; přepínač sjednotí nastavení. "
+                    : "") +
+                "Kontrola každých 5 minut při běžícím Optimizeru. HKLM vyžaduje správce.",
+                registrySnapshot.ApprovedGroups == 7,
+                async enabled =>
+                {
+                    await Task.Run(() =>
+                    {
+                        WindowsDefaultGuardService.SetRegistryGuardEnabled(enabled);
+                        int count = WindowsDefaultGuardService.CountApprovedRegistryGroups();
+                        if (count != (enabled ? 7 : 0))
+                            throw new System.IO.IOException(
+                                "Společné schválení hlídání registrů se nepodařilo ověřit.");
+                    }, _windowLifetimeCts.Token);
+                }));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            LogService.Info("default-guard", "AI registry evidence unavailable: " + ex.GetType().Name);
+        }
+
+        // The only manual repair action for this guard sits beside its master
+        // approval in AI Runtime, never duplicated in Settings or Network.
+        scope.Children.Add(QuickButton("Opravit schválené registry (UAC)",
+            RepairApprovedRegistryDefaultsAsync));
     }
 
-    private async Task LoadAiVoiceCloudDeferredAsync(
-        Grid host,
-        CancellationToken token)
+    private async Task RepairApprovedRegistryDefaultsAsync()
     {
-        await Task.Yield();
-        token.ThrowIfCancellationRequested();
-        if (_section != "ai-runtime")
-            return;
-
-        var perf = System.Diagnostics.Stopwatch.StartNew();
-        var auth = await Task.Run(() =>
+        string[] groups = WindowsDefaultGuardService.ApprovedMachineGroups();
+        if (groups.Length == 0)
         {
-            token.ThrowIfCancellationRequested();
-            return (ChatConnected: ChatGptPlanAuthService.IsConnected,
-                HasApiKey: OpenAiVoiceSettingsService.HasApiKey);
-        }, token);
-        token.ThrowIfCancellationRequested();
-        if (_section != "ai-runtime") return;
-        long dataMs = perf.ElapsedMilliseconds;
-        StackPanel panel = BuildAiVoiceCloudPanel(token, auth.ChatConnected, auth.HasApiKey);
-        long uiMs = perf.ElapsedMilliseconds - dataMs;
-
-        token.ThrowIfCancellationRequested();
-        if (_section != "ai-runtime")
+            await ShowMessageAsync("Hlídání registrů Windows",
+                "Nemáš schválené žádné systémové registry (HKLM). Zapni nejprve společné hlídání.");
             return;
+        }
 
-        host.Children.Clear();
-        host.Children.Add(panel);
-        LogService.Info(
-            "performance",
-            $"AI_RUNTIME_VOICE_DEFERRED dataMs={dataMs} uiMs={uiMs} workerData=true");
+        try
+        {
+            // Elevation only after this explicit button press, with readback
+            // and recovery handled by the existing guarded worker operation.
+            var result = await WorkerClientService.RunAsync<DefaultGuardMachineRepairResult>(
+                "default-guard-repair",
+                WorkerPayloads.Encode(new DefaultGuardMachineRepairRequest(groups)),
+                timeout: TimeSpan.FromSeconds(90),
+                token: _windowLifetimeCts.Token);
+            bool incomplete = result.RemainingAfter != 0 || result.UnverifiedAfter != 0;
+            await ShowMessageAsync(incomplete
+                    ? "Registry – oprava není úplná"
+                    : "Registry – oprava dokončena",
+                "Sledováno: " + result.TrackedValues +
+                "\nOpraveno: " + result.AppliedChanges +
+                "\nZbývá odchylek: " + result.RemainingAfter +
+                "\nNelze ověřit: " + result.UnverifiedAfter +
+                (incomplete ? "\nNěkteré hodnoty nelze potvrdit jako výchozí." : "") +
+                "\nSíťová karta ani Green Ethernet nebyly měněny.");
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("default-guard", "Manual AI registry restore failed", ex);
+            await ShowMessageAsync("Registry – oprava se nezdařila",
+                ex.Message + "\nNepotvrzené změny nejsou označené jako opravené.");
+        }
     }
 
-    private StackPanel BuildAiVoiceCloudPanel(
-        CancellationToken token, bool chatConnected, bool hasApiKey)
+    private sealed record AiActionSnapshot(
+        int ItemCount, int Managed, int Sleeping, int Blocked,
+        int ManualRecoveryRequired,
+        AiRuntimeBlockedSummaryPolicy.Summary BlockBreakdown,
+        AiSystemRuntimeItemState[] VisibleItems, AiSystemActionHistoryEntry[] History);
+
+    // Build counts and top 24 on the worker, not via repeated UI LINQ Count
+    // passes. Sorting a Take-limited view leaves cached source data untouched.
+    private static AiActionSnapshot BuildAiActionsSnapshot(
+        IReadOnlyList<AiSystemRuntimeItemState> source,
+        IReadOnlyList<AiSystemActionHistoryEntry> history)
     {
-        var voiceCloudPanel = new StackPanel { Spacing = 10 };
-        voiceCloudPanel.Children.Add(new TextBlock
+        int managed = 0, sleeping = 0, blocked = 0;
+        int recoveryRequired = 0;
+        int protectedItems = 0, unavailable = 0, unreadable = 0, other = 0;
+        foreach (var item in source)
         {
-            Text = "OpenAI GPT-6 Sol",
-            FontSize = 16,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
-        });
-        voiceCloudPanel.Children.Add(new TextBlock
-        {
-            Text = "Hlavní mozek Voice AI. OpenAI GPT-6 Sol + cloud STT + lokální systémové nástroje.",
-            TextWrapping = TextWrapping.Wrap,
-            FontSize = 12,
-            Foreground = TextSecondaryBrush()
-        });
-
-        var providerRow = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 10
-        };
-        providerRow.Children.Add(new TextBlock
-        {
-            Text = "Provider: OpenAI",
-            VerticalAlignment = VerticalAlignment.Center,
-            FontSize = 12
-        });
-        providerRow.Children.Add(new TextBlock
-        {
-            Text = chatConnected
-                ? "Model: podle ChatGPT účtu"
-                : "Model: gpt-6-sol (API fallback)",
-            VerticalAlignment = VerticalAlignment.Center,
-            FontSize = 12
-        });
-        voiceCloudPanel.Children.Add(providerRow);
-
-        var apiKeyBox = new PasswordBox
-        {
-            PlaceholderText = hasApiKey
-                ? "API klíč je uložený — vlož nový jen pokud ho chceš změnit"
-                : "Vlož OpenAI API klíč",
-            PasswordRevealMode = PasswordRevealMode.Peek,
-            MaxWidth = 520,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            IsHitTestVisible = true,
-            IsEnabled = true
-        };
-        voiceCloudPanel.Children.Add(apiKeyBox);
-
-        var voiceCloudStatus = new TextBlock
-        {
-            Text = chatConnected
-                ? "ChatGPT plán: připojený — používá se před API klíčem"
-                : hasApiKey
-                    ? "ChatGPT plán: nepřipojený • API klíč: uložený fallback"
-                    : "ChatGPT plán: nepřipojený • API klíč: nenastavený",
-            FontSize = 12,
-            Foreground = chatConnected || hasApiKey
-                ? SuccessBrush()
-                : WarningBrush()
-        };
-        voiceCloudPanel.Children.Add(voiceCloudStatus);
-
-        var voiceButtons = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = 8,
-            MaxWidth = 520,
-            HorizontalAlignment = HorizontalAlignment.Left
-        };
-
-        var signInChatGpt = new Button
-        {
-            Content = chatConnected
-                ? "Obnovit ChatGPT přihlášení"
-                : "Pokračovat přes ChatGPT",
-            MinWidth = 190,
-            Height = 34
-        };
-        signInChatGpt.Click += (_, _) =>
-        {
-            _ = SignInChatGptAsync(signInChatGpt, voiceCloudStatus, token);
-        };
-        voiceButtons.Children.Add(signInChatGpt);
-
-        var disconnectChatGpt = new Button
-        {
-            Content = "Odpojit ChatGPT",
-            MinWidth = 135,
-            Height = 34,
-            IsEnabled = chatConnected
-        };
-        disconnectChatGpt.Click += (_, _) =>
-        {
-            ChatGptPlanAuthService.SignOut();
-            ChatGptPlanConversationService.Reset();
-            bool apiKeyAvailable = OpenAiVoiceSettingsService.HasApiKey;
-            voiceCloudStatus.Text = apiKeyAvailable
-                ? "ChatGPT plán odpojený • používá se API key fallback."
-                : "ChatGPT plán odpojený.";
-            voiceCloudStatus.Foreground = apiKeyAvailable
-                ? SuccessBrush()
-                : WarningBrush();
-            disconnectChatGpt.IsEnabled = false;
-            signInChatGpt.Content = "Pokračovat přes ChatGPT";
-        };
-        voiceButtons.Children.Add(disconnectChatGpt);
-
-        var pasteVoiceKey = new Button
-        {
-            Content = "Vložit ze schránky",
-            MinWidth = 150,
-            Height = 34,
-            IsHitTestVisible = true,
-            IsEnabled = true
-        };
-        pasteVoiceKey.Click += (_, _) =>
-        {
-            if (!NativeClipboardService.TryGetText(out string clipboardText))
+            if (item.Managed) managed++;
+            if (item.Sleeping) sleeping++;
+            if (AiRuntimeBlockedSummaryPolicy.RequiresManualRecovery(item.BlockedReason))
+                recoveryRequired++;
+            // Optional Wi-Fi/printer/per-user observations are inventory,
+            // not failed mutation attempts. Agree with the overview counter.
+            if (AiOptionalFeatureSummaryPolicy.IsPassiveObservation(item))
+                continue;
+            switch (AiRuntimeBlockedSummaryPolicy.Classify(item.BlockedReason))
             {
-                voiceCloudStatus.Text = "CHYBA: schránku se nepodařilo přečíst.";
-                voiceCloudStatus.Foreground = WarningBrush();
-                return;
+                case AiRuntimeBlockedSummaryPolicy.Category.Protected: protectedItems++; blocked++; break;
+                // Optional component absent from this Windows installation is
+                // an inventory fact, NOT a failed/blocked AI intervention.
+                case AiRuntimeBlockedSummaryPolicy.Category.Unavailable:
+                    if (item.Managed || item.Sleeping) { protectedItems++; blocked++; }
+                    else unavailable++;
+                    break;
+                case AiRuntimeBlockedSummaryPolicy.Category.Unreadable:
+                    if (item.Managed || item.Sleeping) { protectedItems++; blocked++; }
+                    else unreadable++;
+                    break;
+                case AiRuntimeBlockedSummaryPolicy.Category.Other: other++; blocked++; break;
             }
-
-            apiKeyBox.Password = clipboardText;
-            voiceCloudStatus.Text = $"KLÍČ NAČTEN ({clipboardText.Length} znaků)";
-            voiceCloudStatus.Foreground = SuccessBrush();
-        };
-        voiceButtons.Children.Add(pasteVoiceKey);
-
-        var saveVoiceKey = new Button
-        {
-            Content = "Uložit API klíč",
-            MinWidth = 145,
-            Height = 34,
-            IsHitTestVisible = true,
-            IsEnabled = true
-        };
-        saveVoiceKey.Click += (_, _) =>
-        {
-            string entered = apiKeyBox.Password?.Trim() ?? string.Empty;
-
-            if (entered.Length == 0 &&
-                NativeClipboardService.TryGetText(out string clipboardText))
-            {
-                entered = clipboardText;
-                apiKeyBox.Password = clipboardText;
-                voiceCloudStatus.Text =
-                    $"KLÍČ NAČTEN ZE SCHRÁNKY ({clipboardText.Length} znaků)";
-                voiceCloudStatus.Foreground = SuccessBrush();
-            }
-
-            if (entered.Length == 0)
-            {
-                voiceCloudStatus.Text = "CHYBA: API klíč je prázdný.";
-                voiceCloudStatus.Foreground = WarningBrush();
-                return;
-            }
-
-            OpenAiVoiceSettingsService.SaveApiKey(entered);
-            apiKeyBox.Password = string.Empty;
-            voiceCloudStatus.Text =
-                "ULOŽENO: API klíč je šifrovaně uložený.";
-            voiceCloudStatus.Foreground = SuccessBrush();
-            OpenAiConversationService.Reset();
-        };
-        voiceButtons.Children.Add(saveVoiceKey);
-
-        var testVoiceKey = new Button
-        {
-            Content = "Test připojení",
-            MinWidth = 135,
-            Height = 34,
-            IsHitTestVisible = true,
-            IsEnabled = true
-        };
-        testVoiceKey.Click += (_, _) =>
-        {
-            _ = TestVoiceCloudConnectionAsync(
-                apiKeyBox,
-                voiceCloudStatus,
-                token);
-        };
-        voiceButtons.Children.Add(testVoiceKey);
-        voiceCloudPanel.Children.Add(voiceButtons);
-
-        var voiceCloudDirectHost = new StackPanel
-        {
-            Spacing = 10,
-            Margin = new Thickness(0, 8, 0, 8),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            IsHitTestVisible = true
-        };
-        voiceCloudDirectHost.Children.Add(new TextBlock
-        {
-            Text = "Voice AI / Cloud Brain",
-            FontSize = 14.5,
-            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
-            Foreground = TextPrimaryBrush()
-        });
-        voiceCloudDirectHost.Children.Add(new TextBlock
-        {
-            Text = "ChatGPT plán přes bezpečné OAuth přihlášení • OpenAI/Gemini cloud STT • bez lokálního Whisperu",
-            FontSize = 12,
-            Foreground = _darkTheme
-                ? ThemeColor(184, 192, 205)
-                : TextSecondaryBrush(),
-            TextWrapping = TextWrapping.Wrap
-        });
-        voiceCloudDirectHost.Children.Add(voiceCloudPanel);
-        voiceCloudPanel.IsHitTestVisible = true;
-
-        return voiceCloudDirectHost;
+        }
+        // Retain missing/unreadable items in the visible inventory; do not
+        // pretend they never existed or that a user removed them. Prefer real
+        // AI-owned actions, vetoes and failures when the panel has only 8 rows.
+        AiSystemRuntimeItemState[] visible = source
+            .OrderByDescending(x => AiRuntimeBlockedSummaryPolicy.RequiresManualRecovery(x.BlockedReason))
+            .ThenByDescending(x => x.Managed || x.Sleeping)
+            .ThenByDescending(AiOptionalFeatureSummaryPolicy.CountsAsBlocked)
+            .ThenBy(x => x.Kind)
+            .ThenBy(x => x.Id)
+            .Take(8).ToArray();
+        return new(source.Count, managed, sleeping, blocked,
+            recoveryRequired, new(protectedItems, unavailable, other, Unreadable: unreadable),
+            visible, history.ToArray());
     }
 
+    // Read-only explanation tailored to the actual Windows generation.
+    // AI discovery lists historically included retired Windows services;
+    // those entries are NOT proof the user removed a service manually.
+    private static string ExplainMissingWindowsComponent(
+        string kind, string id, int windowsBuild)
+    {
+        if (!string.Equals(kind, "service", StringComparison.OrdinalIgnoreCase))
+            return "Windows tuto položku pod uvedeným názvem nenašel. Není to důkaz ručního odstranění.";
+        if (windowsBuild >= 26100 &&
+            string.Equals(id, "AJRouter", StringComparison.OrdinalIgnoreCase))
+            return "AllJoyn Router byl Microsoftem odstraněn ve Windows 11 24H2; ve 26H2 se již neočekává.";
+        if (windowsBuild >= 26100 &&
+            string.Equals(id, "SharedRealitySvc", StringComparison.OrdinalIgnoreCase))
+            return "Souvisí s prostorovými funkcemi starších Windows. Windows Mixed Reality bylo odstraněno od 24H2; chybějící služba nemusí znamenat závadu.";
+        if (string.Equals(id, "Fax", StringComparison.OrdinalIgnoreCase))
+            return "Windows Fax and Scan je volitelná funkce a od Windows 11 22H2 není standardně předinstalovaná.";
+        if (string.Equals(id, "WMPNetworkSvc", StringComparison.OrdinalIgnoreCase))
+            return "Sdílení médií klasického Windows Media Playeru. Jeho služba není nezbytná pro běžný provoz systému.";
+        if (string.Equals(id, "diagnosticshub.standardcollector.service", StringComparison.OrdinalIgnoreCase))
+            return "Sběrač Microsoft Diagnostics Hub; v tomto sestavení jeho povinnou přítomnost nelze potvrdit.";
+        return "Windows tuto službu pod daným názvem nenalezl; neznamená to, že ji uživatel odstranil.";
+    }
+
+    private static string RunAiActionsSnapshotSmoke()
+    {
+        // Exercise all three Windows component catalogs with synthetic Windows
+        // 23H2/26H2 snapshots before the AI activity rendering regression.
+        LogService.Info("release-ui-smoke", WindowsComponentCatalogPolicy.RunFunctionalSmoke());
+        AiSystemRuntimeItemState[] fixture = Enumerable.Range(0, 96)
+            .Select(i => new AiSystemRuntimeItemState(
+                i % 3 == 0 ? "Service" : i % 3 == 1 ? "Task" : "Driver",
+                $"Fixture-{i:D3}", i % 5 == 0, i % 7 == 0,
+                i % 11 == 0 ? "Blocked" : "",
+                null, null, null, null, false, 0, "Observed"))
+            .ToArray();
+        AiSystemActionHistoryEntry[] history = [];
+        var actual = BuildAiActionsSnapshot(fixture, history);
+        var expected = fixture.OrderByDescending(x => x.Managed || x.Sleeping)
+            .ThenByDescending(AiOptionalFeatureSummaryPolicy.CountsAsBlocked)
+            .ThenBy(x => x.Kind).ThenBy(x => x.Id).Take(8).ToArray();
+        if (actual.ItemCount != fixture.Length ||
+            actual.Managed != fixture.Count(x => x.Managed) ||
+            actual.Sleeping != fixture.Count(x => x.Sleeping) ||
+            actual.Blocked != fixture.Count(x => !string.IsNullOrWhiteSpace(x.BlockedReason)) ||
+            actual.BlockBreakdown.Total != actual.Blocked ||
+            actual.BlockBreakdown.Other != fixture.Count(x => !string.IsNullOrWhiteSpace(x.BlockedReason)) ||
+            actual.BlockBreakdown.Unavailable != 0 ||
+            actual.BlockBreakdown.Protected != 0 ||
+            !expected.SequenceEqual(actual.VisibleItems) ||
+            !fixture.Select(x => x.Id).SequenceEqual(Enumerable.Range(0, 96).Select(i => $"Fixture-{i:D3}")))
+            throw new InvalidOperationException("AI Actions order/count/source immutability regression.");
+
+        // Windows 26H2 must not treat discontinued AllJoyn as a mysteriously
+        // removed user service; similarly don't pretend a legacy optional
+        // feature like Fax is mandatory, nor overstate why Diagnostics Hub
+        // is absent. These explanations are read-only and version-aware.
+        if (!ExplainMissingWindowsComponent("service", "AJRouter", 26300).Contains("24H2") ||
+            ExplainMissingWindowsComponent("service", "AJRouter", 22621).Contains("24H2") ||
+            !ExplainMissingWindowsComponent("service", "Fax", 26300).Contains("volitelná") ||
+            !ExplainMissingWindowsComponent("service", "SharedRealitySvc", 26300).Contains("Mixed Reality") ||
+            !ExplainMissingWindowsComponent("service", "WMPNetworkSvc", 26300).Contains("Media Playeru") ||
+            !ExplainMissingWindowsComponent("service", "diagnosticshub.standardcollector.service", 26300).Contains("nelze potvrdit") ||
+            !ExplainMissingWindowsComponent("driver", "parvdm", 26300).Contains("není to důkaz", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("AI missing Windows components explanations are inaccurate.");
+
+        // Preserve all absent/unknown items in the inventory, without
+        // misreporting missing optional resources as failed AI changes.
+        // Real owned items must lead the eight visible cards.
+        AiSystemRuntimeItemState[] missingFixture = Enumerable.Range(0, 24)
+            .Select(i => new AiSystemRuntimeItemState("service", $"Missing-{i:D2}",
+                false, false, i % 2 == 0 ? "not installed" : "not installed/unreadable",
+                null, null, null, null, false, 0, "none"))
+            .Append(new AiSystemRuntimeItemState("service", "ProtectedReal",
+                false, false, "critical denylist",
+                null, null, null, null, false, 0, "none"))
+            .Append(new AiSystemRuntimeItemState("driver", "MissingOwned",
+                true, true, "not installed",
+                null, null, 3, null, false, 0, "managed"))
+            .ToArray();
+        var absent = BuildAiActionsSnapshot(missingFixture, history);
+        if (absent.Blocked != 2 || absent.BlockBreakdown.Unavailable != 12 ||
+            absent.BlockBreakdown.Unreadable != 12 ||
+            absent.BlockBreakdown.Protected != 2 || absent.BlockBreakdown.Other != 0 ||
+            absent.ItemCount != 26 || absent.VisibleItems.Length != 8 ||
+            absent.VisibleItems[0].Id != "MissingOwned" ||
+            absent.VisibleItems[1].Id != "ProtectedReal" ||
+            !absent.VisibleItems.Skip(2).All(x => x.Id.StartsWith("Missing-", StringComparison.Ordinal)) ||
+            missingFixture.Length != 26 ||
+            AiRuntimeBlockedSummaryPolicy.Classify("not installed/unreadable") !=
+                AiRuntimeBlockedSummaryPolicy.Category.Unreadable ||
+            AiRuntimeBlockedSummaryPolicy.Classify("task status unreadable") !=
+                AiRuntimeBlockedSummaryPolicy.Category.Unreadable ||
+            AiRuntimeBlockedSummaryPolicy.Classify("service status unreadable") !=
+                AiRuntimeBlockedSummaryPolicy.Category.Unreadable ||
+            AiOptionalFeatureSummaryPolicy.CountsAsBlocked(missingFixture[0]) ||
+            AiOptionalFeatureSummaryPolicy.CountsAsBlocked(missingFixture[1]) ||
+            !AiOptionalFeatureSummaryPolicy.CountsAsBlocked(missingFixture[^1]) ||
+            !TaskSchedulerComService.IsMissingTaskError(unchecked((int)0x80070002)) ||
+            !TaskSchedulerComService.IsMissingTaskError(unchecked((int)0x8004130F)) ||
+            TaskSchedulerComService.IsMissingTaskError(unchecked((int)0x80070005)))
+            throw new InvalidOperationException(
+                "AI activity miscounted absent components as blockers or hid a real managed resource.");
+
+        // Read-only optional-feature observations can greatly outnumber
+        // actual vetoes. The limited panel must show real blocked candidates
+        // first, and never mislabel passive inventory as attempted actions.
+        var passiveInventory = Enumerable.Range(0, 32).Select(i =>
+            new AiSystemRuntimeItemState("service", $"Passive-{i:D2}",
+                false, false, "Sledování [Wi-Fi]: stav není ověřen",
+                null, null, null, null, false, 0, "none",
+                FeatureObservationSamples: 4))
+            .Append(new AiSystemRuntimeItemState("service", "ProtectedImportant",
+                false, false, "critical denylist",
+                null, null, null, null, false, 0, "none"))
+            .ToArray();
+        var ranked = BuildAiActionsSnapshot(passiveInventory, history);
+        if (ranked.Blocked != 1 || ranked.BlockBreakdown.Protected != 1 ||
+            ranked.BlockBreakdown.Unavailable != 0 ||
+            ranked.BlockBreakdown.Other != 0 ||
+            ranked.VisibleItems[0].Id != "ProtectedImportant" ||
+            !AiOptionalFeatureSummaryPolicy.IsPassiveObservation(ranked.VisibleItems[1]))
+            throw new InvalidOperationException(
+                "AI Actions passive observation counted as blocker or hid a real safety veto.");
+
+        // Two owned, stopped Windows resources needing MANUAL restoration
+        // cannot disappear behind a crowded 8-row preview, nor be presented
+        // as safely stopped or restored. All fixtures remain in memory only.
+        const string manualCz = "cesta spravované služby se změnila; ruční obnova nutná, AI záznam zachován";
+        const string manualEn = "missing safe original start value; manual recovery required";
+        AiSystemRuntimeItemState[] recoveryFixture = Enumerable.Range(0, 24)
+            .Select(i => new AiSystemRuntimeItemState(
+                "service", $"Owned-{i:D2}", true, i % 2 == 0,
+                string.Empty, null, null, 3, null, false, 0, "managed"))
+            .Append(new AiSystemRuntimeItemState(
+                "service", "RestoreService", true, true, manualCz,
+                null, null, 3, null, false, 0, "manual"))
+            .Append(new AiSystemRuntimeItemState(
+                "driver", "RestoreDriver", true, true, manualEn,
+                null, null, 3, null, false, 0, "manual"))
+            .ToArray();
+        var recoveries = BuildAiActionsSnapshot(recoveryFixture, history);
+        if (recoveries.ManualRecoveryRequired != 2 ||
+            recoveries.BlockBreakdown.Protected != 2 ||
+            recoveries.Blocked != 2 ||
+            recoveries.VisibleItems.Length != 8 ||
+            recoveries.VisibleItems[0].Id != "RestoreDriver" ||
+            recoveries.VisibleItems[1].Id != "RestoreService" ||
+            !AiRuntimeBlockedSummaryPolicy.RequiresManualRecovery(
+                recoveries.VisibleItems[0].BlockedReason) ||
+            !AiRuntimeBlockedSummaryPolicy.RequiresManualRecovery(
+                recoveries.VisibleItems[1].BlockedReason) ||
+            AiRuntimeBlockedSummaryPolicy.RequiresManualRecovery("not installed") ||
+            recoveryFixture.Length != 26)
+            throw new InvalidOperationException(
+                "AI manual-recovery warning was hidden, miscounted or mistaken for a routine stop.");
+
+        static int Legacy(AiSystemRuntimeItemState[] items)
+        {
+            var all = items.ToArray();
+            var visible = all.OrderByDescending(x => x.Managed || x.Sleeping)
+                .ThenBy(x => x.Kind).ThenBy(x => x.Id).Take(24).ToArray();
+            return all.Count(x => x.Managed) + all.Count(x => x.Sleeping) +
+                all.Count(x => !string.IsNullOrWhiteSpace(x.BlockedReason)) +
+                Math.Min(8, visible.Length);
+        }
+        _ = Legacy(fixture);
+        _ = BuildAiActionsSnapshot(fixture, history);
+        const int iterations = 1024;
+        long oldBytes = GC.GetAllocatedBytesForCurrentThread();
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        int oldChecksum = 0;
+        for (int i = 0; i < iterations; i++) oldChecksum += Legacy(fixture);
+        double oldMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        oldBytes = GC.GetAllocatedBytesForCurrentThread() - oldBytes;
+
+        long newBytes = GC.GetAllocatedBytesForCurrentThread();
+        start = System.Diagnostics.Stopwatch.GetTimestamp();
+        int newChecksum = 0;
+        for (int i = 0; i < iterations; i++)
+        {
+            var snapshot = BuildAiActionsSnapshot(fixture, history);
+            newChecksum += snapshot.Managed + snapshot.Sleeping + snapshot.Blocked + snapshot.VisibleItems.Length;
+        }
+        double newMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        newBytes = GC.GetAllocatedBytesForCurrentThread() - newBytes;
+        if (oldChecksum != newChecksum || newBytes >= oldBytes)
+            throw new InvalidOperationException(
+                $"AI Actions data preparation regression oldChecksum={oldChecksum} newChecksum={newChecksum} oldAllocB={oldBytes} newAllocB={newBytes}.");
+
+        return $"AI_ACTIONS_SNAPSHOT_BENCH_OK rows={fixture.Length} iterations={iterations} " +
+            $"oldMs={oldMs:F3} newMs={newMs:F3} oldAllocB={oldBytes} newAllocB={newBytes} " +
+            "orderIdentical=true countsIdentical=true missingInventoryVisible=true " +
+            "taskReadFailureDistinguished=true serviceReadFailureDistinguished=true " +
+            "missingOwnedRetained=true sourceUnchanged=true writes=0";
+    }
     private async Task LoadAiRuntimeActionsDeferredAsync(
         Grid host,
+        int generation,
         CancellationToken token)
     {
-        var perf = System.Diagnostics.Stopwatch.StartNew();
-        var snapshot = await Task.Run(() =>
+        try
+        {
+        var loaded = await Task.Run(() =>
         {
             token.ThrowIfCancellationRequested();
-            AiSystemRuntimeItemState[] allItems =
-                AiSystemResourceManagerService.ReadItems().ToArray();
-            AiSystemRuntimeItemState[] visibleItems = allItems
-                .OrderByDescending(x => x.Managed || x.Sleeping)
-                .ThenBy(x => x.Kind)
-                .ThenBy(x => x.Id)
-                .Take(24)
-                .ToArray();
-
             return (
-                AllItems: allItems,
-                VisibleItems: visibleItems,
-                History: AiSystemResourceManagerService.ReadActionHistory().ToArray());
+                Actions: BuildAiActionsSnapshot(
+                    AiSystemResourceManagerService.ReadItems(),
+                    AiSystemResourceManagerService.ReadActionHistory()),
+                Feedback: AiThirdPartyIdleAutomationService.ReadFeedbackForUi());
         }, token);
+        var snapshot = loaded.Actions;
 
         token.ThrowIfCancellationRequested();
-        if (_section != "ai-runtime")
+        if (generation != _navigationGeneration || _section != "ai-runtime")
             return;
 
-        long dataMs = perf.ElapsedMilliseconds;
         var actions = new Grid { ColumnSpacing = 8, RowSpacing = 8 };
         actions.ColumnDefinitions.Add(new ColumnDefinition());
         actions.ColumnDefinitions.Add(new ColumnDefinition());
 
-        Border shell = BuildDashboardExpander(
-            "AI Actions",
-            $"Spravované {snapshot.AllItems.Count(x => x.Managed)} • zastavené {snapshot.AllItems.Count(x => x.Sleeping)} • blokované {snapshot.AllItems.Count(x => !string.IsNullOrWhiteSpace(x.BlockedReason))} • historie {snapshot.History.Length} • zobrazeno max 24",
+        Border shell = BuildAiRuntimeFlatCard(
+            "Aktivita AI",
+            $"Spravované {snapshot.Managed} • pozastavené {snapshot.Sleeping} • blokované {snapshot.Blocked}" +
+            (snapshot.BlockBreakdown.Unavailable > 0
+                ? $" • nenalezené {snapshot.BlockBreakdown.Unavailable}" : string.Empty) +
+            (snapshot.BlockBreakdown.Unreadable > 0
+                ? $" • stav neověřen {snapshot.BlockBreakdown.Unreadable}" : string.Empty) +
+            (snapshot.ManualRecoveryRequired > 0
+                ? $" • RUČNÍ OBNOVA {snapshot.ManualRecoveryRequired}" : string.Empty),
             actions,
             expanded: true);
 
         host.Children.Clear();
         host.Children.Add(shell);
-        long shellMs = perf.ElapsedMilliseconds - dataMs;
 
         if (snapshot.VisibleItems.Length == 0)
         {
@@ -743,24 +917,39 @@ public sealed partial class MainWindow
 
         const int batchSize = 4;
         int actionIndex = 0;
-        long maxBatchUiMs = 0;
-        long totalCardUiMs = 0;
-        var batchPerf = System.Diagnostics.Stopwatch.StartNew();
 
+        // Compact activity preview: totals still cover the full inventory;
+        // rendering dozens of full cards inflated the entire always-open page.
         foreach (AiSystemRuntimeItemState item in snapshot.VisibleItems)
         {
             token.ThrowIfCancellationRequested();
-            if (_section != "ai-runtime")
+            if (generation != _navigationGeneration || _section != "ai-runtime")
                 return;
 
-            string status = item.Sleeping
-                ? "ZASTAVENO"
-                : !string.IsNullOrWhiteSpace(item.BlockedReason)
-                    ? "BLOKOVÁNO"
-                    : item.Managed ? "SPRAVOVÁNO" : "SLEDOVÁNO";
-            string detail = !string.IsNullOrWhiteSpace(item.BlockedReason)
-                ? item.BlockedReason
-                : item.LastAction;
+            string status = AiRuntimeBlockedSummaryPolicy.RequiresManualRecovery(item.BlockedReason)
+                ? "RUČNÍ OBNOVA"
+                : item.Sleeping
+                    ? "ZASTAVENO"
+                : AiOptionalFeatureSummaryPolicy.IsPassiveObservation(item)
+                    ? "SLEDOVÁNO"
+                : AiRuntimeBlockedSummaryPolicy.Classify(item.BlockedReason) switch
+                {
+                    AiRuntimeBlockedSummaryPolicy.Category.Unavailable => "NENÍ REGISTROVÁNO",
+                    AiRuntimeBlockedSummaryPolicy.Category.Unreadable => "NEOVĚŘENO",
+                    AiRuntimeBlockedSummaryPolicy.Category.Protected => "CHRÁNĚNÉ",
+                    AiRuntimeBlockedSummaryPolicy.Category.Other => "BLOKOVÁNO",
+                    _ => item.Managed ? "SPRAVOVÁNO" : "SLEDOVÁNO"
+                };
+            string detail = AiRuntimeBlockedSummaryPolicy.Classify(item.BlockedReason) switch
+            {
+                AiRuntimeBlockedSummaryPolicy.Category.Unavailable =>
+                    ExplainMissingWindowsComponent(item.Kind, item.Id,
+                        Environment.OSVersion.Version.Build),
+                AiRuntimeBlockedSummaryPolicy.Category.Unreadable =>
+                    "Stav se nepodařilo spolehlivě načíst. Nelze potvrdit, zda je položka přítomná.",
+                _ => !string.IsNullOrWhiteSpace(item.BlockedReason)
+                    ? item.BlockedReason : item.LastAction
+            };
             if (item.LastChangedUtc is DateTime changed)
                 detail += $" • {changed.ToLocalTime():g}";
             if (actionIndex % 2 == 0)
@@ -776,18 +965,46 @@ public sealed partial class MainWindow
             actionIndex++;
 
             if (actionIndex % batchSize == 0)
-            {
-                long batchMs = batchPerf.ElapsedMilliseconds;
-                totalCardUiMs += batchMs;
-                maxBatchUiMs = Math.Max(maxBatchUiMs, batchMs);
-                batchPerf.Restart();
                 await Task.Yield();
-            }
         }
 
-        long tailBatchMs = batchPerf.ElapsedMilliseconds;
-        totalCardUiMs += tailBatchMs;
-        maxBatchUiMs = Math.Max(maxBatchUiMs, tailBatchMs);
+        token.ThrowIfCancellationRequested();
+        if (generation != _navigationGeneration || _section != "ai-runtime")
+            return;
+
+        if (snapshot.ItemCount > snapshot.VisibleItems.Length)
+        {
+            actions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var more = new TextBlock
+            {
+                Text = $"Zobrazeno 8 nejdůležitějších z {snapshot.ItemCount} sledovaných položek.",
+                FontSize = 11,
+                Foreground = TextSecondaryBrush()
+            };
+            Grid.SetColumnSpan(more, 2);
+            Grid.SetRow(more, actions.RowDefinitions.Count - 1);
+            actions.Children.Add(more);
+        }
+
+        // Honest live automatic-program outcomes, read from the existing
+        // atomic ownership journal ONCE per page navigation. Display only
+        // the latest two lines so Dark Glass stays compact and scroll-free.
+        if (loaded.Feedback.Length > 0)
+        {
+            actions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var feedbackLabel = new TextBlock
+            {
+                Text = "AI programy • poslední výsledky (neprokazují příčinu): " +
+                    string.Join("  |  ", loaded.Feedback.Take(2).Select(x =>
+                        $"{x.AppKey}: {x.Detail}")),
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 11,
+                Foreground = TextSecondaryBrush()
+            };
+            Grid.SetColumnSpan(feedbackLabel, 2);
+            Grid.SetRow(feedbackLabel, actions.RowDefinitions.Count - 1);
+            actions.Children.Add(feedbackLabel);
+        }
 
         if (snapshot.History.Length > 0)
         {
@@ -805,97 +1022,100 @@ public sealed partial class MainWindow
             actions.Children.Add(latestText);
         }
 
-        long totalMs = perf.ElapsedMilliseconds;
-        LogService.Info(
-            "performance",
-            $"AI_RUNTIME_ACTIONS_BATCHED items={snapshot.AllItems.Length} visible={snapshot.VisibleItems.Length} history={snapshot.History.Length} dataMs={dataMs} shellMs={shellMs} cardUiMs={totalCardUiMs} maxBatchUiMs={maxBatchUiMs} totalMs={totalMs}");
-    }
-
-    private async Task SignInChatGptAsync(Button signInChatGpt, TextBlock voiceCloudStatus, CancellationToken token)
-    {
-        signInChatGpt.IsEnabled = false;
-        voiceCloudStatus.Text = "Otevírám přihlášení ChatGPT v prohlížeči…";
-        voiceCloudStatus.Foreground = TextSecondaryBrush();
-        try
-        {
-            (bool ok, string message) = await ChatGptPlanAuthService.SignInAsync(token);
-            voiceCloudStatus.Text = ok ? message + " • AI voice používá ChatGPT plán." : "CHYBA: " + message;
-            voiceCloudStatus.Foreground = ok ? SuccessBrush() : WarningBrush();
-            if (ok)
-            {
-                signInChatGpt.Content = "Obnovit ChatGPT přihlášení";
-                ChatGptPlanConversationService.Reset();
-                FanProfileService.RequestAgentRestart();
-                try
-                {
-                    await VoiceRuntimeBootstrapService.EnsureAsync(null, token);
-                    await PiperTtsService.SpeakAsync("ChatGPT je připojený. Hlasový asistent je připravený.", token);
-                }
-                catch (Exception ex)
-                {
-                    LogService.Error("voice", "ChatGPT login voice confirmation failed", ex);
-                }
-            }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            voiceCloudStatus.Text = "CHYBA CHATGPT LOGIN: " + ex.Message;
-            voiceCloudStatus.Foreground = WarningBrush();
-        }
-        finally
-        {
-            signInChatGpt.IsEnabled = true;
+            LogService.Error("ai-runtime", "AI Actions snapshot or render failed", ex);
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration || _section != "ai-runtime")
+                return;
+            host.Children.Clear();
+            var error = new StackPanel { Spacing = 8 };
+            error.Children.Add(new TextBlock
+            {
+                Text = "Akce AI se nepodařilo načíst. Ostatní AI Runtime zůstává funkční.",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = WarningBrush()
+            });
+            error.Children.Add(QuickButton("Zkusit znovu", () =>
+                LoadAiRuntimeActionsDeferredAsync(host, generation, token)));
+            host.Children.Add(error);
         }
     }
 
-    private async Task TestVoiceCloudConnectionAsync(PasswordBox apiKeyBox, TextBlock voiceCloudStatus, CancellationToken token)
+    private static async Task SaveAiRuntimeConfigVerified(
+        Func<AiSystemRuntimeConfig, AiSystemRuntimeConfig> update,
+        Func<AiSystemRuntimeConfig, bool> readBack,
+        bool requested,
+        bool restartAgent = false)
     {
-        string entered = apiKeyBox.Password?.Trim() ?? string.Empty;
-        string keyToTest = entered.Length > 0 ? entered : OpenAiVoiceSettingsService.GetApiKey();
-
-        if (string.IsNullOrWhiteSpace(keyToTest))
+        await AiScopeSaveGate.WaitAsync();
+        try
         {
-            voiceCloudStatus.Text = "CHYBA: není uložený API klíč.";
-            voiceCloudStatus.Foreground = WarningBrush();
-            return;
-        }
-
-        voiceCloudStatus.Text = "TESTUJU PŘIPOJENÍ…";
-        var result = await OpenAiConversationService.TestConnectionAsync(keyToTest, token);
-        if (result.Ok)
-        {
-            if (entered.Length > 0)
+            await Task.Run(() =>
             {
-                OpenAiVoiceSettingsService.SaveApiKey(entered);
-                apiKeyBox.Password = string.Empty;
-                OpenAiConversationService.Reset();
-            }
+                AiSystemRuntimeConfig? original = null;
+                AiSystemRuntimeConfig actualConfig = AiSystemResourceManagerService.UpdateConfig(current =>
+                {
+                    original = current;
+                    return update(current);
+                });
+                bool actual = readBack(actualConfig);
+                if (actual != requested)
+                    throw new InvalidOperationException(
+                        $"AI Runtime config read-back nesouhlasí. Požadováno={requested}, skutečnost={actual}.");
+                if (actualConfig == original)
+                    return; // Idempotent: neither JSON rewrite nor agent startup.
+                if (original!.AutomaticProcessPriorityEnabled &&
+                    !actualConfig.AutomaticProcessPriorityEnabled)
+                    AiSystemResourceManagerService.RestoreProcessPriorityNow();
+                if (restartAgent) FanProfileService.StartAgentIfNeeded();
+            });
+        }
+        finally { AiScopeSaveGate.Release(); }
+    }
 
-            voiceCloudStatus.Text = "PŘIPOJENO A ULOŽENO: " + result.Message;
-            voiceCloudStatus.Foreground = SuccessBrush();
-        }
-        else
+    // No collapsible panels anywhere on the AI Runtime page. Flat headings,
+    // slim padding and always-visible content match the modern Windows toggles.
+    private Border BuildAiRuntimeFlatCard(string title, string subtitle,
+        UIElement content, bool expanded = false)
+    {
+        var body = new StackPanel { Spacing = 7 };
+        body.Children.Add(new TextBlock
         {
-            voiceCloudStatus.Text = "CHYBA: " + result.Message;
-            voiceCloudStatus.Foreground = WarningBrush();
-        }
+            Text = title,
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = TextPrimaryBrush()
+        });
+        if (!string.IsNullOrWhiteSpace(subtitle))
+            body.Children.Add(new TextBlock
+            {
+                Text = subtitle,
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = TextSecondaryBrush()
+            });
+        body.Children.Add(content);
+        return BuildDashboardCard(body, new Thickness(12, 10, 12, 10));
     }
 
     private Border BuildRuntimeToggleRow(
         string title,
         string description,
         bool initialValue,
-        Action<bool> onChanged)
+        Func<bool, Task> onChanged)
     {
         var grid = new Grid { ColumnSpacing = 12 };
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var text = new StackPanel { Spacing = 3 };
+        var text = new StackPanel { Spacing = 2 };
         text.Children.Add(new TextBlock
         {
             Text = title,
-            FontSize = 14,
+            FontSize = 13,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = TextPrimaryBrush()
         });
@@ -903,7 +1123,7 @@ public sealed partial class MainWindow
         {
             Text = description,
             TextWrapping = TextWrapping.Wrap,
-            FontSize = 12,
+            FontSize = 11,
             Foreground = TextSecondaryBrush()
         });
         grid.Children.Add(text);
@@ -915,17 +1135,70 @@ public sealed partial class MainWindow
             OffContent = "OFF",
             VerticalAlignment = VerticalAlignment.Center
         };
-        toggle.Toggled += (_, _) => onChanged(toggle.IsOn);
+        NormalizeToggleAppearance(toggle);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(toggle, title);
+        bool suppressToggle = false;
+        bool busy = false;
+        bool lastAccepted = initialValue;
+        toggle.Toggled += (_, _) =>
+        {
+            if (suppressToggle) return;
+            if (busy)
+            {
+                suppressToggle = true;
+                try { toggle.IsOn = lastAccepted; }
+                finally { suppressToggle = false; }
+                return;
+            }
+
+            bool requested = toggle.IsOn;
+            SafeTaskService.Forget(ApplyAsync(), "ai-runtime", "Verified runtime toggle " + title);
+
+            async Task ApplyAsync()
+            {
+                busy = true;
+                toggle.IsEnabled = false;
+                try
+                {
+                    await onChanged(requested);
+                    lastAccepted = requested;
+                    LogService.Info("ai-runtime", $"RUNTIME_TOGGLE_OK title={title} requested={requested}");
+                }
+                catch (Exception ex)
+                {
+                    suppressToggle = true;
+                    try { toggle.IsOn = lastAccepted; }
+                    finally { suppressToggle = false; }
+                    LogService.Error("ai-runtime", $"RUNTIME_TOGGLE_FAIL title={title} requested={requested}", ex);
+                    try
+                    {
+                        await ShowMessageAsync(title, ex.Message);
+                    }
+                    finally
+                    {
+                        // The write may have succeeded before a restore/agent failure.
+                        // Reload persisted state even if the error dialog itself fails.
+                        if (_section == "ai-runtime")
+                            await RefreshAiRuntimePageAsync();
+                    }
+                }
+                finally
+                {
+                    toggle.IsEnabled = true;
+                    busy = false;
+                }
+            }
+        };
         Grid.SetColumn(toggle, 1);
         grid.Children.Add(toggle);
 
         return new Border
         {
-            Background = SectionCardBackgroundBrush(),
+            Background = null,
             BorderBrush = SectionBorderBrush(),
-            BorderThickness = new Thickness(_darkTheme ? 1.15 : 1),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(12, 10, 12, 10),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            CornerRadius = new CornerRadius(0),
+            Padding = new Thickness(4, 7, 4, 7),
             Child = grid
         };
     }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Management;
 using System.Threading;
@@ -18,42 +18,28 @@ public sealed record MemoryStateSnapshot(
 
 public static class MemoryStateService
 {
-    private static readonly object CacheLock = new();
-    private static MemoryStateSnapshot? _cache;
-    private static DateTime _cacheAt;
-    private static Task<MemoryStateSnapshot>? _inFlight;
+    private static readonly MemorySnapshotRefreshGate<MemoryStateSnapshot> Cache =
+        new(TimeSpan.FromSeconds(10));
 
-    public static Task<MemoryStateSnapshot> ReadAsync(CancellationToken token = default)
-    {
-        lock (CacheLock)
-        {
-            if (_cache != null && DateTime.UtcNow - _cacheAt < TimeSpan.FromSeconds(10)) return Task.FromResult(_cache);
-            _inFlight ??= ReadCoreAsync();
-            return _inFlight.WaitAsync(token);
-        }
-    }
+    public static Task<MemoryStateSnapshot> ReadAsync(CancellationToken token = default) =>
+        Cache.ReadAsync(ReadCoreAsync, token);
+
+    public static MemoryStateSnapshot? TryGetFreshSnapshot() => Cache.TryGetFreshSnapshot();
 
     private static async Task<MemoryStateSnapshot> ReadCoreAsync()
     {
-        try
-        {
-            bool compression = (await WindowsActions.GetMemoryCompressionAsync(CancellationToken.None).ConfigureAwait(false))
-                .Contains("True", StringComparison.OrdinalIgnoreCase);
-            var result = await Task.Run(() => ReadNative(compression, CancellationToken.None)).ConfigureAwait(false);
-            lock (CacheLock) { _cache = result; _cacheAt = DateTime.UtcNow; }
-            return result;
-        }
-        finally { lock (CacheLock) _inFlight = null; }
+        bool compression = (await WindowsActions.GetMemoryCompressionAsync(CancellationToken.None)
+            .ConfigureAwait(false)).Contains("True", StringComparison.OrdinalIgnoreCase);
+        return await Task.Run(() => ReadNative(compression, CancellationToken.None))
+            .ConfigureAwait(false);
     }
 
-    public static void Invalidate()
-    {
-        lock (CacheLock) { _cache = null; _cacheAt = default; }
-    }
+    public static void Invalidate() => Cache.Invalidate();
     private static MemoryStateSnapshot ReadNative(bool compression, CancellationToken token)
     {
         bool? autoPagefile = null;
-        double totalGb = 0, availableGb = 0;
+        bool nativePhysicalMemory = SystemInfoService.TryReadPhysicalMemory(
+            out double totalGb, out double availableGb);
         var pagefiles = new List<string>();
         int largeSystemCache = ReadDword("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", "LargeSystemCache");
         int priority = ReadDword("SYSTEM\\CurrentControlSet\\Control\\PriorityControl", "Win32PrioritySeparation");
@@ -62,7 +48,7 @@ public static class MemoryStateService
         try
         {
             using var q = new ManagementObjectSearcher(new ManagementScope(@"\\.\root\CIMV2"),
-                new ObjectQuery("SELECT AutomaticManagedPagefile,TotalPhysicalMemory FROM Win32_ComputerSystem"), options);
+                new ObjectQuery("SELECT AutomaticManagedPagefile FROM Win32_ComputerSystem"), options);
             using var results = q.Get();
             foreach (ManagementObject x in results)
             {
@@ -70,7 +56,6 @@ public static class MemoryStateService
                 {
                     token.ThrowIfCancellationRequested();
                     if (x["AutomaticManagedPagefile"] != null) autoPagefile = Convert.ToBoolean(x["AutomaticManagedPagefile"]);
-                    if (x["TotalPhysicalMemory"] != null) totalGb = Convert.ToDouble(x["TotalPhysicalMemory"]) / 1073741824d;
                 }
                 finally { x.Dispose(); }
                 break;
@@ -78,6 +63,7 @@ public static class MemoryStateService
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { LogService.Error("memory", "ComputerSystem memory state read failed", ex); }
+        if (!nativePhysicalMemory)
         try
         {
             using var q = new ManagementObjectSearcher(new ManagementScope(@"\\.\root\CIMV2"),
@@ -123,6 +109,52 @@ public static class MemoryStateService
             : string.Join(" • ", pagefiles);
         return new MemoryStateSnapshot(compression, autoPagefile, pagefileSummary,
             largeSystemCache, priority, totalGb, availableGb);
+    }
+
+    internal static async Task RunWarmFirstPaintSmokeAsync()
+    {
+        Invalidate();
+        if (TryGetFreshSnapshot() != null)
+            throw new InvalidOperationException("Memory first-paint cache survived invalidation.");
+        var first = await ReadAsync().ConfigureAwait(false);
+        if (!ReferenceEquals(first, TryGetFreshSnapshot()))
+            throw new InvalidOperationException("Warm memory first-paint snapshot not published.");
+        var second = await ReadAsync().ConfigureAwait(false);
+        if (!ReferenceEquals(first, second))
+            throw new InvalidOperationException("Warm memory first-paint returned different cached data.");
+        Invalidate();
+        if (TryGetFreshSnapshot() != null)
+            throw new InvalidOperationException("Stale memory first-paint exposed after invalidation.");
+        LogService.Info("memory",
+            "MEMORY_WARM_FIRST_PAINT_SMOKE_OK coldLoading=true warmSnapshot=true staleInvalidation=true");
+    }
+
+    // Read-only benchmark of the complete registry/WMI/native state provider,
+    // excluding the separately cached MMAgent compression query.
+    internal static string RunSnapshotReadBenchmark()
+    {
+        const int runs = 4;
+        var times = new double[runs];
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        using var process = System.Diagnostics.Process.GetCurrentProcess();
+        process.Refresh();
+        TimeSpan cpuStart = process.TotalProcessorTime;
+        for (int i = 0; i < runs; i++)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var result = ReadNative(compression: false, CancellationToken.None);
+            sw.Stop();
+            if (result.TotalRamGb <= 0 || result.AvailableRamGb < 0 ||
+                result.AvailableRamGb > result.TotalRamGb * 1.05)
+                throw new InvalidOperationException("Memory-state provider returned invalid physical memory totals.");
+            times[i] = sw.Elapsed.TotalMilliseconds;
+        }
+        process.Refresh();
+        Array.Sort(times);
+        return $"MEMORY_STATE_READ_BENCH_OK runs={runs} medianMs={(times[1] + times[2]) / 2:F2}" +
+            $" minMs={times[0]:F2} maxMs={times[^1]:F2}" +
+            $" allocatedBytes={GC.GetAllocatedBytesForCurrentThread() - allocatedBefore}" +
+            $" cpuMs={(process.TotalProcessorTime - cpuStart).TotalMilliseconds:F2} readOnly=true";
     }
 
     public static async Task<MemoryStateSnapshot> ApplyRecommendedAsync(CancellationToken token = default)

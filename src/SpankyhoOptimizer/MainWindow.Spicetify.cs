@@ -43,17 +43,21 @@ public sealed partial class MainWindow
 
     private async Task LoadSpicetifyStatusAndHydrateAsync(StackPanel host, Button configButton, CancellationToken token)
     {
+        int generation = _navigationGeneration;
         try
         {
             var perf = System.Diagnostics.Stopwatch.StartNew();
             SpicetifyStatus status = await SpicetifyService.GetStatusAsync(token);
             long statusMs = perf.ElapsedMilliseconds;
             token.ThrowIfCancellationRequested();
-            if (_section != "spicetify") return;
+            if (generation != _navigationGeneration || _section != "spicetify") return;
 
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                if (token.IsCancellationRequested || _section != "spicetify") return;
+                if (token.IsCancellationRequested ||
+                    generation != _navigationGeneration ||
+                    _section != "spicetify" ||
+                    host.Parent == null) return;
                 var render = System.Diagnostics.Stopwatch.StartNew();
                 host.Children.Clear();
                 configButton.IsEnabled = status.SpicetifyInstalled;
@@ -99,7 +103,10 @@ public sealed partial class MainWindow
             if (token.IsCancellationRequested) return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "spicetify" || token.IsCancellationRequested) return;
+                if (token.IsCancellationRequested ||
+                    generation != _navigationGeneration ||
+                    _section != "spicetify" ||
+                    host.Parent == null) return;
                 host.Children.Clear();
                 host.Children.Add(new TextBlock
                 {
@@ -114,79 +121,109 @@ public sealed partial class MainWindow
     }
     private void ScheduleDeferredSpicetifyActions(SpicetifyStatus status, CancellationToken token)
     {
-        if (_spicetifyActionsQueued || _spicetifyActionsBody == null || _spicetifyActionsBody.Children.Count > 0) return;
+        StackPanel? host = _spicetifyActionsBody;
+        if (_spicetifyActionsQueued || host == null || host.Children.Count > 0) return;
+        int generation = _navigationGeneration;
         _spicetifyActionsQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        // A rejected low-priority enqueue must release the pending bit, or the
+        // Spicetify action batches can never be scheduled again.
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             _spicetifyActionsQueued = false;
-            if (token.IsCancellationRequested || _section != "spicetify" || _spicetifyActionsBody == null || _spicetifyActionsBody.Children.Count > 0) return;
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "spicetify" || !ReferenceEquals(_spicetifyActionsBody, host) || host.Children.Count > 0) return;
             var phase = System.Diagnostics.Stopwatch.StartNew();
-            BuildSpicetifyPrimaryActions(status, token, _spicetifyActionsBody);
-            LogService.Info("performance", $"SPICETIFY_ACTIONS_BATCH1 ms={phase.ElapsedMilliseconds} count={_spicetifyActionsBody.Children.Count}");
+            BuildSpicetifyPrimaryActions(status, token, host);
+            LogService.Info("performance", $"SPICETIFY_ACTIONS_BATCH1 ms={phase.ElapsedMilliseconds} count={host.Children.Count}");
             if (!status.SpicetifyInstalled) return;
 
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                if (token.IsCancellationRequested || _section != "spicetify" || _spicetifyActionsBody == null) return;
+                if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                    _section != "spicetify" || !ReferenceEquals(_spicetifyActionsBody, host)) return;
                 var batch2 = System.Diagnostics.Stopwatch.StartNew();
-                BuildSpicetifyTailBatch2(status, token, _spicetifyActionsBody);
-                LogService.Info("performance", $"SPICETIFY_ACTIONS_BATCH2 ms={batch2.ElapsedMilliseconds} count={_spicetifyActionsBody.Children.Count}");
+                BuildSpicetifyTailBatch2(status, token, host);
+                LogService.Info("performance", $"SPICETIFY_ACTIONS_BATCH2 ms={batch2.ElapsedMilliseconds} count={host.Children.Count}");
 
                 DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
                 {
-                    if (token.IsCancellationRequested || _section != "spicetify" || _spicetifyActionsBody == null) return;
+                    if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                        _section != "spicetify" || !ReferenceEquals(_spicetifyActionsBody, host)) return;
                     var batch3 = System.Diagnostics.Stopwatch.StartNew();
-                    BuildSpicetifyTailBatch3(status, token, _spicetifyActionsBody);
-                    LogService.Info("performance", $"SPICETIFY_ACTIONS_BATCH3 ms={batch3.ElapsedMilliseconds} count={_spicetifyActionsBody.Children.Count}");
+                    BuildSpicetifyTailBatch3(status, token, host);
+                    LogService.Info("performance", $"SPICETIFY_ACTIONS_BATCH3 ms={batch3.ElapsedMilliseconds} count={host.Children.Count}");
 
                     DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
                     {
-                        if (token.IsCancellationRequested || _section != "spicetify" || _spicetifyActionsBody == null) return;
+                        if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                            _section != "spicetify" || !ReferenceEquals(_spicetifyActionsBody, host)) return;
                         var batch4 = System.Diagnostics.Stopwatch.StartNew();
-                        BuildSpicetifyTailBatch4(token, _spicetifyActionsBody);
-                        LogService.Info("performance", $"SPICETIFY_ACTIONS_BATCH4 ms={batch4.ElapsedMilliseconds} count={_spicetifyActionsBody.Children.Count}");
+                        BuildSpicetifyTailBatch4(token, host);
+                        LogService.Info("performance", $"SPICETIFY_ACTIONS_BATCH4 ms={batch4.ElapsedMilliseconds} count={host.Children.Count}");
                     });
                 });
             });
-        });
+        })) _spicetifyActionsQueued = false;
     }
 
     private void ScheduleDeferredSpicetifySecondary(SpicetifyStatus status, CancellationToken token)
     {
         if (_spicetifySecondaryQueued) return;
-        if ((_spicetifyTweaksBody == null || _spicetifyTweaksBody.Children.Count > 0) &&
-            (_spicetifyExtensionsBody == null || _spicetifyExtensionsBody.Children.Count > 0)) return;
+        StackPanel? tweaksHost = _spicetifyTweaksBody;
+        StackPanel? extensionsHost = _spicetifyExtensionsBody;
+        if ((tweaksHost == null || tweaksHost.Children.Count > 0) &&
+            (extensionsHost == null || extensionsHost.Children.Count > 0)) return;
+        int generation = _navigationGeneration;
         _spicetifySecondaryQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             _spicetifySecondaryQueued = false;
-            if (token.IsCancellationRequested || _section != "spicetify") return;
-            SafeTaskService.Forget(BuildDeferredSpicetifySecondaryAsync(status, token), "spicetify", "Deferred tweak/extension UI");
-        });
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "spicetify" ||
+                !ReferenceEquals(_spicetifyTweaksBody, tweaksHost) ||
+                !ReferenceEquals(_spicetifyExtensionsBody, extensionsHost))
+                return;
+            SafeTaskService.Forget(
+                BuildDeferredSpicetifySecondaryAsync(status, tweaksHost, extensionsHost, generation, token),
+                "spicetify",
+                "Deferred tweak/extension UI");
+        })) _spicetifySecondaryQueued = false;
     }
 
-    private async Task BuildDeferredSpicetifySecondaryAsync(SpicetifyStatus status, CancellationToken token)
+    private async Task BuildDeferredSpicetifySecondaryAsync(
+        SpicetifyStatus status,
+        StackPanel? tweaksHost,
+        StackPanel? extensionsHost,
+        int generation,
+        CancellationToken token)
     {
-        if (_spicetifyTweaksBody == null || _spicetifyExtensionsBody == null) return;
+        if (tweaksHost == null || extensionsHost == null) return;
+        if (generation != _navigationGeneration || _section != "spicetify" ||
+            !ReferenceEquals(_spicetifyTweaksBody, tweaksHost) ||
+            !ReferenceEquals(_spicetifyExtensionsBody, extensionsHost)) return;
         var phase = System.Diagnostics.Stopwatch.StartNew();
         Task<IReadOnlySet<string>> enabledExtensionsTask = Task.Run(
             () => SpicetifyService.GetEnabledExtensions(),
             token);
 
         long tweaksMs = 0;
-        if (_spicetifyTweaksBody.Children.Count == 0)
+        if (tweaksHost.Children.Count == 0)
         {
-            await BuildSpicetifyTweaksAsync(_spicetifyTweaksBody, token);
+            await BuildSpicetifyTweaksAsync(tweaksHost, token);
             tweaksMs = phase.ElapsedMilliseconds;
         }
 
         long beforeExtensionRead = phase.ElapsedMilliseconds;
         IReadOnlySet<string> enabledExtensions = await enabledExtensionsTask;
+        token.ThrowIfCancellationRequested();
+        if (generation != _navigationGeneration || _section != "spicetify" ||
+            !ReferenceEquals(_spicetifyTweaksBody, tweaksHost) ||
+            !ReferenceEquals(_spicetifyExtensionsBody, extensionsHost))
+            return;
         long extensionReadWaitMs = phase.ElapsedMilliseconds - beforeExtensionRead;
 
         long beforeExtensionsUi = phase.ElapsedMilliseconds;
-        if (_spicetifyExtensionsBody.Children.Count == 0)
-            BuildSpicetifyExtensionManager(status, _spicetifyExtensionsBody, token, enabledExtensions);
+        if (extensionsHost.Children.Count == 0)
+            BuildSpicetifyExtensionManager(status, extensionsHost, token, enabledExtensions);
         long extensionsUiMs = phase.ElapsedMilliseconds - beforeExtensionsUi;
 
         LogService.Info("performance",
@@ -196,9 +233,15 @@ public sealed partial class MainWindow
     private void ScheduleDeferredSpicetifyTheme(SpicetifyStatus status, StackPanel host, CancellationToken token)
     {
         if (host.Children.Count > 0) return;
+        int generation = _navigationGeneration;
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "spicetify" || host.Children.Count > 0) return;
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "spicetify" ||
+                !ReferenceEquals(_spicetifyThemeBody, host) ||
+                host.Children.Count > 0)
+                return;
             var phase = System.Diagnostics.Stopwatch.StartNew();
             BuildSpicetifyThemeCard(status, host, token);
             LogService.Info("performance", $"SPICETIFY_THEME_DEFERRED themeMs={phase.ElapsedMilliseconds}");
@@ -227,7 +270,7 @@ public sealed partial class MainWindow
         body.Children.Add(new TextBlock
         {
             Text = status.ExecutablePath,
-            FontSize = 10,
+            FontSize = 10.5,
             TextWrapping = TextWrapping.Wrap,
             Foreground = TextSecondaryBrush()
         });
@@ -246,7 +289,7 @@ public sealed partial class MainWindow
             Height = 7,
             IsIndeterminate = false,
             Foreground = TextSecondaryBrush(),
-            Background = SurfaceAltBrush()
+            Background = _darkTheme ? GlassSurfaceLowBrush() : SurfaceAltBrush()
         };
         var install = new Button { Content = status.SpotifyInstalled ? "Aktualizovat Spotify" : "Stáhnout a nainstalovat" };
         ApplyPillButtonAppearance(install);
@@ -262,25 +305,25 @@ public sealed partial class MainWindow
     {
         if (!status.SpicetifyInstalled)
         {
-            root.Children.Add(ActionCard("Spicetify CLI", "Nainstaluje oficiální Spicetify CLI přes Winget jako běžný uživatel.", "Nainstalovat", () => RunSpicetifyActionAsync("Instalace Spicetify", SpicetifyService.InstallAsync, token)));
-            root.Children.Add(ActionCard("Spicetify Marketplace", "Nainstaluje Spicetify CLI (pokud chybí) a potom oficiální Marketplace jako běžný uživatel.", "Nainstalovat Marketplace", () => RunSpicetifyActionAsync("Spicetify Marketplace", SpicetifyService.InstallMarketplaceWithPrerequisitesAsync, token)));
+            root.Children.Add(ActionCard("Spicetify CLI", "Nainstaluje oficiální Spicetify CLI přes Winget jako běžný uživatel.", "Nainstalovat", () => RunSpicetifyActionAsync("Instalace Spicetify", SpicetifyService.InstallAsync, _spicetifyActionToken)));
+            root.Children.Add(ActionCard("Spicetify Marketplace", "Nainstaluje Spicetify CLI (pokud chybí) a potom oficiální Marketplace jako běžný uživatel.", "Nainstalovat Marketplace", () => RunSpicetifyActionAsync("Spicetify Marketplace", SpicetifyService.InstallMarketplaceWithPrerequisitesAsync, _spicetifyActionToken)));
             return;
         }
 
-        root.Children.Add(ActionCard("Spicetify CLI", "Aktualizace CLI přes Winget. Neprovádí změny Spotify, dokud nepoužiješ Apply.", "Aktualizovat", () => RunSpicetifyActionAsync("Aktualizace Spicetify", SpicetifyService.UpdateAsync, token)));
-        root.Children.Add(ActionCard("Backup + Apply", "Vytvoří backup Spotify a aplikuje Spicetify. Doporučený první krok po instalaci nebo větší aktualizaci Spotify.", "Spustit", () => RunSpicetifyActionAsync("Backup + Apply", SpicetifyService.BackupApplyAsync, token)));
-        root.Children.Add(ActionCard("Apply", "Znovu aplikuje aktuální theme, extensions a custom apps.", "Použít", () => RunSpicetifyActionAsync("Spicetify Apply", SpicetifyService.ApplyAsync, token)));
+        root.Children.Add(ActionCard("Spicetify CLI", "Aktualizace CLI přes Winget. Neprovádí změny Spotify, dokud nepoužiješ Apply.", "Aktualizovat", () => RunSpicetifyActionAsync("Aktualizace Spicetify", SpicetifyService.UpdateAsync, _spicetifyActionToken)));
+        root.Children.Add(ActionCard("Backup + Apply", "Vytvoří backup Spotify a aplikuje Spicetify. Doporučený první krok po instalaci nebo větší aktualizaci Spotify.", "Spustit", () => RunSpicetifyActionAsync("Backup + Apply", SpicetifyService.BackupApplyAsync, _spicetifyActionToken)));
+        root.Children.Add(ActionCard("Apply", "Znovu aplikuje aktuální theme, extensions a custom apps.", "Použít", () => RunSpicetifyActionAsync("Spicetify Apply", SpicetifyService.ApplyAsync, _spicetifyActionToken)));
     }
 
     private void BuildSpicetifyTailBatch2(SpicetifyStatus status, CancellationToken token, StackPanel root)
     {
-        root.Children.Add(ActionCard("Restore Spotify", "Vrátí Spotify do původního stavu přes příkaz spicetify restore.", "Obnovit", () => RunSpicetifyActionAsync("Restore Spotify", SpicetifyService.RestoreAsync, token)));
-        root.Children.Add(ActionCard("Spicetify Marketplace", status.MarketplaceInstalled ? "Marketplace je nainstalovaný. Installer můžeš spustit znovu pro opravu/aktualizaci." : "Nainstaluje oficiální Spicetify Marketplace odděleně od CLI installeru.", status.MarketplaceInstalled ? "Opravit / aktualizovat" : "Nainstalovat", () => RunSpicetifyActionAsync("Spicetify Marketplace", SpicetifyService.InstallMarketplaceAsync, token)));
+        root.Children.Add(ActionCard("Restore Spotify", "Vrátí Spotify do původního stavu přes příkaz spicetify restore.", "Obnovit", () => RunSpicetifyActionAsync("Restore Spotify", SpicetifyService.RestoreAsync, _spicetifyActionToken)));
+        root.Children.Add(ActionCard("Spicetify Marketplace", status.MarketplaceInstalled ? "Marketplace je nainstalovaný. Installer můžeš spustit znovu pro opravu/aktualizaci." : "Nainstaluje oficiální Spicetify Marketplace odděleně od CLI installeru.", status.MarketplaceInstalled ? "Opravit / aktualizovat" : "Nainstalovat", () => RunSpicetifyActionAsync("Spicetify Marketplace", SpicetifyService.InstallMarketplaceAsync, _spicetifyActionToken)));
     }
 
     private void BuildSpicetifyTailBatch3(SpicetifyStatus status, CancellationToken token, StackPanel root)
     {
-        root.Children.Add(ActionCard("Restart Spotify", "Restartuje Spotify přes Spicetify CLI.", "Restartovat", () => RunSpicetifyActionAsync("Restart Spotify", SpicetifyService.RestartAsync, token, refresh: false)));
+        root.Children.Add(ActionCard("Restart Spotify", "Restartuje Spotify přes Spicetify CLI.", "Restartovat", () => RunSpicetifyActionAsync("Restart Spotify", SpicetifyService.RestartAsync, _spicetifyActionToken, refresh: false)));
 
         var folders = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         folders.Children.Add(QuickButton("Themes", () => { SpicetifyService.OpenThemesRoot(); return Task.CompletedTask; }));
@@ -300,11 +343,14 @@ public sealed partial class MainWindow
 
     private async Task InstallOrUpdateSpotifyAsync(bool update, Button button, ProgressBar progress, TextBlock statusText, CancellationToken token)
     {
+        int operationGeneration = _navigationGeneration;
+        bool IsCurrentOperation() => operationGeneration == _navigationGeneration && _section == "spicetify" && !token.IsCancellationRequested;
         button.IsEnabled = false; progress.Value = 0; progress.IsIndeterminate = true; statusText.Text = update ? "Kontroluji aktualizaci Spotify…" : "Připravuji stažení Spotify…";
         try
         {
-            void OnOutput(string line) { if (!string.IsNullOrWhiteSpace(line)) DispatcherQueue.TryEnqueue(() => UpdateSpotifyInstallProgress(line, progress, statusText)); }
+            void OnOutput(string line) { if (!string.IsNullOrWhiteSpace(line)) DispatcherQueue.TryEnqueue(() => { if (IsCurrentOperation()) UpdateSpotifyInstallProgress(line, progress, statusText); }); }
             var result = update ? await SpicetifyService.UpdateSpotifyAsync(token, OnOutput) : await SpicetifyService.InstallSpotifyAsync(token, OnOutput);
+            if (!IsCurrentOperation()) return;
             progress.IsIndeterminate = false;
             if (!result.Success)
             {
@@ -313,12 +359,12 @@ public sealed partial class MainWindow
                 await ShowStyledInfoAsync("Spotify", string.IsNullOrWhiteSpace(error) ? $"Spotify installer skončil s kódem {result.ExitCode}." : error.Trim());
                 return;
             }
-            progress.Value = 100; statusText.Text = update ? "Spotify je aktuální." : "Spotify bylo úspěšně nainstalováno.";
-            await Task.Delay(350, token); InvalidateSpicetifyPageCache(); await ShowSectionAsync("spicetify");
+            progress.Value = 100; statusText.Text = "Instalátor Spotify dokončen. Obnovuji stav…";
+            await Task.Delay(350, token); if (IsCurrentOperation()) { InvalidateSpicetifyPageCache(); await ShowSectionAsync("spicetify"); }
         }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { progress.IsIndeterminate = false; progress.Value = 0; statusText.Text = "Instalace Spotify selhala."; LogService.Error("spotify", "Spotify install/update failed", ex); await ShowStyledInfoAsync("Spotify", ex.Message); }
-        finally { button.IsEnabled = true; }
+        catch (OperationCanceledException) { progress.IsIndeterminate = false; if (IsCurrentOperation()) statusText.Text = "Operace byla zrušena."; }
+        catch (Exception ex) { progress.IsIndeterminate = false; progress.Value = 0; statusText.Text = "Instalace Spotify selhala."; LogService.Error("spotify", "Spotify install/update failed", ex); if (IsCurrentOperation()) await ShowStyledInfoAsync("Spotify", ex.Message); }
+        finally { progress.IsIndeterminate = false; button.IsEnabled = true; }
     }
 
     private static void UpdateSpotifyInstallProgress(string line, ProgressBar progress, TextBlock statusText)
@@ -334,15 +380,17 @@ public sealed partial class MainWindow
 
     private void BuildSpicetifyThemeCard(SpicetifyStatus status, StackPanel root, CancellationToken token)
     {
-        var theme = new ComboBox { Header = "Theme", MinWidth = 280, ItemsSource = status.Themes.ToArray() };
+        var theme = new ComboBox { Header = "Theme", MinWidth = 280, ItemsSource = status.Themes };
         var scheme = new ComboBox { Header = "Color scheme", MinWidth = 280, IsEnabled = false };
         theme.SelectionChanged += (_, _) =>
         {
             string? selected = theme.SelectedItem as string;
-            var schemes = selected == null ? Array.Empty<string>() : SpicetifyService.GetColorSchemes(selected).ToArray();
+            IReadOnlyList<string> schemes = selected == null
+                ? Array.Empty<string>()
+                : SpicetifyService.GetColorSchemes(selected);
             scheme.ItemsSource = schemes;
-            scheme.SelectedIndex = schemes.Length > 0 ? 0 : -1;
-            scheme.IsEnabled = schemes.Length > 0;
+            scheme.SelectedIndex = schemes.Count > 0 ? 0 : -1;
+            scheme.IsEnabled = schemes.Count > 0;
         };
         root.Children.Add(theme);
         root.Children.Add(scheme);
@@ -358,9 +406,12 @@ public sealed partial class MainWindow
     }
     private async Task RunSpicetifyActionAsync(string title, Func<CancellationToken, Task<ProcessResult>> action, CancellationToken token, bool refresh = true)
     {
+        int operationGeneration = _navigationGeneration;
+        bool IsCurrentOperation() => operationGeneration == _navigationGeneration && _section == "spicetify" && !token.IsCancellationRequested;
         try
         {
             ProcessResult result = await action(token);
+            if (!IsCurrentOperation()) return;
             string output = string.Join(Environment.NewLine, new[] { result.StdOut.Trim(), result.StdErr.Trim() }.Where(x => x.Length > 0));
             if (output.Length > 5000) output = output[^5000..];
             if (!result.Success)
@@ -372,14 +423,15 @@ public sealed partial class MainWindow
                 await ShowStyledInfoAsync(title, detail);
                 return;
             }
-            ShowActionFeedback(title, ActionFeedbackKind.Verified, "Operace dokončena a stav bude znovu načten.");
+            ShowActionFeedback(title, ActionFeedbackKind.Applied, "Operace dokončena a stav bude znovu načten.");
             if (!string.IsNullOrWhiteSpace(output)) await ShowStyledInfoAsync(title, output);
-            if (refresh) { InvalidateSpicetifyPageCache(); await ShowSectionAsync("spicetify"); }
+            if (refresh && IsCurrentOperation()) { InvalidateSpicetifyPageCache(); await ShowSectionAsync("spicetify"); }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             LogService.Error("spicetify", title + " failed", ex);
+            if (!IsCurrentOperation()) return;
             ShowActionFeedback(title, ActionFeedbackKind.Failed, ex.Message);
             await ShowStyledInfoAsync(title, ex.Message);
         }

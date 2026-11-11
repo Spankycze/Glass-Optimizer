@@ -55,26 +55,35 @@ public sealed partial class MainWindow
         var detail = new TextBlock { Text = "", FontSize = 12, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap };
         root.Children.Add(detail);
         bool popupClosed = false;
-        bool finished = false;
         void ClosePopup()
         {
             if (popupClosed) return;
             popupClosed = true;
-            if (!finished) cts.Cancel();
+            try { cts.Cancel(); } catch (ObjectDisposedException) { }
             UnmountDialog(overlay);
         }
 
         card.Child = root;
         var topClose = MountDialog(overlay, card, ClosePopup);
 
+        int previousPercent = -1;
+        string previousStatus = string.Empty;
         void SetProgress(int value, string text)
         {
             if (popupClosed) return;
             value = Math.Clamp(value, 0, 100);
-            double width = track.ActualWidth > 0 ? track.ActualWidth : 520;
-            fill.Width = width * value / 100d;
-            percent.Text = value + " %";
-            status.Text = text;
+            if (value != previousPercent)
+            {
+                double width = track.ActualWidth > 0 ? track.ActualWidth : 520;
+                fill.Width = width * value / 100d;
+                percent.Text = value + " %";
+                previousPercent = value;
+            }
+            if (!string.Equals(previousStatus, text, StringComparison.Ordinal))
+            {
+                status.Text = text;
+                previousStatus = text;
+            }
         }
         try
         {
@@ -85,7 +94,7 @@ public sealed partial class MainWindow
                 SetProgress(65, "Stahuji Exostenza…"); await Task.Delay(80, cts.Token);
                 SetProgress(82, "Rozbaluji balík…"); await Task.Delay(80, cts.Token);
                 SetProgress(92, "Vytvářím bod obnovení…"); await Task.Delay(80, cts.Token);
-                SetProgress(100, "Hotovo — instalační tok je připraven."); finished = true; return;
+                SetProgress(100, "Hotovo — instalační tok je připraven."); return;
             }
             string? pendingState = await GpuDriverService.ReconcilePendingExostenzaAsync(cts.Token);
             string? pendingVersion = GpuDriverService.TryGetPendingExostenzaVersion();
@@ -96,7 +105,6 @@ public sealed partial class MainWindow
                     detail.Text = string.IsNullOrWhiteSpace(pendingState)
                         ? "GPU instalátor už běží nebo čekám na potvrzení instalace. Další download ani druhou instanci nespouštím."
                         : pendingState;
-                finished = true;
                 return;
             }
 
@@ -156,7 +164,6 @@ public sealed partial class MainWindow
                 GpuDriverService.MonitorPendingExostenzaAsync(installedVersion),
                 "drivers",
                 "Exostenza install read-back monitor");
-            finished = true;
             await Task.Delay(700, cts.Token);
             if (!popupClosed) UnmountDialog(overlay);
         }
@@ -166,7 +173,6 @@ public sealed partial class MainWindow
         }
         catch (Exception ex)
         {
-            finished = true;
             LogService.Error("Exostenza one-click install failed", ex);
             if (!popupClosed)
             {

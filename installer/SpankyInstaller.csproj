@@ -14,22 +14,23 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <SatelliteResourceLanguages>cs;en-US</SatelliteResourceLanguages>
     <PublishReadyToRun>false</PublishReadyToRun>
-    <AssemblyTitle>Spankyho Optimizer Setup</AssemblyTitle>
-    <Product>Spankyho Optimizer</Product>
+    <AssemblyTitle>Glass Optimizer Setup</AssemblyTitle>
+    <Product>Glass Optimizer</Product>
     <Company>Spankyho</Company>
     <Nullable>enable</Nullable>
+    <SpankyInstallerPayloadPath Condition="'$(SpankyInstallerPayloadPath)' == ''">payload.tar.zst</SpankyInstallerPayloadPath>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="ModernInstaller.cs" />
     <Page Remove="ModernInstaller.xaml" />
     <EmbeddedResource Include="ModernInstaller.xaml" LogicalName="installer-ui.xaml" />
-    <EmbeddedResource Include="payload.zip" LogicalName="payload.zip" />
+    <EmbeddedResource Include="$(SpankyInstallerPayloadPath)" LogicalName="payload.tar.zst" />
     <Content Include="App.ico" CopyToOutputDirectory="PreserveNewest" />
     <Resource Include="..\src\SpankyhoOptimizer\Assets\AppLogo.png" Link="AppLogo.png" />
-    <Resource Include="..\src\SpankyhoOptimizer\Assets\HeroTargetExact.png" Link="HeroTargetExact.png" />
-    <Resource Include="ReferenceInstaller.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
 </Project>
-
 
 

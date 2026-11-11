@@ -13,7 +13,8 @@ namespace SpankyhoOptimizer;
 
 public sealed partial class MainWindow
 {
-    private ContentDialog? _communityCursorDialog;
+    private Grid? _communityCursorDialog;
+    private Action? _closeCommunityCursorDialog;
 
     private static readonly string[] CommunityCursorCategories =
     {
@@ -23,30 +24,24 @@ public sealed partial class MainWindow
 
     internal string RunCommunityCursorPopupLifecycleSmoke()
     {
-        var probe = new ContentDialog
-        {
-            XamlRoot = RootGrid.XamlRoot,
-            Title = "Community Cursor Library",
-            PrimaryButtonText = string.Empty,
-            SecondaryButtonText = string.Empty,
-            CloseButtonText = string.Empty
-        };
-
+        var overlay = CreateDialogOverlay();
+        if (Grid.GetColumnSpan(overlay) != Math.Max(1, RootGrid.ColumnDefinitions.Count))
+            throw new InvalidOperationException("Community Cursor overlay nezakrývá sidebar.");
         var close = QuickButton("Zavřít", () => Task.CompletedTask);
         var apply = PrimaryQuickButton("Použít vybraný", () => Task.CompletedTask);
 
         if (close.Content?.ToString() != "Zavřít" || apply.Content?.ToString() != "Použít vybraný")
             throw new InvalidOperationException("Community Cursor vlastní footer tlačítka nejsou dostupná.");
 
-        return "COMMUNITY_CURSOR_POPUP_LIFECYCLE_OK nativeContentDialog=yes customClose=yes customApply=yes";
+        return "COMMUNITY_CURSOR_POPUP_LIFECYCLE_OK sharedModal=yes customClose=yes customApply=yes";
     }
 
     private async Task ShowCommunityCursorPopupAsync()
     {
         if (_communityCursorDialog != null)
         {
-            try { _communityCursorDialog.Hide(); } catch { }
-            _communityCursorDialog = null;
+            // Keep one owner while its backend mutation is still running.
+            return;
         }
 
         var packs = CursorCommunityPackService.LoadBundledPacks();
@@ -59,61 +54,86 @@ public sealed partial class MainWindow
         const int PageSize = 1000;
         bool applied = false;
 
+        var overlay = CreateDialogOverlay();
+        overlay.Tag = "CommunityCursorModal";
+        // Use the shared glass scrim so this modal cannot drift back to a black wall.
+        overlay.Background = GlassOverlayBrush(78);
+        var card = CreateDialogCard(560, 760);
+        card.Padding = new Thickness(24);
         var root = new Grid
         {
-            RowSpacing = 10,
-            Width = 500,
-            Height = 650,
-            Background = SurfaceBrush()
+            RowSpacing = 12,
+            Height = Math.Max(240, card.MaxHeight - 50)
         };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-        var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var header = new StackPanel { Name = "CursorHeader", Spacing = 4, Margin = new Thickness(0, 0, 36, 0) };
+        header.Children.Add(new TextBlock
+        {
+            Text = "Community Cursor Library", FontSize = 20, FontWeight = FontWeights.SemiBold,
+            Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap
+        });
+        header.Children.Add(new TextBlock
+        {
+            Text = "Vyber pack a použij ho ve Windows.", FontSize = 12,
+            Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap
+        });
+        root.Children.Add(header);
+        var tools = new Grid { Name = "CursorSearch", ColumnSpacing = 12 };
+        tools.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        tools.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var search = new TextBox
         {
-            Width = 255,
-            PlaceholderText = "Hledat pack nebo autora..."
+            Name = "CursorQuery", MinWidth = 160,
+            PlaceholderText = "Hledat pack nebo autora...",
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(14, 7, 14, 7),
+            Background = DialogInnerSurfaceBrush(),
+            BorderBrush = DialogNeutralBorderBrush()
         };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(search, "Hledat cursor pack nebo autora");
         tools.Children.Add(search);
-
         var countText = new TextBlock
         {
+            Name = "CursorCount",
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = TextSecondaryBrush(),
             FontSize = 10.5,
             MinWidth = 90
         };
+        Grid.SetColumn(countText, 1);
         tools.Children.Add(countText);
 
         Button? prevButton = null;
         Button? nextButton = null;
 
-        var browser = new Grid { RowSpacing = 10 };
-        browser.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        browser.RowDefinitions.Add(new RowDefinition());
-
         var categoryRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 };
         var categoryScroll = new ScrollViewer
         {
+            Name = "CursorCategories",
             HorizontalScrollMode = ScrollMode.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
             VerticalScrollMode = ScrollMode.Disabled,
             Content = categoryRow
         };
-        browser.Children.Add(categoryScroll);
+        Grid.SetRow(categoryScroll, 2);
+        root.Children.Add(categoryScroll);
 
         var cardsHost = new StackPanel { Spacing = 10 };
         var cardsScroll = new ScrollViewer
         {
+            Name = "CursorCards",
+            HorizontalScrollMode = ScrollMode.Disabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollMode = ScrollMode.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             Content = cardsHost
         };
-        Grid.SetRow(cardsScroll, 1);
-        browser.Children.Add(cardsScroll);
-        Grid.SetRow(browser, 2);
+        Grid.SetRow(cardsScroll, 3);
+        root.Children.Add(cardsScroll);
 
         var status = new TextBlock
         {
@@ -124,97 +144,130 @@ public sealed partial class MainWindow
         };
         var actionBar = new Grid
         {
+            Name = "CursorActions",
+            RowSpacing = 10,
             ColumnSpacing = 10,
             VerticalAlignment = VerticalAlignment.Center,
-            Background = DialogInnerSurfaceBrush(),
-            Padding = new Thickness(10, 8, 10, 8),
+            Background = DialogBodyBrush(),
+            CornerRadius = new CornerRadius(22),
+            BorderBrush = DialogNeutralBorderBrush(),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(12),
             MinHeight = 54
         };
         actionBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         actionBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         actionBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
+        actionBar.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        actionBar.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetColumnSpan(status, 3);
         actionBar.Children.Add(status);
-        Grid.SetRow(actionBar, 1);
+        Grid.SetRow(actionBar, 4);
 
+        Grid.SetRow(tools, 1);
         root.Children.Add(tools);
         root.Children.Add(actionBar);
-        root.Children.Add(browser);
 
-        var dialog = new ContentDialog
-        {
-            XamlRoot = RootGrid.XamlRoot,
-            RequestedTheme = ElementTheme.Dark,
-            Background = _darkTheme ? GlassPanelBrush() : SurfaceBrush(),
-            Foreground = TextPrimaryBrush(),
-            Title = "Community Cursor Library",
-            Content = root,
-            PrimaryButtonText = string.Empty,
-            SecondaryButtonText = string.Empty,
-            CloseButtonText = string.Empty,
-            DefaultButton = ContentDialogButton.None,
-            MinWidth = 540,
-            MaxWidth = 580
-        };
-        _communityCursorDialog = dialog;
 
-        var headerCloseButton = new Button
+        card.Child = root;
+        var completion = new TaskCompletionSource<bool>();
+        bool closed = false;
+        bool applying = false;
+        System.Threading.CancellationTokenSource? applyCts = null;
+        // Apply is synchronous registry work; cancel/timeout only stops waiting, so block overlap until it ends.
+        Task? pendingApplyTask = null;
+        Button? popupCloseButton = null;
+        SizeChangedEventHandler resizeHandler = (_, _) =>
         {
-            Width = 34,
-            Height = 34,
-            Padding = new Thickness(0),
-            Background = SurfaceElevatedBrush(),
-            Foreground = TextPrimaryBrush(),
-            BorderBrush = BorderThemeBrush(),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(10),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Content = new FontIcon
+            // Resize can fire several times for the same effective modal
+            // geometry. Avoid redundant dependency-property writes that force
+            // another WinUI measure/arrange pass while the user drags a window.
+            double maxHeight = DialogMaxHeight(760);
+            if (Math.Abs(card.MaxHeight - maxHeight) > .1)
+                card.MaxHeight = maxHeight;
+            double contentHeight = Math.Max(240, maxHeight - 50);
+            if (double.IsNaN(root.Height) || Math.Abs(root.Height - contentHeight) > .1)
+                root.Height = contentHeight;
+            if (overlay.Children.FirstOrDefault() is Grid host)
             {
-                Glyph = "\uE711",
-                FontFamily = new FontFamily("Segoe Fluent Icons"),
-                FontSize = 11
+                double hostWidth = Math.Min(560, Math.Max(320, RootGrid.ActualWidth - 48));
+                if (double.IsNaN(host.Width) || Math.Abs(host.Width - hostWidth) > .1)
+                    host.Width = hostWidth;
+                if (double.IsNaN(host.MaxWidth) || Math.Abs(host.MaxWidth - hostWidth) > .1)
+                    host.MaxWidth = hostWidth;
+                if (Math.Abs(host.MaxHeight - maxHeight) > .1)
+                    host.MaxHeight = maxHeight;
             }
         };
-        ToolTipService.SetToolTip(headerCloseButton, "Zavřít");
-        EnsureAccessibleButton(headerCloseButton, "Zavřít Community Cursor Library");
-        headerCloseButton.Click += (_, _) =>
+        System.Threading.CancellationTokenRegistration windowCloseRegistration = default;
+        void CloseDialog(bool force = false)
         {
-            LogService.Info("cursor", "COMMUNITY_HEADER_CLOSE_CLICK");
-            try { dialog.Hide(); }
-            catch (Exception ex) { LogService.Error("cursor", "COMMUNITY_HEADER_CLOSE_FAIL", ex); }
-        };
-        tools.Children.Add(headerCloseButton);
-
-        dialog.KeyDown += (_, e) =>
+            if (closed) return;
+            closed = true;
+            if (applying)
+            {
+                try { applyCts?.Cancel(); } catch { }
+            }
+            RootGrid.SizeChanged -= resizeHandler;
+            windowCloseRegistration.Dispose();
+            UnmountDialog(overlay);
+            completion.TrySetResult(true);
+        }
+        void RequestClose() => CloseDialog();
+        _communityCursorDialog = overlay;
+        _closeCommunityCursorDialog = RequestClose;
+        windowCloseRegistration = _windowLifetimeCts.Token.Register(() =>
         {
-            if (e.Key != Windows.System.VirtualKey.Escape) return;
-            e.Handled = true;
-            LogService.Info("cursor", "COMMUNITY_ESCAPE_CLOSE");
-            try { dialog.Hide(); }
-            catch (Exception ex) { LogService.Error("cursor", "COMMUNITY_ESCAPE_CLOSE_FAIL", ex); }
-        };
-
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () => CloseDialog(force: true));
+        });
         Button? applyActionButton = null;
 
+        // The nine category controls are independent of the current search
+        // query. Keep their WinUI instances stable while filtering cards; the
+        // previous Rebuild recreated all nine buttons on every keystroke.
+        var categoryChips = new System.Collections.Generic.List<(string Category, Button Chip)>();
+        string? renderedCategory = null;
+        string[] renderedPackIds = Array.Empty<string>();
+        bool hasRenderedResults = false;
         void Rebuild()
         {
-            categoryRow.Children.Clear();
-            foreach (string category in CommunityCursorCategories)
+            if (closed || applying) return;
+            if (categoryChips.Count == 0)
             {
-                var chip = QuickButton(category, () =>
+                foreach (string category in CommunityCursorCategories)
                 {
-                    selectedCategory = category;
-                    page = 0;
-                    Rebuild();
-                    return Task.CompletedTask;
-                });
-                if (selectedCategory == category)
-                {
-                    chip.Background = AccentSoftBrush();
-                    chip.BorderBrush = AccentBrush();
+                    var chip = QuickButton(category, () =>
+                    {
+                        selectedCategory = category;
+                        page = 0;
+                        Rebuild();
+                        return Task.CompletedTask;
+                    });
+                    ApplyMaterialButtonAppearance(chip);
+                    chip.CornerRadius = new CornerRadius(18);
+                    chip.Padding = new Thickness(14, 4, 14, 4);
+                    categoryRow.Children.Add(chip);
+                    categoryChips.Add((category, chip));
                 }
-                categoryRow.Children.Add(chip);
+            }
+
+            if (!string.Equals(renderedCategory, selectedCategory, StringComparison.Ordinal))
+            {
+                foreach (var (category, chip) in categoryChips)
+                {
+                    // A category switch updates the visual selection in place;
+                    // text edits do not touch these controls or their brushes.
+                    ApplyMaterialButtonAppearance(chip);
+                    chip.CornerRadius = new CornerRadius(18);
+                    chip.Padding = new Thickness(14, 4, 14, 4);
+                    if (selectedCategory == category)
+                    {
+                        chip.Background = GlassNavigationBrush();
+                        chip.BorderBrush = GlassBlueEdgeBrush();
+                    }
+                }
+                renderedCategory = selectedCategory;
             }
 
             string query = search.Text?.Trim() ?? string.Empty;
@@ -233,6 +286,18 @@ public sealed partial class MainWindow
             if (prevButton != null) prevButton.IsEnabled = page > 0;
             if (nextButton != null) nextButton.IsEnabled = page < pageCount - 1;
 
+            // Incremental search commonly produces the same visible results
+            // (especially after the first no-match character). Rebuilding
+            // identical preview cards forces redundant XAML layout and image
+            // decode. Update the count/category above but retain the cards
+            // whenever their ordered identities are unchanged.
+            string[] visibleIds = visible.Select(p => p.Id).ToArray();
+            if (hasRenderedResults &&
+                renderedPackIds.SequenceEqual(visibleIds, StringComparer.OrdinalIgnoreCase))
+                return;
+            renderedPackIds = visibleIds;
+            hasRenderedResults = true;
+
             cardsHost.Children.Clear();
             selectedCard = null;
             StackPanel row = NewCursorSkinRow();
@@ -242,6 +307,7 @@ public sealed partial class MainWindow
             {
                 var cardButton = BuildCommunityCursorCard(pack, countText, (picked, pickedButton) =>
                 {
+                    if (closed || applying) return;
                     selectedPack = picked;
 
                     if (selectedCard != null)
@@ -309,23 +375,27 @@ public sealed partial class MainWindow
 
         var closeActionButton = new Button
         {
+            Name = "CursorClose",
             Content = "Zavřít",
             MinWidth = 118,
             Height = 38,
             Padding = new Thickness(18, 0, 18, 0),
-            Background = SurfaceElevatedBrush(),
+            Background = _darkTheme ? GlassSurfaceElevatedBrush() : SurfaceElevatedBrush(),
             Foreground = TextPrimaryBrush(),
-            BorderBrush = BorderThemeBrush(),
+            BorderBrush = DialogNeutralBorderBrush(),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             HorizontalAlignment = HorizontalAlignment.Right
         };
+        ApplyMaterialButtonAppearance(closeActionButton);
+        closeActionButton.Padding = new Thickness(18, 0, 18, 0);
+        closeActionButton.CornerRadius = new CornerRadius(19);
         closeActionButton.Click += (_, _) =>
         {
             LogService.Info("cursor", "COMMUNITY_CLOSE_CLICK");
             try
             {
-                dialog.Hide();
+                CloseDialog();
                 LogService.Info("cursor", "COMMUNITY_CLOSE_OK");
             }
             catch (Exception ex)
@@ -333,7 +403,9 @@ public sealed partial class MainWindow
                 LogService.Error("cursor", "COMMUNITY_CLOSE_HIDE_FAIL", ex);
             }
         };
+        EnsureAccessibleButton(closeActionButton, "Zavřít knihovnu kurzorů");
         Grid.SetColumn(closeActionButton, 2);
+        Grid.SetRow(closeActionButton, 1);
         actionBar.Children.Add(closeActionButton);
 
         applyActionButton = new Button
@@ -349,8 +421,17 @@ public sealed partial class MainWindow
             HorizontalAlignment = HorizontalAlignment.Right,
             IsEnabled = selectedPack != null
         };
+        ApplyMaterialButtonAppearance(applyActionButton, true);
+        applyActionButton.Padding = new Thickness(18, 0, 18, 0);
+        applyActionButton.CornerRadius = new CornerRadius(19);
         async Task ApplySelectedCursorAsync()
         {
+            if (closed || applying) return;
+            if (pendingApplyTask is { IsCompleted: false })
+            {
+                status.Text = "Předchozí aplikování ještě doběhá, zkus to za chvíli.";
+                return;
+            }
             if (selectedPack == null)
             {
                 status.Text = "Nejdřív vyber cursor pack.";
@@ -358,46 +439,91 @@ public sealed partial class MainWindow
             }
 
             CommunityCursorPack packToApply = selectedPack;
+            applying = true;
+            search.IsEnabled = false;
+            categoryScroll.IsEnabled = false;
+            cardsScroll.IsEnabled = false;
+            // Apply may touch Windows shell state, but the modal must never become a trap.
+            // Keep both close controls active so X/Esc/Zavřít can cancel and dismiss immediately.
             applyActionButton.IsEnabled = false;
-            closeActionButton.IsEnabled = false;
+            closeActionButton.IsEnabled = true;
+            if (popupCloseButton != null) popupCloseButton.IsEnabled = true;
             status.Text = "Aplikuji • " + packToApply.Name + "…";
 
             try
             {
                 LogService.Info("cursor", $"COMMUNITY_APPLY_START id={packToApply.Id} name={packToApply.Name}");
-                await Task.Run(() => CursorCommunityPackService.Apply(packToApply));
+                applyCts?.Dispose();
+                applyCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(_windowLifetimeCts.Token);
+                System.Threading.CancellationToken applyToken = applyCts.Token;
+                Task applyTask = Task.Run(() => CursorCommunityPackService.Apply(packToApply), applyToken);
+                pendingApplyTask = applyTask;
+                await applyTask.WaitAsync(TimeSpan.FromSeconds(8), applyToken);
 
-                if (!CursorCommunityPackService.IsApplied(packToApply))
-                    throw new InvalidOperationException("Read-back nepotvrdil aplikovaný cursor pack.");
-
+                applyToken.ThrowIfCancellationRequested();
+                if (closed) return;
                 LogService.Info("cursor", $"COMMUNITY_APPLY_OK id={packToApply.Id} name={packToApply.Name}");
                 _cursorStatusText = "Aktivováno: " + packToApply.Name;
                 status.Text = "Aktivováno • " + packToApply.Name;
                 applied = true;
-                dialog.Hide();
+                applying = false;
+                CloseDialog();
+            }
+            catch (OperationCanceledException)
+            {
+                if (!closed)
+                    status.Text = "Aplikování zrušeno.";
+            }
+            catch (TimeoutException ex)
+            {
+                LogService.Error("cursor", $"COMMUNITY_APPLY_TIMEOUT id={packToApply.Id} name={packToApply.Name}", ex);
+                try { applyCts?.Cancel(); } catch { }
+                if (!closed)
+                    status.Text = "Aplikování trvalo příliš dlouho. Můžeš zkusit pack znovu.";
             }
             catch (Exception ex)
             {
                 LogService.Error("cursor", $"COMMUNITY_APPLY_FAIL id={packToApply.Id} name={packToApply.Name}", ex);
-                status.Text = "Apply selhal • " + ex.Message;
-                applyActionButton.IsEnabled = true;
-                closeActionButton.IsEnabled = true;
+                if (!closed) status.Text = "Apply selhal • " + ex.Message;
+            }
+            finally
+            {
+                applying = false;
+                applyCts?.Dispose();
+                applyCts = null;
+                if (!closed)
+                {
+                    search.IsEnabled = true;
+                    categoryScroll.IsEnabled = true;
+                    cardsScroll.IsEnabled = true;
+                    applyActionButton.IsEnabled = selectedPack != null;
+                    closeActionButton.IsEnabled = true;
+                    if (popupCloseButton != null) popupCloseButton.IsEnabled = true;
+                }
             }
         }
         applyActionButton.Click += (_, _) => _ = ApplySelectedCursorAsync();
+        EnsureAccessibleButton(applyActionButton, "Použít vybraný cursor pack");
         Grid.SetColumn(applyActionButton, 1);
+        Grid.SetRow(applyActionButton, 1);
         actionBar.Children.Add(applyActionButton);
 
         Rebuild();
 
         try
         {
-            await dialog.ShowAsync();
+            popupCloseButton = MountDialog(overlay, card, RequestClose);
+            RootGrid.SizeChanged += resizeHandler;
+            await completion.Task;
         }
         finally
         {
-            if (ReferenceEquals(_communityCursorDialog, dialog))
+            CloseDialog();
+            if (ReferenceEquals(_communityCursorDialog, overlay))
+            {
                 _communityCursorDialog = null;
+                _closeCommunityCursorDialog = null;
+            }
         }
 
         if (applied)
@@ -427,7 +553,7 @@ public sealed partial class MainWindow
         body.Children.Add(new TextBlock
         {
             Text = pack.Category + " • " + pack.Author,
-            FontSize = 9.5,
+            FontSize = 10.5,
             Foreground = TextSecondaryBrush(),
             TextWrapping = TextWrapping.Wrap,
             MaxHeight = 32
@@ -435,7 +561,7 @@ public sealed partial class MainWindow
         body.Children.Add(new TextBlock
         {
             Text = pack.License,
-            FontSize = 8.5,
+            FontSize = 10.5,
             Foreground = AccentBrush(),
             TextWrapping = TextWrapping.Wrap,
             MaxHeight = 28

@@ -1,0 +1,23 @@
+{
+  "Repository": "ChrisTitusTech/winutil",
+  "Commit": "07ccd8e2e755a706f31569808b31f5b77acad6a9",
+  "ImportedUtc": "2026-10-07T20:04:11.2705371Z",
+  "Services": [
+    {
+      "Name": "CscService",
+      "StartType": 4
+    },
+    {
+      "Name": "DiagTrack",
+      "StartType": 4
+    },
+    {
+      "Name": "MapsBroker",
+      "StartType": 3
+    },
+    {
+      "Name": "StorSvc",
+      "StartType": 3
+    }
+  ]
+}

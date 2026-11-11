@@ -20,6 +20,8 @@ internal static class WorkerClientService
         try
         {
             if (!Directory.Exists(dir)) return;
+            // Do not delete through a redirected IPC root (junction/symlink).
+            WorkerIpcSecurity.RequireSafeRoot(dir);
             DateTime cutoff = DateTime.UtcNow - TimeSpan.FromDays(1);
             var files = Directory.EnumerateFiles(dir, "*.json")
                 .Select(path => new FileInfo(path))
@@ -44,23 +46,35 @@ internal static class WorkerClientService
     private static async Task<T> RunCoreAsync<T>(string action, string? arg, TimeSpan? timeout, CancellationToken token,
         Action<string>? onStdOut, Action<string>? onStdErr)
     {
+        DateTimeOffset requestStartedUtc = DateTimeOffset.UtcNow;
         string exe = Path.Combine(AppContext.BaseDirectory, "SpankyhoOptimizer.exe");
-        string dir = Path.Combine(LogService.Root, "worker-ipc");
+        string dir = WorkerIpcSecurity.Root;
         Directory.CreateDirectory(dir);
         CleanupStaleIpc(dir);
-        string output = Path.Combine(dir, Guid.NewGuid().ToString("N") + ".json");
+        string output = WorkerIpcSecurity.CreateOutputPath();
         string args = $"--worker \"{Escape(action)}\" --worker-out \"{Escape(output)}\"";
         if (!string.IsNullOrWhiteSpace(arg)) args += $" --worker-arg \"{Escape(arg)}\"";
         try
         {
-            ProcessResult result = onStdOut == null && onStdErr == null
-                ? await ProcessRunner.RunAsync(exe, args, timeout ?? TimeSpan.FromSeconds(60), token)
-                : await ProcessRunner.RunStreamingAsync(exe, args, timeout ?? TimeSpan.FromSeconds(60), token, onStdOut, onStdErr);
+            TimeSpan effectiveTimeout = timeout ?? TimeSpan.FromSeconds(60);
+            bool elevate = WorkerPrivilegePolicy.RequiresElevation(action) && !WorkerPrivilegePolicy.IsAdministrator();
+            ProcessResult result;
+            if (elevate)
+            {
+                LogService.Info("worker-ipc", $"ELEVATED_WORKER_START action={action}");
+                result = await ElevatedWorkerProcessService.RunAsync(exe, args, effectiveTimeout, token).ConfigureAwait(false);
+            }
+            else
+            {
+                result = onStdOut == null && onStdErr == null
+                    ? await ProcessRunner.RunAsync(exe, args, effectiveTimeout, token).ConfigureAwait(false)
+                    : await ProcessRunner.RunStreamingAsync(exe, args, effectiveTimeout, token, onStdOut, onStdErr).ConfigureAwait(false);
+            }
             if (!result.Success) throw new InvalidOperationException($"Worker {action} selhal: {(result.StdErr + result.StdOut).Trim()}");
             if (!File.Exists(output)) throw new InvalidDataException($"Worker {action} nevytvořil odpověď.");
             string json = await File.ReadAllTextAsync(output, token);
             var value = JsonSerializer.Deserialize<T>(json) ?? throw new InvalidDataException($"Worker {action} vrátil neplatná data.");
-            WorkerHealthService.Success(action);
+            WorkerHealthService.Success(action, requestStartedUtc);
             return value;
         }
         catch (Exception ex)
@@ -76,7 +90,7 @@ internal static class WorkerClientService
 
     internal static void RunIpcCleanupSmoke()
     {
-        string dir = Path.Combine(LogService.Root, "worker-ipc");
+        string dir = WorkerIpcSecurity.Root;
         Directory.CreateDirectory(dir);
         string stale = Path.Combine(dir, "smoke-stale-" + Guid.NewGuid().ToString("N") + ".json");
         try

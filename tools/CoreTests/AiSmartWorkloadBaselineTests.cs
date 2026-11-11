@@ -6,6 +6,71 @@ namespace CoreTests;
 public sealed class AiSmartWorkloadBaselineTests
 {
     [Fact]
+    public void GlobalBaselineCacheInvalidatesOnModelReplacementEvenWithSameValues()
+    {
+        var service = new AiSmartRuntimeService();
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var resolve = typeof(AiSmartRuntimeService).GetMethod("ResolveBaseline", flags,
+            null, new[] { typeof(AiWorkloadClass) }, null)!;
+        var modelField = typeof(AiSmartRuntimeService).GetField("_model", flags)!;
+        var first = resolve.Invoke(service, new object[] { AiWorkloadClass.Unknown });
+        var original = (AiSmartRuntimeModel)modelField.GetValue(service)!;
+        modelField.SetValue(service, original with { });
+        var replacement = resolve.Invoke(service, new object[] { AiWorkloadClass.Unknown });
+        Assert.NotSame(first, replacement);
+        Assert.Equal(first, replacement);
+        Assert.Same(replacement, resolve.Invoke(service, new object[] { AiWorkloadClass.Unknown }));
+    }
+
+    [Fact]
+    public void GlobalBaselineReusesObjectUntilModelChanges()
+    {
+        var service = new AiSmartRuntimeService();
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var resolve = typeof(AiSmartRuntimeService).GetMethod("ResolveBaseline", flags,
+            null, new[] { typeof(AiWorkloadClass) }, null)!;
+        var modelField = typeof(AiSmartRuntimeService).GetField("_model", flags)!;
+        var first = (AiSmartWorkloadBaseline)resolve.Invoke(service, new object[] { AiWorkloadClass.Unknown })!;
+        Assert.Same(first, resolve.Invoke(service, new object[] { AiWorkloadClass.Unknown }));
+        var original = (AiSmartRuntimeModel)modelField.GetValue(service)!;
+        modelField.SetValue(service, original with { AvgTempC = original.AvgTempC + 1 });
+        var changed = (AiSmartWorkloadBaseline)resolve.Invoke(service, new object[] { AiWorkloadClass.Unknown })!;
+        Assert.NotSame(first, changed);
+        Assert.Equal(first.AvgTempC + 1, changed.AvgTempC);
+        Assert.Same(changed, resolve.Invoke(service, new object[] { AiWorkloadClass.Unknown }));
+    }
+
+    [Fact]
+    public void BaselineLabelReusesUnchangedTextAndInvalidatesAfterLearning()
+    {
+        var service = new AiSmartRuntimeService();
+        var label = typeof(AiSmartRuntimeService).GetMethod("BaselineText",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var modelField = typeof(AiSmartRuntimeService).GetField("_model",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        string first = (string)label.Invoke(service, new object[] { AiWorkloadClass.Unknown })!;
+        string cached = (string)label.Invoke(service, new object[] { AiWorkloadClass.Unknown })!;
+        Assert.Same(first, cached);
+
+        var current = (AiSmartRuntimeModel)modelField.GetValue(service)!;
+        modelField.SetValue(service, current with { AvgTempC = current.AvgTempC + 3 });
+        string changed = (string)label.Invoke(service, new object[] { AiWorkloadClass.Unknown })!;
+        Assert.NotEqual(first, changed);
+        Assert.Same(changed, label.Invoke(service, new object[] { AiWorkloadClass.Unknown }));
+    }
+
+    [Theory]
+    [InlineData(AiWorkloadClass.Unknown)]
+    [InlineData(AiWorkloadClass.Idle)]
+    [InlineData(AiWorkloadClass.Background)]
+    [InlineData(AiWorkloadClass.Interactive)]
+    [InlineData(AiWorkloadClass.Game)]
+    public void WorkloadKeyPreservesPersistedEnumNames(AiWorkloadClass workload)
+    {
+        Assert.Equal(workload.ToString(), AiSmartRuntimeService.WorkloadKey(workload));
+    }
+
+    [Fact]
     public void SpecializedBaselineNeedsEnoughFreshSamples()
     {
         DateTime now = new(2026, 10, 4, 3, 30, 0, DateTimeKind.Utc);

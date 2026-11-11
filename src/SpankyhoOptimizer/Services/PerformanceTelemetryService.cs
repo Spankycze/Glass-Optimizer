@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 
 namespace SpankyhoOptimizer.Services;
@@ -35,8 +35,10 @@ public static class PerformanceTelemetryService
     {
         private readonly string _area;
         private readonly string _operation;
-        private readonly Stopwatch _sw = Stopwatch.StartNew();
-        private readonly long _startMem = GC.GetTotalMemory(false);
+        private readonly long _startedAt = Stopwatch.GetTimestamp();
+        private readonly int _startedThread = Environment.CurrentManagedThreadId;
+        private readonly long _startedAllocatedBytes = GC.GetAllocatedBytesForCurrentThread();
+        private int _disposed;
 
         public Scope(string area, string operation)
         {
@@ -46,10 +48,14 @@ public static class PerformanceTelemetryService
 
         public void Dispose()
         {
-            _sw.Stop();
-            long deltaKb = (GC.GetTotalMemory(false) - _startMem) / 1024;
-            if (_sw.ElapsedMilliseconds >= 100 || Math.Abs(deltaKb) >= 1024)
-                LogService.Info("perf", $"OP area={_area} op={_operation} ms={_sw.ElapsedMilliseconds} managedDelta={deltaKb}KB");
+            if (System.Threading.Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            double elapsedMs = Stopwatch.GetElapsedTime(_startedAt).TotalMilliseconds;
+            bool sameThread = Environment.CurrentManagedThreadId == _startedThread;
+            long allocatedKb = sameThread
+                ? Math.Max(0, GC.GetAllocatedBytesForCurrentThread() - _startedAllocatedBytes) / 1024
+                : -1;
+            if (elapsedMs >= 100 || allocatedKb >= 1024)
+                LogService.Info("perf", $"OP area={_area} op={_operation} ms={elapsedMs:F2} allocatedKB={(sameThread ? allocatedKb.ToString() : "NA")} crossThread={!sameThread}");
         }
     }
 }

@@ -30,7 +30,15 @@ public sealed partial class MainWindow
         new("DisableRewrite", "Notepad Rewrite", "Vypne AI Rewrite integraci v Poznámkovém bloku.", true, false),
         new("PreventAIPackageReinstall", "Blokovat návrat AI balíčků", "Omezí opětovnou instalaci podporovaných AI balíčků po update.", true, false),
         new("RemoveCBSPackages", "Systémové AI balíčky", "Pokročilý zásah do systémových AI komponent.", false, true),
-        new("RemoveAIFiles", "AI systémové soubory", "Pokročilé odebrání AI souborů s nejvyšším rizikem kompatibility.", false, true)
+        new("RemoveAIFiles", "AI systémové soubory", "Pokročilé odebrání AI souborů s nejvyšším rizikem kompatibility.", false, true),
+        new("DisableNPUDevice", "NPU zařízení", "Vypne podporované NPU zařízení přes RemoveWindowsAI.", false, true),
+        new("AllOptions", "Všechny AI volby", "Spustí všechny upstream AI volby najednou.", false, true),
+        new("RunWinUpdateRepair", "Oprava Windows Update", "Spustí upstream opravu AI komponent po Windows Update.", false, true),
+        new("InstallClassicApps:photoviewer", "Classic Photo Viewer", "Nainstaluje klasický Photo Viewer.", false, false),
+        new("InstallClassicApps:mspaint", "Classic Paint", "Nainstaluje klasický Microsoft Paint.", false, false),
+        new("InstallClassicApps:snippingtool", "Classic Snipping Tool", "Nainstaluje klasický Snipping Tool.", false, false),
+        new("InstallClassicApps:notepad", "Classic Notepad", "Nainstaluje klasický Poznámkový blok.", false, false),
+        new("InstallClassicApps:photoslegacy", "Legacy Photos", "Nainstaluje klasickou aplikaci Fotky.", false, false)
     };
     private Task BuildAiPageAsync(CancellationToken token)
     {
@@ -44,7 +52,10 @@ public sealed partial class MainWindow
             _aiPageCacheAt = DateTime.UtcNow;
             foreach (var element in _aiPageCache) AttachCachedElement(element);
             UpdateDirtyState();
-            if (staleDetection) SafeTaskService.Forget(DetectAiStateAsync(cacheKey, _tweaks.ToArray(), token), "ai", "Background AI detect");
+            if (staleDetection) SafeTaskService.Forget(
+                DetectAiStateAsync(cacheKey, _tweaks.ToArray(), _navigationGeneration, token),
+                "ai",
+                "Background AI detect");
             return Task.CompletedTask;
         }
 
@@ -67,15 +78,13 @@ public sealed partial class MainWindow
         aiActions.Children.Add(ActionCard("Vybrat AI moduly", "Copilot, Recall, AI úlohy, aplikace, AI Components, Notepad Rewrite a pokročilé moduly.", "Otevřít výběr", ShowAiSelectionAsync));
         aiActions.Children.Add(ActionCard("Obnovit AI modul", "Vrátí konkrétní modul do původního stavu.", "Obnovit", ShowAiRevertDialogAsync));
         ContentStack.Children.Add(BuildDashboardExpander("Další AI nástroje", "Výběr, obnova a údržba AI komponent", aiActions, expanded: true));
-        ContentStack.Children.Add(ActionCard("Aktualizovat RemoveWindowsAI", "Stáhne poslední verzi skriptu z oficiálního zoicware repozitáře.", "Aktualizovat", async () =>
-        {
-            await ZoicwareToolsService.RefreshRemoveWindowsAiAsync(token);
-            await ShowMessageAsync("Windows AI", "RemoveWindowsAI byl aktualizován.");
-        }));
-        _aiPageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _aiPageCache = SnapshotChildren(ContentStack);
         _aiPageCacheAt = DateTime.UtcNow;
         UpdateDirtyState();
-        if (staleDetection) SafeTaskService.Forget(DetectAiStateAsync(cacheKey, _tweaks.ToArray(), token), "ai", "Background AI detect");
+        if (staleDetection) SafeTaskService.Forget(
+                DetectAiStateAsync(cacheKey, _tweaks.ToArray(), _navigationGeneration, token),
+                "ai",
+                "Background AI detect");
         return Task.CompletedTask;
     }
 
@@ -85,13 +94,18 @@ public sealed partial class MainWindow
         _aiPageCacheAt = default;
     }
 
-    private async Task DetectAiStateAsync(string cacheKey, TweakDefinition[] tweaks, CancellationToken token)
+    private async Task DetectAiStateAsync(string cacheKey, TweakDefinition[] tweaks, int generation, CancellationToken token)
     {
         try
         {
             await _engine.DetectAsync(tweaks, token);
             _tweakCacheTime[cacheKey] = DateTime.UtcNow;
-            if (!token.IsCancellationRequested && _section == "ai") DispatcherQueue.TryEnqueue(UpdateDirtyState);
+            if (!token.IsCancellationRequested && generation == _navigationGeneration && _section == "ai")
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!token.IsCancellationRequested && generation == _navigationGeneration && _section == "ai")
+                        UpdateDirtyState();
+                });
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { LogService.Error("ai", "Background AI detect failed", ex); }
@@ -102,6 +116,8 @@ public sealed partial class MainWindow
         var checks = new List<(CheckBox Box, AiChoice Item)>();
         var root = new StackPanel { Spacing = 10 };
         var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var exclude = new CheckBox { Content = "Vybrané volby vynechat (upstream ExcludeOptions)", Margin = new Thickness(0, 0, 0, 4) };
+        root.Children.Add(exclude);
         toolbar.Children.Add(QuickButton("Recommended", () => { foreach (var x in checks) x.Box.IsChecked = x.Item.Recommended; return Task.CompletedTask; }));
         toolbar.Children.Add(QuickButton("Vybrat vše", () => { foreach (var x in checks) x.Box.IsChecked = true; return Task.CompletedTask; }));
         toolbar.Children.Add(QuickButton("Zrušit vše", () => { foreach (var x in checks) x.Box.IsChecked = false; return Task.CompletedTask; }));
@@ -126,9 +142,17 @@ public sealed partial class MainWindow
         if (!await ShowStyledContentAsync("AI Debloater — co upravit", "Vyber konkrétní moduly. Nic dalšího se nespustí.", scroll, "Použít vybrané")) return;
         var selected = checks.Where(x => x.Box.IsChecked == true).Select(x => x.Item).ToArray();
         if (selected.Length == 0) return;
+        if (exclude.IsChecked == true && selected.Any(x => x.Key is "AllOptions" or "RunWinUpdateRepair" || x.Key.StartsWith("InstallClassicApps:", StringComparison.OrdinalIgnoreCase)))
+        {
+            await ShowMessageAsync("Windows AI", "ExcludeOptions lze použít pouze s konkrétními AI volbami.");
+            return;
+        }
         if (selected.Any(x => x.Advanced) && !await ShowStyledConfirmAsync("Pokročilý AI zásah", "Vybral jsi systémové AI komponenty nebo systémové soubory. Tyto zásahy mohou zhoršit kompatibilitu po Windows Update.", "Pokračovat", "Zrušit", "Před změnou se vytvoří bod obnovení")) return;
         await WindowsActions.EnsureRecentRestorePointAsync("Spankyho Optimizer - Before AI changes");
-        await RunAiModulesProgressAsync(selected, revert: false);
+        AiChoice[] runSelection = exclude.IsChecked == true
+            ? new[] { new AiChoice(string.Join(',', selected.Select(x => x.Key)), "Vynechat vybrané AI volby", "Upstream RemoveWindowsAI ExcludeOptions.", false, true) }
+            : selected;
+        await RunAiModulesProgressAsync(runSelection, revert: false, excludeOptions: exclude.IsChecked == true);
         await ShowMessageAsync("Windows AI", "AI operace byla dokončena.");
     }
 

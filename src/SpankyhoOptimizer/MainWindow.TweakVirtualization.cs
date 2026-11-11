@@ -4,6 +4,7 @@ using System.Linq;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -42,8 +43,7 @@ public sealed partial class MainWindow
             ["system"] = new DeferredVirtualState(),
             ["privacy"] = new DeferredVirtualState(),
             ["ui"] = new DeferredVirtualState(),
-            ["update"] = new DeferredVirtualState(),
-            ["browsers"] = new DeferredVirtualState()
+            ["update"] = new DeferredVirtualState()
         };
 
     private sealed record DeferredVirtualGroup(Panel Target, string Title, List<TweakVirtualRowViewModel> Rows);
@@ -55,10 +55,25 @@ public sealed partial class MainWindow
         public bool BatchQueued { get; set; }
     }
 
-    private bool UseVirtualTweakRows() => _section is "system" or "privacy" or "update" or "browsers" || _tweaks.Count >= 24;
+    private bool UseVirtualTweakRows() => _section is "system" or "privacy" or "update" || _tweaks.Count >= 24;
 
     private void ClearVirtualTweakRows()
     {
+        bool hasRows = _virtualTweakRows is { Length: > 0 } || (_virtualTweakRowMapStore?.Count ?? 0) > 0;
+        bool hasDeferred = false;
+        if (_deferredVirtualStatesStore != null)
+        {
+            foreach (var state in _deferredVirtualStatesStore.Values)
+            {
+                if (state.BatchQueued || state.RowTemplate != null || state.Groups.Count > 0)
+                {
+                    hasDeferred = true;
+                    break;
+                }
+            }
+        }
+        if (!hasRows && !hasDeferred) return;
+
         _virtualTweakRows = null;
         // Do not clear the map in-place: page caches (Privacy/System/etc.) can own the
         // same dictionary instance and must retain their tweak->row mapping across
@@ -82,11 +97,13 @@ public sealed partial class MainWindow
 
     private static int ImmediateVirtualGroupCount(string section) => section switch
     {
-        "system" => 0,
+        // Keep the first two System groups visible as soon as the deferred
+        // page root appears. The remaining groups still build in short idle
+        // slices; cold foreground navigation and its 35ms gate stay intact.
+        "system" => 2,
         "privacy" => 0,
         "ui" => 0,
         "update" => 0,
-        "browsers" => 0,
         _ => int.MaxValue
     };
 
@@ -105,7 +122,22 @@ public sealed partial class MainWindow
         long iconStartMs = perf.ElapsedMilliseconds;
         ImageSource sectionIconSource = SectionIconSource(section);
         long iconMs = perf.ElapsedMilliseconds - iconStartMs;
-        var groups = (section == "system" && _darkTheme ? _tweaks.OrderBy(GlassSystemOrder).GroupBy(GlassSystemGroup) : _tweaks.GroupBy(t => t.Group)).ToArray();
+        IEnumerable<TweakDefinition> groupSource = section == "system" && _darkTheme
+            ? _tweaks.OrderBy(GlassSystemOrder)
+            : _tweaks;
+        var groups = new List<(string Key, List<TweakDefinition> Tweaks)>();
+        var groupIndexes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (TweakDefinition tweak in groupSource)
+        {
+            string key = section == "system" && _darkTheme ? GlassSystemGroup(tweak) : tweak.Group;
+            if (!groupIndexes.TryGetValue(key, out int index))
+            {
+                index = groups.Count;
+                groupIndexes[key] = index;
+                groups.Add((key, new List<TweakDefinition>()));
+            }
+            groups[index].Tweaks.Add(tweak);
+        }
         long groupMs = perf.ElapsedMilliseconds - clearRowsMs - deferredClearMs - resourceMs - iconMs;
         long setupMs = perf.ElapsedMilliseconds;
         long headerMs = 0, vmMs = 0, repeaterMs = 0, expanderMs = 0, attachMs = 0;
@@ -123,13 +155,6 @@ public sealed partial class MainWindow
             virtualRoot.Children.Add(BuildVirtualSectionDashboard(section));
             dashboardMs = perf.ElapsedMilliseconds - phase;
 
-            if (section == "system")
-            {
-                phase = perf.ElapsedMilliseconds;
-                ScheduleSystemOptimizationAdvisors(virtualRoot);
-                advisorAttachMs = perf.ElapsedMilliseconds - phase;
-            }
-
             phase = perf.ElapsedMilliseconds;
             rootAttachTarget.Children.Add(virtualRoot);
             virtualRootAttachMs = perf.ElapsedMilliseconds - phase;
@@ -141,30 +166,22 @@ public sealed partial class MainWindow
                 virtualAttachTarget = glassGroups;
             }
         }
-        else if (section == "browsers")
-        {
-            // Keep browser tweaks flat: the page already has its own browser dashboard,
-            // so adding another expanded wrapper creates unnecessary nested cards.
-            virtualAttachTarget = rootAttachTarget;
-        }
-
         foreach (var group in groups)
         {
-            var groupTweaks = group.ToArray();
-            string groupTitle = $"{group.Key}";
+            string groupTitle = group.Key;
+            bool deferred = deferredState != null && groupIndex >= immediateGroups;
 
             long phase = perf.ElapsedMilliseconds;
-            var rows = new List<TweakVirtualRowViewModel>(groupTweaks.Length);
-            foreach (var tweak in groupTweaks)
+            var rows = new List<TweakVirtualRowViewModel>(group.Tweaks.Count);
+            foreach (var tweak in group.Tweaks)
             {
                 tweak.PropertyChanged -= Tweak_PropertyChanged;
                 tweak.PropertyChanged += Tweak_PropertyChanged;
-                var vm = new TweakVirtualRowViewModel(tweak, _tweakViewMode, _ => QueueDirtyStateRefresh(), sectionIconSource);
+                var vm = new TweakVirtualRowViewModel(tweak, _tweakViewMode, _ => QueueDirtyStateRefresh(), sectionIconSource, deferInitialRefresh: deferred);
                 rows.Add(vm); allRows.Add(vm); _virtualTweakRowMap[tweak] = vm;
             }
             vmMs += perf.ElapsedMilliseconds - phase;
 
-            bool deferred = deferredState != null && groupIndex >= immediateGroups;
             if (deferred && deferredState != null)
             {
                 deferredState.Groups.Enqueue(new DeferredVirtualGroup(virtualAttachTarget, groupTitle, rows));
@@ -199,7 +216,7 @@ public sealed partial class MainWindow
         if (deferredCount > 0) ScheduleDeferredVirtualGroups(section);
         scheduleMs = perf.ElapsedMilliseconds - scheduleStartMs;
 
-        LogService.Info("performance", $"VIRTUAL_UI_PHASE section={section} groups={groups.Length} rows={allRows.Count} deferred={deferredCount} setupMs={setupMs} clearRowsMs={clearRowsMs} deferredClearMs={deferredClearMs} resourceMs={resourceMs} iconMs={iconMs} groupMs={groupMs} dashboardMs={dashboardMs} advisorMs={advisorAttachMs} rootAttachMs={virtualRootAttachMs} headerMs={headerMs} vmMs={vmMs} repeaterMs={repeaterMs} expanderMs={expanderMs} attachMs={attachMs} finalizeMs={finalizeMs} scheduleMs={scheduleMs} totalMs={perf.ElapsedMilliseconds}");
+        LogService.Info("performance", $"VIRTUAL_UI_PHASE section={section} groups={groups.Count} rows={allRows.Count} deferred={deferredCount} setupMs={setupMs} clearRowsMs={clearRowsMs} deferredClearMs={deferredClearMs} resourceMs={resourceMs} iconMs={iconMs} groupMs={groupMs} dashboardMs={dashboardMs} advisorMs={advisorAttachMs} rootAttachMs={virtualRootAttachMs} headerMs={headerMs} vmMs={vmMs} repeaterMs={repeaterMs} expanderMs={expanderMs} attachMs={attachMs} finalizeMs={finalizeMs} scheduleMs={scheduleMs} totalMs={perf.ElapsedMilliseconds}");
     }
 
     private UIElement BuildVirtualSectionDashboard(string section)
@@ -207,14 +224,33 @@ public sealed partial class MainWindow
         if (UseGlassChrome)
         {
             VirtualDashboardMetricRefsBySection.Remove(section);
-            return BuildNeutralSectionIntro(section == "system" ? "Systémové tweaky" : "Soukromí",
-                section == "system" ? "Chování Windows a soukromí" : "Soukromí a ochrana dat");
+            // All System groups are deliberately drawn after the first frame.
+            // Show the full catalog size immediately so it never looks like
+            // the rework removed toggles while deferred groups are queued.
+            string purpose = section == "system"
+                ? $"{_tweaks.Count} skutečných tweaků • " +
+                  $"{_tweaks.Select(GlassSystemGroup).Distinct(StringComparer.OrdinalIgnoreCase).Count()} skupin • " +
+                  "všechny skupiny se zobrazují postupně níže"
+                : $"{_tweaks.Count} nastavení • soukromí a ochrana dat";
+            return BuildNeutralSectionIntro(
+                section == "system" ? "Systémové tweaky" : "Soukromí", purpose);
         }
         int total = _tweaks.Count;
-        int recommended = _tweaks.Count(x => x.Recommended);
-        int loaded = _tweaks.Count(x => x.IsLoaded);
-        int active = _tweaks.Count(x => x.IsLoaded && x.Current);
-        int groups = _tweaks.Select(x => x.Group).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        int recommended = 0;
+        int loaded = 0;
+        int active = 0;
+        var groupNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (TweakDefinition tweak in _tweaks)
+        {
+            if (tweak.Recommended) recommended++;
+            if (tweak.IsLoaded)
+            {
+                loaded++;
+                if (tweak.Current) active++;
+            }
+            groupNames.Add(tweak.Group);
+        }
+        int groups = groupNames.Count;
 
         string title = section == "privacy" ? "Privacy & Security" : "System Tweaks";
         string subtitle = section == "privacy"
@@ -288,61 +324,63 @@ public sealed partial class MainWindow
         int loaded = _tweaks.Count(x => x.IsLoaded);
         int active = _tweaks.Count(x => x.IsLoaded && x.Current);
 
-        refs.ReadBackValue.Text = $"{loaded}/{total}";
-        refs.ReadBackDetail.Text = loaded < total
+        // WinUI Text setters invalidate layout even when the dashboard's
+        // counts did not change. Most tweak events only update a single row.
+        // Avoid four unnecessary dependency-property writes per refresh.
+        string readBack = $"{loaded}/{total}";
+        string readDetail = loaded < total
             ? "Načítám skutečný stav…"
             : "Načtený skutečný stav";
-        refs.ActiveValue.Text = loaded == 0 && total > 0 ? "…" : active.ToString();
-        refs.ActiveDetail.Text = loaded < total
+        string activeValue = loaded == 0 && total > 0 ? "…" : active.ToString();
+        string activeDetail = loaded < total
             ? "Načítám skutečný stav…"
             : "Potvrzené hodnoty";
+        if (!string.Equals(refs.ReadBackValue.Text, readBack, StringComparison.Ordinal))
+            refs.ReadBackValue.Text = readBack;
+        if (!string.Equals(refs.ReadBackDetail.Text, readDetail, StringComparison.Ordinal))
+            refs.ReadBackDetail.Text = readDetail;
+        if (!string.Equals(refs.ActiveValue.Text, activeValue, StringComparison.Ordinal))
+            refs.ActiveValue.Text = activeValue;
+        if (!string.Equals(refs.ActiveDetail.Text, activeDetail, StringComparison.Ordinal))
+            refs.ActiveDetail.Text = activeDetail;
     }
 
     private static UIElement CreateVirtualGroupHeader(string titleText)
     {
-        // Lightweight card header: stronger hierarchy without Grid/ColumnDefinition cold cost.
-        var row = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 10,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        row.Children.Add(new Border
-        {
-            Width = UseGlassChrome ? 0 : 4,
-            Height = 20,
-            CornerRadius = new CornerRadius(2),
-            Background = UseNeutralSectionChrome ? ThemeColor(128,128,128) : ButtonVioletBrush(),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        row.Children.Add(new TextBlock
+        // Virtualized System/Privacy/Update groups share the same quiet,
+        // scan-friendly hierarchy as classic tweak groups. No colored rail.
+        var title = new TextBlock
         {
             Text = titleText,
             Tag = "UiGroupTitleSize", FontSize = UiFontSize("UiGroupTitleSize"),
-            CharacterSpacing = 10,
-            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = TextPrimaryBrush(),
+            TextWrapping = TextWrapping.Wrap, MaxLines = 2,
             VerticalAlignment = VerticalAlignment.Center
-        });
+        };
         return new Border
         {
-            Margin = new Thickness(0, 10, 0, 6),
-            Padding = UseNeutralSectionChrome ? new Thickness(4,10,4,8) : new Thickness(11, 8, 11, 8),
-            CornerRadius = new CornerRadius(10),
-            BorderThickness = new Thickness(UseNeutralSectionChrome ? 0 : (_darkTheme ? 1.2 : 1)),
+            Tag = "virtual-group-heading",
+            Margin = new Thickness(0, 6, 0, 5),
+            Padding = new Thickness(4, 6, 4, 7),
+            BorderThickness = new Thickness(0, 0, 0, 1),
             BorderBrush = SectionBorderBrush(),
-            Background = UseGlassChrome ? ThemeColor(0,0,0,0) : SectionHeaderBackgroundBrush(),
-            Child = row
+            Background = null,
+            Child = title
         };
     }
 
     private static ItemsRepeater CreateVirtualGroupRepeater(List<TweakVirtualRowViewModel> rows, DataTemplate rowTemplate) =>
         new()
         {
-            ItemsSource = rows,
-            ItemTemplate = rowTemplate,
+            // Configure the layout and template before binding the source.
+            // A WinUI ItemsRepeater can otherwise invalidate its initial
+            // realization repeatedly while the native control is cold.
+            // The final visual tree, styling and source identity are unchanged.
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             Layout = new StackLayout { Spacing = UseGlassChrome ? 0 : 6 },
-            HorizontalAlignment = HorizontalAlignment.Stretch
+            ItemTemplate = rowTemplate,
+            ItemsSource = rows
         };
 
     private static UIElement CreateVirtualGroupExpander(UIElement header, UIElement content, bool expanded = true)
@@ -373,24 +411,53 @@ public sealed partial class MainWindow
         if (!_deferredVirtualStates.TryGetValue(section, out var state) || state.BatchQueued || state.Groups.Count == 0 || state.RowTemplate == null) return;
         int generation = state.Generation;
         state.BatchQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        // User-visible rows must not be starved behind startup shell work:
+        // at Low priority the first deferred batch waited ~130 ms and all
+        // groups ~370 ms after the deferred root (Debug, 3 runs). Normal keeps
+        // every batch at <=4 groups / ~3 ms and fills the page in ~30 ms; the
+        // remaining titlebar/sidebar cosmetics shift by only that work.
+        bool queued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
         {
+            // A callback from a previous navigation generation must not clear
+            // the queued marker for a newly scheduled batch.
+            if (generation != state.Generation) return;
             state.BatchQueued = false;
-            if (generation != state.Generation || _section != section || state.RowTemplate == null) return;
+            if (_section != section || state.RowTemplate == null) return;
             var phase = Stopwatch.StartNew();
             int completed = 0;
+            // Detailed stage timing is only needed for opted-in diagnostics
+            // and smoke tests, never for a normal navigation hot path.
+            bool profileGroups = LogService.PerformanceDiagnosticsEnabled;
             while (completed < 4 && state.Groups.Count > 0)
             {
                 var item = state.Groups.Dequeue();
+                long beforeGroupMs = profileGroups ? phase.ElapsedMilliseconds : 0;
+                // The group is now about to become visible. Evaluate row policy
+                // here, not synchronously during the cold navigation's root
+                // build; the 26 deferred System groups need no eager refresh.
+                foreach (var row in item.Rows) row.Refresh(_tweakViewMode);
+                long afterRefreshMs = profileGroups ? phase.ElapsedMilliseconds : 0;
                 var header = CreateVirtualGroupHeader(item.Title);
+                long afterHeaderMs = profileGroups ? phase.ElapsedMilliseconds : 0;
                 var content = CreateVirtualGroupRepeater(item.Rows, state.RowTemplate);
+                long afterRepeaterMs = profileGroups ? phase.ElapsedMilliseconds : 0;
                 AttachVirtualGroup(item.Target, CreateVirtualGroupExpander(header, content, expanded: true));
+                long afterAttachMs = profileGroups ? phase.ElapsedMilliseconds : 0;
+                // Only an actual >8ms UI hitch deserves a diagnostic line.
+                // Distinguish policy refresh from native template/attach costs.
+                if (profileGroups && afterAttachMs - beforeGroupMs >= 8)
+                    LogService.Info("performance",
+                        $"VIRTUAL_DEFERRED_SLOW_GROUP section={section} title={item.Title} rows={item.Rows.Count} refreshMs={afterRefreshMs-beforeGroupMs} headerMs={afterHeaderMs-afterRefreshMs} repeaterMs={afterRepeaterMs-afterHeaderMs} attachMs={afterAttachMs-afterRepeaterMs} totalMs={afterAttachMs-beforeGroupMs}");
                 completed++;
                 if (phase.ElapsedMilliseconds >= 3) break;
             }
             LogService.Info("performance", $"VIRTUAL_DEFERRED section={section} batch={completed} remaining={state.Groups.Count} ms={phase.ElapsedMilliseconds}");
             if (state.Groups.Count > 0) ScheduleDeferredVirtualGroups(section);
         });
+        // If the dispatcher rejects work during navigation/shutdown, allow a
+        // future visit to queue the remaining groups rather than staying stuck.
+        if (!queued && generation == state.Generation)
+            state.BatchQueued = false;
     }
 
     private void ClearDeferredVirtualGroups(string section)
@@ -404,6 +471,62 @@ public sealed partial class MainWindow
 
     private int GetDeferredVirtualGroupCount(string section) =>
         _deferredVirtualStates.TryGetValue(section, out var state) ? state.Groups.Count : 0;
+
+    // Smoke/QA only: navigation returns after the page root, while virtual
+    // groups are attached in bounded dispatcher batches. Wait for the real
+    // queue to drain instead of relying on a fixed delay, so layout checks
+    // never inspect a half-populated System page.
+    internal async Task WaitForDeferredVirtualGroupsAsync(string section, int timeoutMs = 3000)
+    {
+        var watch = Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < timeoutMs)
+        {
+            if (!_deferredVirtualStates.TryGetValue(section, out var state) ||
+                (!state.BatchQueued && state.Groups.Count == 0))
+                return;
+            await Task.Delay(15);
+        }
+    }
+
+    // Navigation-only read-only performance regression: the GPU hardware
+    // and card shell should not be discarded when tweak detection becomes stale.
+    internal async Task RunGpuStaleCacheNavigationSmokeAsync()
+    {
+        await ShowSectionAsync("gpu");
+        for (int i = 0; i < 120 && _gpuPageCache == null; i++)
+            await Task.Delay(25);
+        if (_gpuPageCache == null || _gpuTweakHost == null)
+            throw new InvalidOperationException("GPU stale-cache smoke could not warm complete page.");
+        var oldHost = _gpuTweakHost;
+        DateTime oldDetectedAt = _tweakCacheTime.TryGetValue("gpu|", out var stamp) ? stamp : default;
+        long elapsedMs;
+        bool reused;
+        try
+        {
+            _tweakCacheTime["gpu|"] = DateTime.UtcNow.AddSeconds(-95);
+            await ShowSectionAsync("settings");
+            var stopwatch = Stopwatch.StartNew();
+            await ShowSectionAsync("gpu");
+            stopwatch.Stop();
+            elapsedMs = stopwatch.ElapsedMilliseconds;
+            reused = ReferenceEquals(oldHost, _gpuTweakHost);
+            if (!reused)
+                throw new InvalidOperationException("GPU stale tweak refresh destroyed the cached UI and row viewmodels.");
+            for (int i = 0; i < 100 && (!_tweakCacheTime.TryGetValue("gpu|", out var updated) ||
+                                              DateTime.UtcNow - updated > TimeSpan.FromSeconds(10)); i++)
+                await Task.Delay(25);
+            if (!_tweakCacheTime.TryGetValue("gpu|", out var refreshedAt) ||
+                DateTime.UtcNow - refreshedAt > TimeSpan.FromSeconds(10))
+                throw new InvalidOperationException("GPU stale-cache refresh did not update tweak detection.");
+            LogService.Info("performance",
+                $"GPU_STALE_CACHE_NAV_SMOKE_OK wallMs={elapsedMs} reusedHost={reused} cards={CountClassicTweakCards(_gpuTweakHost)} backgroundRefresh=true");
+        }
+        finally
+        {
+            if (oldDetectedAt != default && _tweakCacheTime.TryGetValue("gpu|", out var now) &&
+                now < oldDetectedAt) _tweakCacheTime["gpu|"] = oldDetectedAt;
+        }
+    }
 
     internal async Task RunGpuDeferredTweakSmokeAsync()
     {
@@ -434,7 +557,10 @@ public sealed partial class MainWindow
         if (CountClassicTweakCards(_gpuTweakHost) != expected)
             throw new InvalidOperationException("GPU cached tweak cards were not preserved after reattach.");
 
-        LogService.Info("performance", $"GPU_DEFERRED_TWEAK_SMOKE_OK renderMs={renderMs} cards={actual} reattached=true");
+        // Also exercise cancellation, navigation ownership and the retry
+        // path of the deferred GPU driver status with in-memory fake Tasks.
+        await RunGpuDeferredHydrationOwnershipSmokeAsync();
+        LogService.Info("performance", $"GPU_DEFERRED_TWEAK_SMOKE_OK renderMs={renderMs} cards={actual} reattached=true hydrationOwnership=true");
     }
 
     internal async Task RunToggleStateConsistencySmokeAsync()
@@ -453,42 +579,49 @@ public sealed partial class MainWindow
             if (vm.Pending != source.Pending)
                 throw new InvalidOperationException("Virtual toggle neodpovídá source.Pending po force-refreshi.");
 
-            RefreshClassicTweakCard(card);
             var grid = card.Child as Grid ?? throw new InvalidOperationException("Classic tweak card nemá Grid.");
-            var toggle = grid.Children.OfType<ToggleSwitch>().FirstOrDefault()
-                ?? throw new InvalidOperationException("Classic tweak card nemá ToggleSwitch.");
+            var cardRefs = grid.Tag as ClassicTweakCardRefs
+                ?? throw new InvalidOperationException("Classic tweak card nemá přímé odkazy.");
+            var toggle = cardRefs.Toggle;
+            int writebacksBeforeSync = cardRefs.UserWritebacks;
+            RefreshClassicTweakCard(card);
+            // Explicitly simulate unrelated queued dirty-state work. This
+            // previously caused a false failure when the smoke reset/read the
+            // shared flag even though the tested card never wrote back.
+            QueueDirtyStateRefresh();
+            await Task.Yield();
+            // The shared _dirtyRefreshQueued can be set by any concurrent
+            // background tweak detection. Only this card's writeback count
+            // proves whether the programmatic toggle refresh changed a model.
+            if (cardRefs.UserWritebacks != writebacksBeforeSync)
+                throw new InvalidOperationException("Programová synchronizace classic toggle nečekaně změnila Pending.");
             if (toggle.IsOn != source.Pending)
                 throw new InvalidOperationException("Classic toggle neodpovídá source.Pending po force-refreshi.");
 
             card.Opacity = 0;
-            card.IsHitTestVisible = false;
             ContentStack.Children.Add(card);
             smokeCardAttached = true;
             card.UpdateLayout();
             toggle.ApplyTemplate();
             await Task.Yield();
-            card.UpdateLayout();
 
-            var track = FindNamedVisualDescendant<Border>(toggle, "SpankyTrack")
-                ?? throw new InvalidOperationException("Global ToggleSwitch template nemá SpankyTrack.");
-            var thumb = track.Child as Border
-                ?? throw new InvalidOperationException("Global ToggleSwitch template nemá thumb Border.");
-            var transform = thumb.RenderTransform as TranslateTransform
-                ?? throw new InvalidOperationException("Global ToggleSwitch template nemá TranslateTransform palce.");
+            // Test the actual ToggleSwitch -> Toggled -> tweak Pending path, not just visual states.
+            bool start = toggle.IsOn;
+            int writesBeforeUserToggle = cardRefs.UserWritebacks;
+            toggle.IsOn = !start;
+            await Task.Yield();
+            if (source.Pending != toggle.IsOn ||
+                cardRefs.UserWritebacks != writesBeforeUserToggle + 1)
+                throw new InvalidOperationException("ToggleSwitch Toggled handler nepropagoval přesně jednu změnu Pending.");
 
-            if (!VisualStateManager.GoToState(toggle, "Off", false) || Math.Abs(transform.X) > 0.01)
-                throw new InvalidOperationException("ToggleSwitch OFF vizuální stav neposunul palec doleva.");
-            var offBrush = track.Background as SolidColorBrush
-                ?? throw new InvalidOperationException("ToggleSwitch OFF track nemá SolidColorBrush.");
-            string offColor = offBrush.Color.ToString();
+            toggle.IsOn = start;
+            await Task.Yield();
+            if (source.Pending != start ||
+                cardRefs.UserWritebacks != writesBeforeUserToggle + 2)
+                throw new InvalidOperationException("ToggleSwitch návrat stavu nepropagoval přesně jednu změnu Pending.");
 
-            if (!VisualStateManager.GoToState(toggle, "On", false) || Math.Abs(transform.X - 20) > 0.01)
-                throw new InvalidOperationException("ToggleSwitch ON vizuální stav neposunul palec doprava.");
-            var onBrush = track.Background as SolidColorBrush
-                ?? throw new InvalidOperationException("ToggleSwitch ON track nemá SolidColorBrush.");
-            string onColor = onBrush.Color.ToString();
-            if (string.Equals(offColor, onColor, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("ToggleSwitch ON/OFF vizuální stav nemění barvu tracku.");
+            if (!toggle.IsEnabled)
+                throw new InvalidOperationException("Editovatelný tweak má neaktivní ToggleSwitch.");
         }
         finally
         {
@@ -499,7 +632,38 @@ public sealed partial class MainWindow
             RefreshClassicTweakCard(card);
         }
 
-        LogService.Info("ui", "TOGGLE_STATE_CONSISTENCY_SMOKE_OK virtual=true classic=true visual=true");
+        // Global Apply's final readback must preserve a newly staged choice,
+        // yet reconcile Pending when Windows really reverted the confirmed
+        // value. Exercise the same native-detection path in memory only.
+        bool simulatedActual = true;
+        var applyReadback = new TweakDefinition
+        {
+            Id = "smoke.ui.apply-final-readback",
+            Section = "smoke",
+            Group = "Apply readback",
+            Name = "Apply readback",
+            Description = "In-memory post-Apply state check",
+            RequiresAdmin = false,
+            DetectAsync = _ => Task.FromResult(simulatedActual)
+        };
+        applyReadback.IsLoaded = true;
+        applyReadback.Current = true;
+        applyReadback.Pending = false; // newer choice after confirmed Apply(true)
+        await _engine.DetectAsync(new[] { applyReadback });
+        if (!applyReadback.Current || applyReadback.Pending || !applyReadback.IsDirty)
+            throw new InvalidOperationException(
+                "Post-Apply readback lost the user's newer Pending selection.");
+
+        // No newer edit: real external drift must update BOTH fields so the
+        // confirmed target comparison can report failure instead of success.
+        applyReadback.Pending = true;
+        simulatedActual = false;
+        await _engine.DetectAsync(new[] { applyReadback });
+        if (applyReadback.Current || applyReadback.Pending || !applyReadback.IsLoaded)
+            throw new InvalidOperationException(
+                "Post-Apply drift readback did not reconcile the Windows state.");
+
+        LogService.Info("ui", "TOGGLE_STATE_CONSISTENCY_SMOKE_OK virtual=true classic=true visual=true applyPendingPreserved=true driftReconciled=true");
     }
 
     private static T? FindNamedVisualDescendant<T>(DependencyObject root, string name) where T : FrameworkElement
@@ -533,9 +697,13 @@ public sealed partial class MainWindow
         private string _meta = string.Empty;
         private string _policyDetail = string.Empty;
         private bool _canEdit;
-        private Brush _badgeBrush = AccentBrush();
+        // Native WinUI brush resource lookups should not run for every
+        // deferred tweak row during the cold page-root build. Materialize
+        // defaults only when a visible template actually binds them.
+        private Brush? _badgeBrush;
         private string _statusText = string.Empty;
-        private Brush _statusBrush = AccentBrush();
+        private string _statusBrushResource = string.Empty;
+        private Brush? _statusBrush;
         private int _lastSourceRevision = -1;
         private int _lastRevalidationRevision = -1;
         private TweakViewMode _lastRefreshMode;
@@ -548,7 +716,7 @@ public sealed partial class MainWindow
             CardVisibility = Visibility.Collapsed;
         }
 
-        public TweakVirtualRowViewModel(TweakDefinition source, TweakViewMode mode, Action<TweakDefinition> changed, ImageSource iconSource)
+        public TweakVirtualRowViewModel(TweakDefinition source, TweakViewMode mode, Action<TweakDefinition> changed, ImageSource iconSource, bool deferInitialRefresh = false)
         {
             _source = source; _changed = changed; _mode = mode;
             _glassFeatured = _themeSection == "system" && GlassSystemOrder(source) < 8;
@@ -558,7 +726,7 @@ public sealed partial class MainWindow
             Name = source.Name; Description = source.Description;
             RestartVisibility = source.RestartRequired ? Visibility.Visible : Visibility.Collapsed;
             IconSource = iconSource;
-            Refresh(mode);
+            if (!deferInitialRefresh) Refresh(mode);
         }
 
         public static TweakVirtualRowViewModel Header(string text) => new(text);
@@ -598,13 +766,13 @@ public sealed partial class MainWindow
         public string Verdict => _verdict;
         public string Meta => _meta;
         public string PolicyDetail => _policyDetail;
-        public Brush BadgeBrush => _badgeBrush;
+        public Brush BadgeBrush => _badgeBrush ??= AccentBrush();
         public string StatusText => _statusText;
-        public Brush StatusBrush => _statusBrush;
+        public Brush StatusBrush => _statusBrush ??= AccentBrush();
         public bool CanEdit => _canEdit;
         public Visibility DetailVisibility => _darkTheme && (_glassFeatured || _source?.Section is "system" or "privacy") ? Visibility.Collapsed : Visibility.Visible;
         public string RowDetail => $"{StatusText}\n{Meta}\n{PolicyDetail}";
-        public string ToggleStateText => _pending ? "ON" : "OFF";
+        public string ToggleStateText => DisplayPending ? "ON" : "OFF";
 
         public bool Pending
         {
@@ -615,9 +783,16 @@ public sealed partial class MainWindow
                 _pending = value; OnChanged(); OnChanged(nameof(ToggleStateText)); OnChanged(nameof(DisplayPending));
                 if (_suppress || _source == null) return;
                 var live = TweakPolicyService.Evaluate(_source, _mode);
-                if (!live.CanEdit || !_source.IsLoaded)
+                if (!live.CanEdit || !_source.IsLoaded || _source.IsBusy)
                 {
-                    _pending = _source.Pending; OnChanged(); OnChanged(nameof(DisplayPending)); return;
+                    // An async policy/working-state update can invalidate a
+                    // click after WinUI toggles visually. Roll back every
+                    // bound representation, including the ON/OFF label.
+                    _pending = _source.Pending;
+                    OnChanged();
+                    OnChanged(nameof(ToggleStateText));
+                    OnChanged(nameof(DisplayPending));
+                    return;
                 }
                 _source.Pending = value;
                 _changed?.Invoke(_source);
@@ -650,12 +825,14 @@ public sealed partial class MainWindow
             bool canEditChanged = _canEdit != newCanEdit;
             bool metaChanged = !string.Equals(_meta, newMeta, StringComparison.Ordinal);
 
-            if (verdictChanged)
+            if (verdictChanged || force)
             {
                 _verdict = newVerdict;
+                // A forced row refresh may follow a theme change even when
+                // the verdict text is identical. Rebind its current brush.
                 _badgeBrush = UiBrush(newVerdict == "Recommended"
                     ? "SpankySuccessBrush"
-                    : newVerdict is "Advanced" or "Needs attention"
+                    : newVerdict is "Advanced" or "Needs attention" or "Requires elevation" or "Requires restart"
                         ? "SpankyWarningBrush" : "SpankyAccentBrush");
             }
             if (detailChanged) _policyDetail = newPolicyDetail;
@@ -664,12 +841,18 @@ public sealed partial class MainWindow
 
             var uiState = TweakUiState(_source);
             string newStatusText = uiState.Text;
-            Brush newStatusBrush = UiBrush(uiState.Resource);
             bool statusChanged = !string.Equals(_statusText, newStatusText, StringComparison.Ordinal);
-            if (statusChanged)
+            bool statusBrushChanged = !string.Equals(_statusBrushResource, uiState.Resource,
+                StringComparison.Ordinal);
+            if (statusChanged) _statusText = newStatusText;
+            if (statusBrushChanged || force || _statusBrush == null)
             {
-                _statusText = newStatusText;
-                _statusBrush = newStatusBrush!;
+                // A policy can change semantic color WITHOUT changing the
+                // Czech status string. Also refresh theme resources on a
+                // forced row repaint without performing a brush lookup on
+                // every otherwise unchanged row.
+                _statusBrushResource = uiState.Resource;
+                _statusBrush = UiBrush(uiState.Resource);
             }
 
             bool pendingChanged = _pending != _source.Pending;
@@ -680,12 +863,14 @@ public sealed partial class MainWindow
                 _suppress = false;
             }
 
-            if (verdictChanged) { OnChanged(nameof(Verdict)); OnChanged(nameof(BadgeBrush)); }
+            if (verdictChanged) OnChanged(nameof(Verdict));
+            if (verdictChanged || force) OnChanged(nameof(BadgeBrush));
             if (detailChanged) OnChanged(nameof(PolicyDetail));
             if (detailChanged || metaChanged || statusChanged) OnChanged(nameof(RowDetail));
             if (canEditChanged) OnChanged(nameof(CanEdit));
             if (metaChanged) OnChanged(nameof(Meta));
-            if (statusChanged) { OnChanged(nameof(StatusText)); OnChanged(nameof(StatusBrush)); }
+            if (statusChanged) OnChanged(nameof(StatusText));
+            if (statusChanged || statusBrushChanged || force) OnChanged(nameof(StatusBrush));
             if (pendingChanged) { OnChanged(nameof(Pending)); OnChanged(nameof(ToggleStateText)); OnChanged(nameof(DisplayPending)); }
         }
 

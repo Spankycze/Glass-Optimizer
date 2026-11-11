@@ -101,6 +101,13 @@ public sealed partial class MainWindow
 
     internal async Task RunPowerRenderSmokeAsync()
     {
+        // The cached AI status is refreshed at a bounded cadence on rapid page
+        // re-entry, but an empty first-render panel must always be populated.
+        DateTime fixedUtc = new(2026, 10, 10, 12, 0, 0, DateTimeKind.Utc);
+        if (ShouldRefreshCachedAiPowerControls(1, fixedUtc.AddSeconds(-1), fixedUtc) ||
+            !ShouldRefreshCachedAiPowerControls(0, fixedUtc.AddSeconds(-1), fixedUtc) ||
+            !ShouldRefreshCachedAiPowerControls(1, fixedUtc.AddSeconds(-4), fixedUtc))
+            throw new InvalidOperationException("Cached AI Power controls refresh interval policy regressed.");
         if (!_powerCardFactoryPrewarmed)
             await PrewarmPowerCardFactoryAfterFirstRenderAsync();
         if (!_powerCardFactoryPrewarmed)
@@ -116,6 +123,11 @@ public sealed partial class MainWindow
 
         if (sw.ElapsedMilliseconds > 75)
             throw new InvalidOperationException($"Power render too slow with warm snapshot: {sw.ElapsedMilliseconds} ms.");
+
+        // A rapid switch must not lose unfinished deferred Power batches.
+        // The cached tree may contain zero, partial, or completed card lists.
+        await ShowSectionAsync("settings");
+        await ShowSectionAsync("power");
 
         for (int i = 0; i < 40 && _powerActionsHost is not { Children.Count: >= 1 }; i++)
             await Task.Delay(25);
@@ -151,11 +163,21 @@ public sealed partial class MainWindow
         if (_powerPageCache == null || _powerPageCache.Count == 0)
             throw new InvalidOperationException("Power page cache was not captured after warm render.");
         var firstRoot = _powerPageCache[0];
+        var pinnedPowerHost = ContentStack;
 
         await ShowSectionAsync("settings");
+        if (!ReferenceEquals(_persistentPowerHost, pinnedPowerHost) ||
+            pinnedPowerHost.Visibility != Visibility.Collapsed ||
+            !pinnedPowerHost.Children.Contains(firstRoot) ||
+            !_contentLayerHost.Children.Contains(pinnedPowerHost))
+            throw new InvalidOperationException("Power cached visual tree was not safely parked for rapid reuse.");
         var cacheSw = Stopwatch.StartNew();
         await ShowSectionAsync("power");
         cacheSw.Stop();
+        if (!ReferenceEquals(ContentStack, pinnedPowerHost) ||
+            pinnedPowerHost.Visibility != Visibility.Visible ||
+            !ReferenceEquals(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(firstRoot), pinnedPowerHost))
+            throw new InvalidOperationException("Power pinned visual tree was reparented or remained hidden.");
         if (!_powerPageCacheAttached)
             throw new InvalidOperationException("Power page cache was not reattached.");
         if (_powerPageCache == null || _powerPageCache.Count == 0 || !ReferenceEquals(_powerPageCache[0], firstRoot))
@@ -163,6 +185,59 @@ public sealed partial class MainWindow
         if (cacheSw.ElapsedMilliseconds > 20)
             throw new InvalidOperationException($"Power cached navigation too slow: {cacheSw.ElapsedMilliseconds} ms.");
         LogService.Info("performance", $"POWER_CACHE_SMOKE_OK attachMs={cacheSw.ElapsedMilliseconds} ttlMs={PowerPageCacheTtl.TotalMilliseconds:0}");
+
+        // The cached whole host remains attached for rapid bounces, then its
+        // Loaded lifetime ends after navigation settles without rebuilding cards.
+        await ShowSectionAsync("settings");
+        for (int i = 0; i < 30 && _contentLayerHost.Children.Contains(pinnedPowerHost); i++)
+            await Task.Delay(100);
+        if (_contentLayerHost.Children.Contains(pinnedPowerHost) ||
+            !pinnedPowerHost.Children.Contains(firstRoot))
+            throw new InvalidOperationException("Idle Power host failed to detach intact.");
+        await ShowSectionAsync("power");
+        if (!ReferenceEquals(ContentStack, pinnedPowerHost) ||
+            !ReferenceEquals(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(firstRoot), pinnedPowerHost))
+            throw new InvalidOperationException("Detached Power host was not restored intact.");
+
+        await ShowSectionAsync("settings");
+        _powerPageCacheAt = DateTime.UtcNow - PowerPageCacheTtl - TimeSpan.FromSeconds(1);
+        await ShowSectionAsync("power");
+        if (_persistentPowerHost != null || _contentLayerHost.Children.Contains(pinnedPowerHost) ||
+            _powerPageCache is not { Count: > 0 } || ReferenceEquals(_powerPageCache[0], firstRoot))
+            throw new InvalidOperationException("Expired hidden Power tree survived navigation or was reused.");
+
+        var rebuiltPowerHost = ContentStack;
+        await ShowSectionAsync("settings");
+        InvalidatePowerPageCache();
+        if (_persistentPowerHost != null || _contentLayerHost.Children.Contains(rebuiltPowerHost))
+            throw new InvalidOperationException("Invalidated hidden Power tree remained attached.");
+        await ShowSectionAsync("power");
+
+        // Abandon the first deferred batches before they run, then return to the cached
+        // tree. A stale callback must not clear the new generation's pending flags or
+        // leave the page with missing Recommended/Advanced cards and action buttons.
+        InvalidatePowerPageCache();
+        await ShowSectionAsync("settings");
+        await ShowSectionAsync("power");
+        await ShowSectionAsync("settings");
+        await ShowSectionAsync("power");
+        for (int i = 0; i < 100; i++)
+        {
+            if (_powerSummaryHost is { Children.Count: > 0 } &&
+                _powerActionsHost is { Children.Count: > 0 } &&
+                _powerRecommendedSettings != null && _powerRecommendedHost != null &&
+                _powerRecommendedHost.Children.Count == _powerRecommendedSettings.Length &&
+                _powerAdvancedSettings != null && _powerAdvancedHost != null &&
+                _powerAdvancedHost.Children.Count == _powerAdvancedSettings.Length)
+                break;
+            await Task.Delay(25);
+        }
+        if (_powerSummaryHost is not { Children.Count: > 0 } ||
+            _powerActionsHost is not { Children.Count: > 0 } ||
+            _powerRecommendedSettings == null || _powerRecommendedHost?.Children.Count != _powerRecommendedSettings.Length ||
+            _powerAdvancedSettings == null || _powerAdvancedHost?.Children.Count != _powerAdvancedSettings.Length)
+            throw new InvalidOperationException("Power bounce lost a deferred summary, action, or card batch.");
+        LogService.Info("power", "POWER_DEFERRED_BOUNCE_SMOKE_OK");
 
         var adaptive = PerformanceProfilesService.GetAdaptivePowerProfile();
         if (adaptive.Epp is < 0 or > 100 || adaptive.CoreMin is < 1 or > 100 ||
@@ -191,6 +266,7 @@ public sealed partial class MainWindow
 
     private void BuildNetworkPerformancePanel(CancellationToken token)
     {
+        int generation = _navigationGeneration;
         var networkUiPerf = System.Diagnostics.Stopwatch.StartNew();
         var heroHost = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
         ContentStack.Children.Insert(0, heroHost);
@@ -198,7 +274,8 @@ public sealed partial class MainWindow
 
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "network" || heroHost.Children.Count > 0) return;
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "network" ||
+                !ContentStack.Children.Contains(heroHost) || heroHost.Children.Count > 0) return;
             var deferred = System.Diagnostics.Stopwatch.StartNew();
             heroHost.Children.Add(BuildNetworkDashboardHero(token));
             LogService.Info("performance", $"NETWORK_HERO_DEFERRED ms={deferred.ElapsedMilliseconds}");
@@ -209,15 +286,18 @@ public sealed partial class MainWindow
 
     private void BuildNetworkDashboardBody(CancellationToken token)
     {
+        int generation = _navigationGeneration;
         var perf = System.Diagnostics.Stopwatch.StartNew();
         long phase = 0;
 
         var dnsHost = new StackPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
         _networkDnsPanelHost = dnsHost;
+        _networkDnsActionToken = token;
         ContentStack.Children.Add(dnsHost);
         ScheduleNetworkDnsControlPanel(token);
         long dnsMs = perf.ElapsedMilliseconds - phase; phase = perf.ElapsedMilliseconds;
         BuildMtuOptimizerPanel();
+        ContentStack.Children.Add(BuildBufferbloatPanel());
         long mtuMs = perf.ElapsedMilliseconds - phase; phase = perf.ElapsedMilliseconds;
 
         ContentStack.Children.Add(BuildFlatSectionHeader(
@@ -240,7 +320,8 @@ public sealed partial class MainWindow
         long advancedShellMs = perf.ElapsedMilliseconds - phase; phase = perf.ElapsedMilliseconds;
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (!token.IsCancellationRequested && _section == "network")
+            if (!token.IsCancellationRequested && generation == _navigationGeneration && _section == "network" &&
+                ReferenceEquals(_networkAdvancedBody, tcp) && ContentStack.Children.Contains(advancedHost))
                 ScheduleNetworkAdvancedControls(tcp);
         });
         long scheduleMs = perf.ElapsedMilliseconds - phase;
@@ -250,9 +331,15 @@ public sealed partial class MainWindow
 
     private void ScheduleNetworkNicRecommendedPanel(StackPanel host, CancellationToken token)
     {
+        int generation = _navigationGeneration;
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "network" || host.Children.Count > 0) return;
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "network" ||
+                !ContentStack.Children.Contains(host) ||
+                host.Children.Count > 0)
+                return;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var body = new StackPanel { Spacing = 9 };
             body.Children.Add(new TextBlock
@@ -273,43 +360,89 @@ public sealed partial class MainWindow
 
     private void ScheduleNetworkTweakCards(CancellationToken token)
     {
-        if (_networkTweakQueued || _networkTweakHost == null || _networkTweakHost.Children.Count > 0) return;
+        StackPanel? host = _networkTweakHost;
+        int generation = _navigationGeneration;
+        if (host == null || host.Children.Count > 0 ||
+            (_networkTweakQueued && _networkTweakQueuedGeneration == generation)) return;
+        // A queued callback from an earlier navigation must not suppress the
+        // new page's work or clear the new generation's queued marker.
         _networkTweakQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        _networkTweakQueuedGeneration = generation;
+        bool accepted = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
+            if (generation != _navigationGeneration ||
+                _networkTweakQueuedGeneration != generation ||
+                !ReferenceEquals(_networkTweakHost, host)) return;
             _networkTweakQueued = false;
-            if (token.IsCancellationRequested || _section != "network" || _networkTweakHost == null || _networkTweakHost.Children.Count > 0) return;
+            _networkTweakQueuedGeneration = -1;
+            if (token.IsCancellationRequested || _section != "network" ||
+                host.Children.Count > 0) return;
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            BuildClassicTweakCards(_networkTweakHost);
+            BuildClassicTweakCards(host);
             LogService.Info("performance", $"NETWORK_TWEAKS_DEFERRED ms={sw.ElapsedMilliseconds} count={_tweaks.Count}");
         });
+        if (!accepted && _networkTweakQueuedGeneration == generation &&
+            ReferenceEquals(_networkTweakHost, host))
+        {
+            _networkTweakQueued = false;
+            _networkTweakQueuedGeneration = -1;
+        }
     }
 
     private void ScheduleNetworkDnsControlPanel(CancellationToken token)
     {
-        if (_networkDnsPanelQueued || _networkDnsPanelHost == null || _networkDnsPanelHost.Children.Count > 0) return;
+        StackPanel? host = _networkDnsPanelHost;
+        int generation = _navigationGeneration;
+        if (host == null || host.Children.Count > 0 ||
+            (_networkDnsPanelQueued && _networkDnsPanelQueuedGeneration == generation)) return;
         _networkDnsPanelQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        _networkDnsPanelQueuedGeneration = generation;
+        bool accepted = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
+            // A stale callback cannot consume the latest navigation's queue
+            // ownership, even when it targets the same cached host.
+            if (generation != _navigationGeneration ||
+                _networkDnsPanelQueuedGeneration != generation ||
+                !ReferenceEquals(_networkDnsPanelHost, host)) return;
             _networkDnsPanelQueued = false;
+            _networkDnsPanelQueuedGeneration = -1;
             if (token.IsCancellationRequested || _section != "network" ||
-                _networkDnsPanelHost == null || _networkDnsPanelHost.Children.Count > 0)
-                return;
+                host.Children.Count > 0) return;
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            BuildDnsControlPanel(token, _networkDnsPanelHost);
+            BuildDnsControlPanel(token, host);
             LogService.Info("performance", $"NETWORK_DNS_PANEL_DEFERRED ms={sw.ElapsedMilliseconds}");
         });
+        if (!accepted && _networkDnsPanelQueuedGeneration == generation &&
+            ReferenceEquals(_networkDnsPanelHost, host))
+        {
+            _networkDnsPanelQueued = false;
+            _networkDnsPanelQueuedGeneration = -1;
+        }
     }
 
     private void BuildDnsControlPanel(CancellationToken token, StackPanel attachHost)
     {
+        int generation = _navigationGeneration;
         var stage = System.Diagnostics.Stopwatch.StartNew();
-        var grid = new Grid { ColumnSpacing = 18 };
+        // Fixed 310px chart columns squeezed DNS actions on compact windows.
+        // Stack results below the controls when there is insufficient width.
+        bool compactDns = (RootGrid?.ActualWidth > 1 ? RootGrid.ActualWidth : StartupClientWidth) < 1220;
+        var grid = new Grid
+        {
+            Tag = compactDns ? "dns-compact-layout" : "dns-wide-layout",
+            ColumnSpacing = compactDns ? 0 : 16,
+            RowSpacing = compactDns ? 7 : 0
+        };
         grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = compactDns ? new GridLength(0) : new GridLength(310)
+        });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        var body = new StackPanel { Spacing = 10 };
+        var body = new StackPanel { Spacing = 8 };
         var status = new TextBlock
         {
             Text = $"Načítám DNS… • {DnsBenchmarkCatalog.Servers.Length} resolverů v katalogu",
@@ -322,7 +455,7 @@ public sealed partial class MainWindow
         body.Children.Add(status);
         long shellStartMs = stage.ElapsedMilliseconds;
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var actions = new StackPanel { Orientation = Orientation.Vertical, Spacing = 6, Tag = "dns-actions" };
         body.Children.Add(actions);
         body.Children.Add(new TextBlock
         {
@@ -334,7 +467,8 @@ public sealed partial class MainWindow
         grid.Children.Add(body);
 
         _networkDnsChartHost = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
-        Grid.SetColumn(_networkDnsChartHost, 1);
+        if (compactDns) Grid.SetRow(_networkDnsChartHost, 1);
+        else Grid.SetColumn(_networkDnsChartHost, 1);
         grid.Children.Add(_networkDnsChartHost);
 
         attachHost.Children.Add(BuildSectionSurface("network", "DNS Benchmark", "Rychlost • stabilita • Primary / Secondary • rollback", grid));
@@ -348,7 +482,7 @@ public sealed partial class MainWindow
             if (token.IsCancellationRequested) return;
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                if (token.IsCancellationRequested || _section != "network" || !ReferenceEquals(_networkDnsStatus, status))
+                if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "network" || !ReferenceEquals(_networkDnsStatus, status) || attachHost.Parent == null)
                     return;
                 status.Text = summary + $" • {DnsBenchmarkCatalog.Servers.Length} resolverů v katalogu" +
                               (rollback ? " • rollback připraven" : string.Empty);
@@ -358,18 +492,20 @@ public sealed partial class MainWindow
         var actionsHost = actions;
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "network" ||
-                !ReferenceEquals(_networkDnsStatus, status) || actionsHost.Children.Count > 0)
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "network" ||
+                !ReferenceEquals(_networkDnsStatus, status) || attachHost.Parent == null || actionsHost.Children.Count > 0)
                 return;
 
             var actionsSw = System.Diagnostics.Stopwatch.StartNew();
-            actionsHost.Children.Add(PrimaryQuickButton("Spustit benchmark", () => RunDnsBenchmarkPopupAsync(token)));
-            actionsHost.Children.Add(QuickButton("Aktualizovat katalog", () => UpdateDnsCatalogAsync(status, token)));
+            var primaryActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            primaryActions.Children.Add(PrimaryQuickButton("Spustit benchmark", () => RunDnsBenchmarkPopupAsync(_networkDnsActionToken)));
+            primaryActions.Children.Add(QuickButton("Aktualizovat katalog", () => UpdateDnsCatalogAsync(status, _networkDnsActionToken)));
+            actionsHost.Children.Add(primaryActions);
             if (DnsProfileService.HasRollbackSnapshot)
             {
-                actionsHost.Children.Add(QuickButton("Vrátit DNS", async () =>
+                actionsHost.Children.Add(QuickButton("Vrátit původní DNS", async () =>
                 {
-                    string result = await DnsProfileService.RollbackAsync(token);
+                    string result = await DnsProfileService.RollbackAsync(_networkDnsActionToken);
                     RefreshNetworkDnsDashboardStatus();
                     ShowActionFeedback("DNS", ActionFeedbackKind.Verified, result);
                 }));
@@ -380,8 +516,8 @@ public sealed partial class MainWindow
         var chartHost = _networkDnsChartHost;
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "network" ||
-                !ReferenceEquals(_networkDnsChartHost, chartHost) || chartHost == null)
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "network" ||
+                !ReferenceEquals(_networkDnsChartHost, chartHost) || chartHost == null || attachHost.Parent == null)
                 return;
             var chartSw = System.Diagnostics.Stopwatch.StartNew();
             RenderDnsDashboardChart(chartHost, _lastDnsDashboardResults);
@@ -391,15 +527,17 @@ public sealed partial class MainWindow
 
     private void BuildMtuOptimizerPanel()
     {
+        int generation = _navigationGeneration;
         var host = new StackPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
         ContentStack.Children.Add(host);
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (host.Children.Count == 0) BuildMtuOptimizerPanelCore(host);
+            if (generation != _navigationGeneration || _section != "network" || !ContentStack.Children.Contains(host)) return;
+            if (host.Children.Count == 0) BuildMtuOptimizerPanelCore(host, generation);
         });
     }
 
-    private void BuildMtuOptimizerPanelCore(StackPanel host)
+    private void BuildMtuOptimizerPanelCore(StackPanel host, int generation)
     {
         var perf = System.Diagnostics.Stopwatch.StartNew();
         var body = new StackPanel { Spacing = 11 };
@@ -441,7 +579,7 @@ public sealed partial class MainWindow
 
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (_section != "network" || !ReferenceEquals(_networkMtuStatus, status) || controlsHost.Children.Count > 0)
+            if (generation != _navigationGeneration || _section != "network" || !ReferenceEquals(_networkMtuStatus, status) || host.Parent == null || controlsHost.Children.Count > 0)
                 return;
 
             var controlsSw = System.Diagnostics.Stopwatch.StartNew();
@@ -481,21 +619,22 @@ public sealed partial class MainWindow
 
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (_section != "network" || !ReferenceEquals(_networkMtuStatus, status) || packetHost.Children.Count > 0)
+            if (generation != _navigationGeneration || _section != "network" || !ReferenceEquals(_networkMtuStatus, status) || host.Parent == null || packetHost.Children.Count > 0)
                 return;
             var graphicSw = System.Diagnostics.Stopwatch.StartNew();
             packetHost.Children.Add(BuildMtuPacketGraphic());
             LogService.Info("performance", $"MTU_PACKET_GRAPHIC_DEFERRED ms={graphicSw.ElapsedMilliseconds}");
         });
 
-        SafeTaskService.Forget(RefreshMtuStatusAsync(status), "network", "MTU status");
+        SafeTaskService.Forget(RefreshMtuStatusAsync(status, generation), "network", "MTU status");
     }
 
-    private async Task RefreshMtuStatusAsync(TextBlock status)
+    private async Task RefreshMtuStatusAsync(TextBlock status, int generation = -1)
     {
+        if (generation < 0) generation = _navigationGeneration;
         try
         {
-            var adapter = await MtuOptimizerService.GetActiveAdapterAsync(_loadCts?.Token ?? CancellationToken.None);
+            var adapter = await MtuOptimizerService.GetActiveAdapterAsync(_loadCts?.Token ?? _windowLifetimeCts.Token);
             if (_section != "network") return;
             string ipv6Mtu = adapter.Ipv6Mtu > 0 ? adapter.Ipv6Mtu.ToString() : "N/A";
             status.Text = $"{adapter.Name} • {adapter.Description} • IPv4 MTU {adapter.Ipv4Mtu} • IPv6 MTU {ipv6Mtu}" +
@@ -518,12 +657,12 @@ public sealed partial class MainWindow
         try
         {
             status.Text = "Obnovuji původní MTU a ověřuji výsledek…";
-            var after = await MtuOptimizerService.RestoreOriginalAsync(_loadCts?.Token ?? CancellationToken.None);
+            var after = await MtuOptimizerService.RestoreOriginalAsync(_loadCts?.Token ?? _windowLifetimeCts.Token);
             string ipv6Mtu = after.Ipv6Mtu > 0 ? after.Ipv6Mtu.ToString() : "N/A";
             string detail = $"Původní MTU obnoveno a ověřeno: {after.Name} • IPv4 {after.Ipv4Mtu} • IPv6 {ipv6Mtu}";
             status.Text = detail;
             InvalidateUiDataCache("network-live");
-            RefreshNetworkLiveAfterMutation(_loadCts?.Token ?? CancellationToken.None);
+            RefreshNetworkLiveAfterMutation(_loadCts?.Token ?? _windowLifetimeCts.Token);
             ShowActionFeedback("MTU Restore", ActionFeedbackKind.Verified, detail);
         }
         catch (OperationCanceledException) { }
@@ -541,7 +680,7 @@ public sealed partial class MainWindow
         try
         {
             status.Text = "Probíhá vícecestný DF path-MTU test (Cloudflare / Google / Quad9)…";
-            var result = await MtuOptimizerService.DetectRecommendedAsync(_loadCts?.Token ?? CancellationToken.None);
+            var result = await MtuOptimizerService.DetectRecommendedAsync(_loadCts?.Token ?? _windowLifetimeCts.Token);
             if (!result.Conclusive)
             {
                 status.Text = $"{result.Adapter.Name} • IPv4 MTU {result.CurrentMtu} • {result.Detail}";
@@ -594,14 +733,14 @@ public sealed partial class MainWindow
         try
         {
             status.Text = $"Aplikuji MTU {mtu}…";
-            var after = await MtuOptimizerService.ApplyAsync(mtu, applyIpv6, _loadCts?.Token ?? CancellationToken.None);
+            var after = await MtuOptimizerService.ApplyAsync(mtu, applyIpv6, _loadCts?.Token ?? _windowLifetimeCts.Token);
             string ipv6Mtu = after.Ipv6Mtu > 0 ? after.Ipv6Mtu.ToString() : "N/A";
             string detail = after.Ipv4Mtu == mtu
                 ? $"Ověřeno: {after.Name} • IPv4 MTU {after.Ipv4Mtu} • IPv6 MTU {ipv6Mtu}"
                 : $"Ověřeno: {after.Name} • požadováno IPv4 MTU {mtu} → Windows/driver přijal {after.Ipv4Mtu} • IPv6 MTU {ipv6Mtu}";
             status.Text = detail;
             InvalidateUiDataCache("network-live");
-            RefreshNetworkLiveAfterMutation(_loadCts?.Token ?? CancellationToken.None);
+            RefreshNetworkLiveAfterMutation(_loadCts?.Token ?? _windowLifetimeCts.Token);
             ShowActionFeedback("MTU", ActionFeedbackKind.Verified, detail);
         }
         catch (OperationCanceledException) { }
@@ -645,7 +784,7 @@ public sealed partial class MainWindow
         tcp.Children.Clear();
         tcp.Children.Add(new TextBlock { Text = "Načítám capability aktivního NIC driveru…", Foreground = TextSecondaryBrush() });
 
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             if (_section != "network" || generation != _networkAdvancedLoadGeneration)
             {
@@ -655,17 +794,17 @@ public sealed partial class MainWindow
             }
 
             SafeTaskService.Forget(
-                LoadNetworkAdvancedControlsTrackedAsync(tcp, CancellationToken.None, generation),
+                LoadNetworkAdvancedControlsTrackedAsync(tcp, _loadCts?.Token ?? _windowLifetimeCts.Token, generation),
                 "network",
                 "NIC capability controls");
-        });
+        })) _networkAdvancedLoadQueued = false;
     }
 
     private async Task LoadNetworkAdvancedControlsTrackedAsync(StackPanel tcp, CancellationToken token, int generation)
     {
         try
         {
-            await LoadNetworkAdvancedControlsAsync(tcp, token);
+            await LoadNetworkAdvancedControlsAsync(tcp, token, generation);
         }
         finally
         {
@@ -674,27 +813,39 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task LoadNetworkAdvancedControlsAsync(StackPanel tcp, CancellationToken token)
+    private async Task LoadNetworkAdvancedControlsAsync(StackPanel tcp, CancellationToken token, int generation)
     {
         var phase = Stopwatch.StartNew();
         try
         {
-            var capsTask = PerformanceProfilesService.GetNicCapabilitiesAsync(token);
-            var autoTuningTask = TcpGlobalStateService.GetValueAsync("autotuninglevel", token);
+            // The nominally async capability service performs a synchronous
+            // NIC route/adapter identity lookup and persisted-cache file read
+            // before its first await. Keep those cold operations off the
+            // WinUI dispatcher; their shared cache is already lock-protected.
+            var capsTask = Task.Run(
+                () => PerformanceProfilesService.GetNicCapabilitiesAsync(token), token);
+            // This is read-only UI presentation, not an optimization decision.
+            // Reuse the verified TCP snapshot and refresh stale values off-thread
+            // rather than starting netsh.exe on every Network navigation after
+            // its 45-second live TTL. Mutations explicitly invalidate the cache.
+            // A first UI snapshot may synchronously read the persistent
+            // netsh result from disk, so keep this pre-await work off UI too.
+            var autoTuningTask = Task.Run(
+                () => TcpGlobalStateService.GetValueForUiAsync("autotuninglevel", token), token);
             await Task.WhenAll(capsTask, autoTuningTask);
             var caps = await capsTask;
             string autoTuning = await autoTuningTask ?? "Unknown";
-            if (token.IsCancellationRequested || _section != "network") return;
+            if (token.IsCancellationRequested || generation != _networkAdvancedLoadGeneration || _section != "network" || !ReferenceEquals(_networkAdvancedBody, tcp)) return;
             QueueNetworkAdvancedCapabilityUiBatches(tcp, caps, autoTuning, phase);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             LogService.Error("network", "NIC capability controls failed", ex);
-            if (_section == "network")
+            if (_section == "network" && generation == _networkAdvancedLoadGeneration)
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (_section != "network") return;
+                    if (_section != "network" || generation != _networkAdvancedLoadGeneration || !ReferenceEquals(_networkAdvancedBody, tcp)) return;
                     tcp.Children.Clear();
                     tcp.Children.Add(new TextBlock
                     {
@@ -864,8 +1015,10 @@ public sealed partial class MainWindow
             Width = 44,
             Height = 22,
             CornerRadius = new CornerRadius(11),
-            Background = isOn ? ButtonVioletBrush() : SurfaceAltBrush(),
-            BorderBrush = SectionBorderBrush(),
+            Background = isOn ? UnifiedToggleOnTrack() : UnifiedToggleOffTrack(),
+            BorderBrush = isOn
+                ? ThemeColor(158, 116, 207, 250)
+                : ThemeColor(96, 130, 171, 209),
             BorderThickness = new Thickness(1)
         };
         var switchKnob = new Border
@@ -873,7 +1026,7 @@ public sealed partial class MainWindow
             Width = 18,
             Height = 18,
             CornerRadius = new CornerRadius(9),
-            Background = ControlKnobBrush(),
+            Background = ThemeColor(252, 252, 255),
             HorizontalAlignment = isOn ? HorizontalAlignment.Right : HorizontalAlignment.Left,
             Margin = new Thickness(1)
         };
@@ -892,6 +1045,14 @@ public sealed partial class MainWindow
             BorderThickness = new Thickness(0),
             HorizontalAlignment = HorizontalAlignment.Center
         };
+        // This Button is a transparent HIT TARGET around a custom 44x22 switch,
+        // not an action button. Prevent global blue Button visual-state resources
+        // from covering the glass track during hover/press.
+        foreach (string state in new[] { "", "PointerOver", "Pressed", "Disabled" })
+        {
+            switchButton.Resources["ButtonBackground" + state] = ThemeColor(0, 0, 0, 0);
+            switchButton.Resources["ButtonBorderBrush" + state] = ThemeColor(0, 0, 0, 0);
+        }
         ToolTipService.SetToolTip(switchButton, title);
         EnsureAccessibleButton(switchButton, title);
 
@@ -901,7 +1062,10 @@ public sealed partial class MainWindow
         void SetToggleState(bool value)
         {
             currentState = value;
-            switchTrack.Background = value ? ButtonVioletBrush() : SurfaceAltBrush();
+            switchTrack.Background = value ? UnifiedToggleOnTrack() : UnifiedToggleOffTrack();
+            switchTrack.BorderBrush = value
+                ? ThemeColor(158, 116, 207, 250)
+                : ThemeColor(96, 130, 171, 209);
             switchKnob.HorizontalAlignment = value ? HorizontalAlignment.Right : HorizontalAlignment.Left;
             stateText.Text = value ? "ON" : "OFF";
             stateText.Foreground = value ? SuccessBrush() : TextSecondaryBrush();
@@ -972,7 +1136,7 @@ public sealed partial class MainWindow
             {
                 if (busy) return;
                 bool original = currentState;
-                bool changed = false;
+                var mutation = new NicAbMutationGuard();
                 if (!await ShowStyledConfirmAsync(
                     "NIC A/B test",
                     $"{title}\n\nOptimizer změří baseline, přepne pouze tuto vlastnost, restartuje síťový adaptér a změří latency/jitter/loss znovu. Pokud výsledek nebude lepší, původní hodnota se automaticky obnoví.",
@@ -991,8 +1155,8 @@ public sealed partial class MainWindow
 
                     bool trialValue = !original;
                     detail.Text = $"A/B: přepínám na {(trialValue ? "ON" : "OFF")}…";
-                    await PerformanceProfilesService.SetNicAdvancedToggleAsync(aliases, trialValue);
-                    changed = true;
+                    await mutation.ApplyTrialAsync(async () =>
+                        { await PerformanceProfilesService.SetNicAdvancedToggleAsync(aliases, trialValue); });
                     PerformanceProfilesService.InvalidateNicCache();
                     NetworkDiagnosticsService.Invalidate();
                     await Task.Delay(800);
@@ -1012,15 +1176,21 @@ public sealed partial class MainWindow
                     if (!improved)
                     {
                         detail.Text = "A/B: test nebyl lepší, obnovuji původní stav…";
-                        await PerformanceProfilesService.SetNicAdvancedToggleAsync(aliases, original);
-                        changed = false;
+                        await mutation.RestoreAsync(async () =>
+                            { await PerformanceProfilesService.SetNicAdvancedToggleAsync(aliases, original); });
                         PerformanceProfilesService.InvalidateNicCache();
                     }
 
                     NetworkDiagnosticsService.Invalidate();
                     var fresh = await PerformanceProfilesService.GetNicCapabilitiesAsync();
                     string freshValue = CapabilityValue(fresh, title);
+                    if (string.IsNullOrWhiteSpace(freshValue) ||
+                        freshValue.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ||
+                        freshValue.Equals("Unsupported", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException($"{title}: NIC driver read-back is unavailable.");
                     bool actual = NicCapabilityIsOn(freshValue);
+                    mutation.ConfirmReadback(actual, expected: improved ? !original : original,
+                        restoredOriginal: !improved);
                     SetToggleState(actual);
 
                     string result = improved
@@ -1032,16 +1202,51 @@ public sealed partial class MainWindow
                 }
                 catch (Exception ex)
                 {
-                    if (changed)
+                    Exception? rollbackError = null;
+                    if (mutation.MayHaveChanged)
                     {
-                        try { await PerformanceProfilesService.SetNicAdvancedToggleAsync(aliases, original); }
-                        catch (Exception rollbackEx) { LogService.Error("network", "NIC A/B rollback failed: " + title, rollbackEx); }
+                        try
+                        {
+                            await mutation.RestoreAsync(async () =>
+                                { await PerformanceProfilesService.SetNicAdvancedToggleAsync(aliases, original); });
+                        }
+                        catch (Exception restoreEx)
+                        {
+                            rollbackError = restoreEx;
+                            LogService.Error("network", "NIC A/B rollback failed: " + title, restoreEx);
+                        }
                     }
+
                     PerformanceProfilesService.InvalidateNicCache();
                     NetworkDiagnosticsService.Invalidate();
-                    SetToggleState(original);
-                    detail.Text = "A/B test selhal / nebyl průkazný: " + ex.Message;
-                    ShowActionFeedback(title + " A/B", ActionFeedbackKind.Failed, ex.Message);
+                    string readbackResult;
+                    try
+                    {
+                        var verifiedCaps = await PerformanceProfilesService.GetNicCapabilitiesAsync();
+                        string verifiedValue = CapabilityValue(verifiedCaps, title);
+                        if (string.IsNullOrWhiteSpace(verifiedValue) ||
+                            verifiedValue.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ||
+                            verifiedValue.Equals("Unsupported", StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidOperationException("Driver value cannot be verified.");
+                        bool verifiedOn = NicCapabilityIsOn(verifiedValue);
+                        SetToggleState(verifiedOn);
+                        if (verifiedOn == original)
+                        {
+                            mutation.ConfirmReadback(verifiedOn, original, restoredOriginal: true);
+                            readbackResult = "Původní stav ověřen.";
+                        }
+                        else
+                            readbackResult = "VAROVÁNÍ: původní stav síťové karty nebyl obnoven.";
+                    }
+                    catch (Exception readbackEx)
+                    {
+                        LogService.Error("network", "NIC A/B recovery read-back failed: " + title, readbackEx);
+                        readbackResult = "VAROVÁNÍ: stav síťové karty nelze ověřit.";
+                    }
+                    if (rollbackError != null)
+                        readbackResult += " Obnovení ovladače selhalo: " + rollbackError.Message;
+                    detail.Text = "A/B test selhal: " + ex.Message + " " + readbackResult;
+                    ShowActionFeedback(title + " A/B", ActionFeedbackKind.Failed, detail.Text);
                 }
                 finally
                 {
@@ -1085,10 +1290,87 @@ public sealed partial class MainWindow
         !value.Equals("Off", StringComparison.OrdinalIgnoreCase) &&
         !value.Equals("No", StringComparison.OrdinalIgnoreCase);
 
+    // NIC property mutations may succeed at driver level and then throw during
+    // verification. Mark the attempt *before* awaiting, and retain that state
+    // until the original setting has been confirmed by an independent read.
+    private sealed class NicAbMutationGuard
+    {
+        internal bool MayHaveChanged { get; private set; }
+
+        internal async Task ApplyTrialAsync(Func<Task> apply)
+        {
+            MayHaveChanged = true;
+            await apply();
+        }
+
+        internal async Task RestoreAsync(Func<Task> restore)
+        {
+            if (MayHaveChanged)
+                await restore();
+        }
+
+        internal void ConfirmReadback(bool actual, bool expected, bool restoredOriginal)
+        {
+            if (actual != expected)
+                throw new InvalidOperationException(
+                    "NIC A/B read-back did not confirm the expected driver setting.");
+            if (restoredOriginal)
+                MayHaveChanged = false;
+        }
+    }
+
+    private static async Task RunNicAbSafetySmokeAsync()
+    {
+        var guard = new NicAbMutationGuard();
+        bool driverState = false;
+        try
+        {
+            await guard.ApplyTrialAsync(() =>
+            {
+                driverState = true;
+                throw new InvalidOperationException("synthetic post-write driver failure");
+            });
+            throw new InvalidOperationException("Synthetic post-write failure was ignored.");
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "synthetic post-write driver failure") { }
+        if (!guard.MayHaveChanged || !driverState)
+            throw new InvalidOperationException("NIC A/B missed partially applied driver mutation.");
+
+        bool simulatedRollbackFailed = false;
+        try
+        {
+            await guard.RestoreAsync(() =>
+            {
+                simulatedRollbackFailed = true;
+                throw new InvalidOperationException("synthetic rollback failure");
+            });
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "synthetic rollback failure") { }
+        if (!simulatedRollbackFailed || !guard.MayHaveChanged)
+            throw new InvalidOperationException("NIC A/B lost pending rollback after restore failure.");
+        await guard.RestoreAsync(() => { driverState = false; return Task.CompletedTask; });
+        guard.ConfirmReadback(driverState, expected: false, restoredOriginal: true);
+        if (guard.MayHaveChanged)
+            throw new InvalidOperationException("NIC A/B retained a confirmed completed rollback.");
+
+        await guard.ApplyTrialAsync(() => { driverState = true; return Task.CompletedTask; });
+        bool mismatchRejected = false;
+        try { guard.ConfirmReadback(driverState, expected: false, restoredOriginal: true); }
+        catch (InvalidOperationException) { mismatchRejected = true; }
+        if (!mismatchRejected || !guard.MayHaveChanged)
+            throw new InvalidOperationException("NIC A/B accepted incorrect driver read-back.");
+
+        await guard.RestoreAsync(() => { driverState = false; return Task.CompletedTask; });
+        guard.ConfirmReadback(driverState, expected: false, restoredOriginal: true);
+        LogService.Info("network",
+            "NIC_AB_SAFETY_SMOKE_OK partialWriteRollback=true rollbackRetry=true readbackRequired=true nicWrites=0");
+    }
+
     private static double NicAbScore(NetworkLatencyReport report) =>
         report.AvgMs + (report.JitterMs * 1.5) + (report.LossPercent * 10.0);
     private async Task LoadNetworkLiveStatusAsync(StackPanel live, CancellationToken token)
     {
+        int generation = _navigationGeneration;
         try
         {
             var nicTask = SystemInsightService.GetActiveNetworkAsync(token);
@@ -1097,7 +1379,10 @@ public sealed partial class MainWindow
             // takže jedna návštěva stránky nespouští dvě oddělené ICMP série.
             var latencyTask = NetworkDiagnosticsService.MeasureAsync(samples: 4, token: token);
             await Task.WhenAll(nicTask, latencyTask);
-            if (token.IsCancellationRequested || _section != "network") return;
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "network" ||
+                !ReferenceEquals(_networkLiveBody, live)) return;
             var nic = await nicTask;
             var latency = await latencyTask;
             IReadOnlyDictionary<string, string>? caps = null;
@@ -1107,7 +1392,10 @@ public sealed partial class MainWindow
             string liveRsc = caps != null && caps.TryGetValue("RSC", out var rscState) ? rscState : "Unknown";
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "network") return;
+                if (token.IsCancellationRequested ||
+                    generation != _navigationGeneration ||
+                    _section != "network" ||
+                    !ReferenceEquals(_networkLiveBody, live)) return;
                 live.Children.Clear();
                 live.Children.Add(BuildPageSummaryStrip(
                     ("Link", nic == null ? "N/A" : $"{nic.SpeedMbps:0} Mb/s", nic == null ? "SpankyWarningBrush" : "SpankySuccessBrush"),
@@ -1126,7 +1414,10 @@ public sealed partial class MainWindow
             {
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (_section != "network") return;
+                    if (token.IsCancellationRequested ||
+                        generation != _navigationGeneration ||
+                        _section != "network" ||
+                        !ReferenceEquals(_networkLiveBody, live)) return;
                     live.Children.Clear();
                     live.Children.Add(new TextBlock
                     {
@@ -1135,7 +1426,7 @@ public sealed partial class MainWindow
                         TextWrapping = TextWrapping.Wrap
                     });
                     live.Children.Add(QuickButton("Načíst znovu", () =>
-                        LoadNetworkLiveStatusAsync(live, _loadCts?.Token ?? CancellationToken.None)));
+                        LoadNetworkLiveStatusAsync(live, _loadCts?.Token ?? _windowLifetimeCts.Token)));
                     ShowActionFeedback("Síť — live stav", ActionFeedbackKind.Failed, ex.Message);
                 });
             }
@@ -1150,7 +1441,7 @@ public sealed partial class MainWindow
         if (exitCode == 0)
         {
             InvalidateUiDataCache("network");
-            RefreshNetworkLiveAfterMutation(_loadCts?.Token ?? CancellationToken.None);
+            RefreshNetworkLiveAfterMutation(_loadCts?.Token ?? _windowLifetimeCts.Token);
             if (_section == "network" && _networkAdvancedBody != null)
             {
                 _networkAdvancedLoadGeneration++;
@@ -1186,13 +1477,31 @@ public sealed partial class MainWindow
     internal async Task RunNetworkDeferredRenderSmokeAsync()
     {
         await ShowSectionAsync("network");
+        // Force navigation-generation churn while low-priority DNS and tweak
+        // callbacks may still be queued. Cached hosts must recover without
+        // stale callbacks clearing the new generation's queue ownership.
+        for (int hop = 0; hop < 3; hop++)
+        {
+            await ShowSectionAsync("settings");
+            await ShowSectionAsync("network");
+        }
+        int expectedTweaks = _tweaks.Count;
         DateTime deadline = DateTime.UtcNow.AddSeconds(2);
         while (DateTime.UtcNow < deadline)
         {
-            if (_networkAdvancedBody != null &&
+            bool advancedReady = _networkAdvancedBody != null &&
                 !(_networkAdvancedBody.Children.Count == 1 &&
                   _networkAdvancedBody.Children[0] is TextBlock loading &&
-                  loading.Text.StartsWith("Načítám", StringComparison.OrdinalIgnoreCase)))
+                  loading.Text.StartsWith("Načítám", StringComparison.OrdinalIgnoreCase));
+            if (advancedReady &&
+                (_networkDnsPanelHost?.Children.Count ?? 0) == 1 &&
+                (_networkTelemetryShellHost?.Children.Count ?? 0) == 1 &&
+                _networkToolsCard != null && ContentStack.Children.Contains(_networkToolsCard) &&
+                _networkToolsRow?.Children.Count == 3 &&
+                (UseCompactSectionChrome || _networkHeroArtHost?.Children.Count == 1) &&
+                CountClassicTweakCards(_networkTweakHost) == expectedTweaks &&
+                !_networkDnsPanelQueued && !_networkTweakQueued &&
+                !_networkTelemetryShellQueued && !_networkToolsQueued && !_networkHeroArtQueued)
                 break;
             await Task.Delay(50);
         }
@@ -1201,11 +1510,22 @@ public sealed partial class MainWindow
              _networkAdvancedBody.Children[0] is TextBlock pending &&
              pending.Text.StartsWith("Načítám", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Network deferred Advanced NIC controls did not complete.");
-        LogService.Info("NETWORK_DEFERRED_SMOKE_OK");
+        if ((_networkDnsPanelHost?.Children.Count ?? 0) != 1 ||
+            (_networkTelemetryShellHost?.Children.Count ?? 0) != 1 ||
+            _networkToolsCard == null || !ContentStack.Children.Contains(_networkToolsCard) ||
+            _networkToolsRow?.Children.Count != 3 ||
+            (!UseCompactSectionChrome && _networkHeroArtHost?.Children.Count != 1) ||
+            CountClassicTweakCards(_networkTweakHost) != expectedTweaks ||
+            _networkDnsPanelQueued || _networkTweakQueued ||
+            _networkTelemetryShellQueued || _networkToolsQueued || _networkHeroArtQueued)
+            throw new InvalidOperationException(
+                $"Network generation handoff incomplete: dns={_networkDnsPanelHost?.Children.Count ?? -1} telemetry={_networkTelemetryShellHost?.Children.Count ?? -1} tools={_networkToolsCard != null && ContentStack.Children.Contains(_networkToolsCard)} toolButtons={_networkToolsRow?.Children.Count ?? -1} hero={_networkHeroArtHost?.Children.Count ?? -1} tweaks={CountClassicTweakCards(_networkTweakHost)}/{expectedTweaks} queued={_networkDnsPanelQueued}/{_networkTweakQueued}/{_networkTelemetryShellQueued}/{_networkToolsQueued}/{_networkHeroArtQueued}.");
+        LogService.Info("NETWORK_DEFERRED_SMOKE_OK hops=3 dns=1 telemetry=1 tools=1 queued=false");
     }
 
     internal async Task RunNicUiSmokeAsync()
     {
+        await RunNicAbSafetySmokeAsync();
         LogService.Info("NIC_UI_SMOKE begin");
         await ShowSectionAsync("network");
         int expectedTweaks = _tweaks.Count;
@@ -1237,9 +1557,17 @@ public sealed partial class MainWindow
             throw new InvalidOperationException("Network cached dashboard content was not preserved after reattach.");
 
         await Task.Delay(100);
-        int code = await RunNicProgressPopupAsync(true);
+        int overlaysBefore = RootGrid.Children.Count;
+        // This is an interface lifecycle gate; never tune/restart the user's live NIC.
+        int code = await RunNicProgressPopupAsync(true, async token =>
+        {
+            await Task.Delay(600, token);
+            return "NIC_UI_SMOKE_BACKEND_OK";
+        });
+        if (RootGrid.Children.Count != overlaysBefore)
+            throw new InvalidOperationException("NIC UI smoke leaked its progress overlay.");
         if (code != 0) throw new InvalidOperationException("NIC UI smoke failed: " + code);
-        LogService.Info("NIC_UI_SMOKE_OK dashboard=true dnsChart=true diagnosticsRemoved=true");
+        LogService.Info("NIC_UI_SMOKE_OK dashboard=true dnsChart=true diagnosticsRemoved=true mutation=false progressLifecycle=true");
     }
 }
 

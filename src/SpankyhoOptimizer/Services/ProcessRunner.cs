@@ -92,23 +92,89 @@ public static class ProcessRunner
             !string.Equals(Path.GetDirectoryName(powershell), expectedPowerShellDir, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Trusted powershell.exe did not resolve to WindowsPowerShell\\v1.0.");
 
-        string poison = Path.Combine(Path.GetTempPath(), "SpankyProcessRunnerPoison");
-        Directory.CreateDirectory(poison);
-        string fake = Path.Combine(poison, "cmd.exe");
-        await File.WriteAllTextAsync(fake, "not a Windows executable", token).ConfigureAwait(false);
-        string? originalPath = Environment.GetEnvironmentVariable("PATH");
+        // Trusted tool resolution never consults PATH and children always get a
+        // hardened PATH. Verify both properties without mutating the
+        // process-wide environment, which other release gates run concurrently.
+        string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var probe = new ProcessStartInfo { FileName = cmd, Arguments = "/D /C echo probe" };
+        HardenEnvironment(probe);
+        string expectedPath = string.Join(Path.PathSeparator, new[]
+        {
+            system32,
+            windows,
+            Path.Combine(system32, "Wbem"),
+            expectedPowerShellDir
+        });
+        if (!probe.Environment.TryGetValue("PATH", out string? hardenedPath) ||
+            !string.Equals(hardenedPath, expectedPath, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Child process PATH was not hardened to trusted Windows directories.");
+
+        var result = await RunAsync("cmd.exe", "/C echo SPANKY_PROCESS_HARDENING_OK", TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+        if (!result.Success || !result.StdOut.Contains("SPANKY_PROCESS_HARDENING_OK", StringComparison.Ordinal))
+            throw new InvalidOperationException("Trusted cmd.exe execution failed.");
+    }
+
+    internal static async Task<string> RunProcessQueueDeadlineSmokeAsync()
+    {
+        // Reserve every process slot without launching any child process.
+        // A queued 120ms request must expire while waiting, not after a slot
+        // eventually becomes available. Test also verifies caller cancellation.
+        int acquired = 0;
         try
         {
-            Environment.SetEnvironmentVariable("PATH", poison);
-            var result = await RunAsync("cmd.exe", "/C echo SPANKY_PROCESS_HARDENING_OK", TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
-            if (!result.Success || !result.StdOut.Contains("SPANKY_PROCESS_HARDENING_OK", StringComparison.Ordinal))
-                throw new InvalidOperationException("Poisoned PATH replaced or broke trusted cmd.exe resolution.");
+            for (int i = 0; i < ProcessConcurrency; i++)
+            {
+                if (!await ProcessGate.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false))
+                    throw new InvalidOperationException("Could not reserve all synthetic process slots.");
+                acquired++;
+            }
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            Task<ProcessResult> pending = RunAsync(
+                "__spanky_process_queue_never_launch__.exe", "",
+                TimeSpan.FromMilliseconds(120), watchdog.Token);
+
+            bool deadlineEnforced = false;
+            try
+            {
+                await pending.WaitAsync(TimeSpan.FromMilliseconds(550)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // WaitAsync can time out before the underlying call, so check
+                // that the call itself is finished rather than accepting it.
+                if (pending.IsCompleted)
+                {
+                    try { await pending.ConfigureAwait(false); }
+                    catch (TimeoutException) { deadlineEnforced = true; }
+                }
+            }
+            if (!deadlineEnforced)
+            {
+                watchdog.Cancel();
+                try { await pending.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                throw new InvalidOperationException("Process queue ignored the caller's 120ms timeout.");
+            }
+
+            using var cancellation = new CancellationTokenSource();
+            Task<ProcessResult> cancelled = RunAsync(
+                "__spanky_process_queue_never_launch__.exe", "",
+                TimeSpan.FromSeconds(5), cancellation.Token);
+            cancellation.Cancel();
+            bool cancelledObserved = false;
+            try { await cancelled.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+            catch (OperationCanceledException) { cancelledObserved = true; }
+            if (!cancelledObserved)
+                throw new InvalidOperationException("Process queue failed to respect caller cancellation.");
         }
         finally
         {
-            Environment.SetEnvironmentVariable("PATH", originalPath);
-            try { File.Delete(fake); Directory.Delete(poison, false); } catch { }
+            if (acquired > 0) ProcessGate.Release(acquired);
         }
+        if (ProcessGate.CurrentCount != ProcessConcurrency)
+            throw new InvalidOperationException("Timed-out process waiter corrupted the concurrency gate.");
+        return $"PROCESS_QUEUE_DEADLINE_SMOKE_OK permits={ProcessConcurrency} timedOut=true externalCancel=true childProcesses=0";
     }
 
     private static void AppendBounded(StringBuilder buffer, string line, int maxChars)
@@ -175,7 +241,8 @@ public static class ProcessRunner
             if (!string.IsNullOrWhiteSpace(verb))
                 startInfo.Verb = verb;
 
-            return Process.Start(startInfo) != null;
+            using Process? started = Process.Start(startInfo);
+            return started != null;
         }
         catch (Exception ex)
         {
@@ -227,8 +294,13 @@ public static class ProcessRunner
         string file,
         string arguments,
         string? verb = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        TimeSpan effectiveTimeout = timeout ?? TimeSpan.FromMinutes(5);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        linked.CancelAfter(effectiveTimeout);
         var startInfo = new ProcessStartInfo(file, arguments)
         {
             UseShellExecute = true,
@@ -239,19 +311,40 @@ public static class ProcessRunner
 
         using Process process = Process.Start(startInfo)
             ?? throw new InvalidOperationException($"Proces {file} se nepodařilo spustit.");
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            TryKillTree(process);
+            try
+            {
+                using var exitCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await process.WaitForExitAsync(exitCts.Token).ConfigureAwait(false);
+            }
+            catch { }
+            if (!cancellationToken.IsCancellationRequested)
+                throw new TimeoutException($"{file} překročil timeout {effectiveTimeout.TotalSeconds:0}s.");
+            throw;
+        }
         return new ProcessResult(process.ExitCode, string.Empty, string.Empty);
     }
 
+    // Keep the pre-environmentVariables signature for callers compiled against earlier releases.
+    public static Task<ProcessResult> RunAsync(string file, string arguments, TimeSpan? timeout,
+        CancellationToken cancellationToken, bool logNonZeroExitAsError, string caller) =>
+        RunAsync(file, arguments, timeout, cancellationToken, logNonZeroExitAsError, caller, null);
+
     public static async Task<ProcessResult> RunAsync(string file, string arguments, TimeSpan? timeout = null,
         CancellationToken cancellationToken = default, bool logNonZeroExitAsError = true,
-        [CallerMemberName] string caller = "")
+        [CallerMemberName] string caller = "", IReadOnlyDictionary<string, string?>? environmentVariables = null)
     {
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
         return await RunStreamingAsync(file, arguments, timeout, cancellationToken,
             line => AppendBounded(stdout, line, MaxStdOutChars),
-            line => AppendBounded(stderr, line, MaxStdErrChars), stdout, stderr, logNonZeroExitAsError, caller).ConfigureAwait(false);
+            line => AppendBounded(stderr, line, MaxStdErrChars), stdout, stderr, logNonZeroExitAsError, caller, environmentVariables).ConfigureAwait(false);
     }
 
     public static async Task<ProcessResult> RunStreamingAsync(string file, string arguments, TimeSpan? timeout,
@@ -274,14 +367,28 @@ public static class ProcessRunner
 
     private static async Task<ProcessResult> RunStreamingAsync(string file, string arguments, TimeSpan? timeout,
         CancellationToken cancellationToken, Action<string> onStdOut, Action<string> onStdErr,
-        StringBuilder stdout, StringBuilder stderr, bool logNonZeroExitAsError, string caller)
+        StringBuilder stdout, StringBuilder stderr, bool logNonZeroExitAsError, string caller,
+        IReadOnlyDictionary<string, string?>? environmentVariables = null)
     {
-        await FaultInjectionService.InjectAsync("process.run", cancellationToken).ConfigureAwait(false);
-        // Bound concurrent child processes to avoid launch storms and redirected-pipe pressure.
-        await ProcessGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // The timeout budget starts before queue admission, not after it.
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (timeout.HasValue) linked.CancelAfter(timeout.Value);
+        try
+        {
+            await FaultInjectionService.InjectAsync("process.run", linked.Token).ConfigureAwait(false);
+            await ProcessGate.WaitAsync(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
+                                                 timeout.HasValue && linked.IsCancellationRequested)
+        {
+            throw new TimeoutException($"{file} překročil timeout {timeout.Value.TotalSeconds:0}s (včetně fronty).");
+        }
+
         try
         {
             string resolvedFile = ResolveExecutable(file);
+            // Uses the same timeout token that admitted this process slot.
+
             string hardenedArguments = HardenArguments(resolvedFile, arguments);
 
             var startInfo = new ProcessStartInfo
@@ -299,12 +406,16 @@ public static class ProcessRunner
             };
             if (TrustedWindowsTools.Contains(Path.GetFileName(file)))
                 HardenEnvironment(startInfo);
+            if (environmentVariables != null)
+                foreach (var pair in environmentVariables) startInfo.Environment[pair.Key] = pair.Value;
             using var process = new Process
             {
                 StartInfo = startInfo,
                 EnableRaisingEvents = true
             };
 
+            var processExited = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            process.Exited += (_, _) => processExited.TrySetResult(null);
             var stdoutClosed = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
             var stderrClosed = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
             process.OutputDataReceived += (_, e) =>
@@ -333,11 +444,10 @@ public static class ProcessRunner
                 throw;
             }
 
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            if (timeout.HasValue) linked.CancelAfter(timeout.Value);
             try
             {
-                await process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
+                // WaitForExitAsync also awaits pipe EOF, which descendants can keep open.
+                await processExited.Task.WaitAsync(linked.Token).ConfigureAwait(false);
                 await DrainRedirectedStreamsAsync(stdoutClosed.Task, stderrClosed.Task).ConfigureAwait(false);
             }
             catch (OperationCanceledException)

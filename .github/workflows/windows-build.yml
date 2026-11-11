@@ -1,0 +1,45 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore Windows application
+        run: dotnet restore src/SpankyhoOptimizer/SpankyhoOptimizer.csproj --runtime win-x64
+      - name: Compile Windows application
+        run: dotnet build src/SpankyhoOptimizer/SpankyhoOptimizer.csproj --configuration Release --no-restore --runtime win-x64 -p:PublishReadyToRun=false -p:ContinuousIntegrationBuild=true
+      - name: Package compiled application (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $output = 'src/SpankyhoOptimizer/bin/Release/net10.0-windows10.0.26100.0/win-x64'
+          if (!(Test-Path $output)) { throw "Build output missing: $output" }
+          Compress-Archive -Path "$output/*" -DestinationPath 'SpankyhoOptimizer-CI.zip' -Force
+      - name: Save build artifact (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpankyhoOptimizer-windows-x64
+          path: SpankyhoOptimizer-CI.zip
+          if-no-files-found: error
+          retention-days: 7

@@ -3,135 +3,197 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
+using SpankyhoOptimizer.Services;
 
 namespace SpankyhoOptimizer;
 
 public sealed partial class MainWindow
 {
+    private static class Ios27Motion
+    {
+        public const int MicroMs = 110;
+        public const int NormalMs = 170;
+        public const int SectionMs = 185;
+        public const int PopupMs = 220;
+        public const int PopupExitMs = 155;
+        public const float PressScale = 0.982f;
+        public const float RestOpacity = 1f;
+    }
+
     private static readonly ConditionalWeakTable<FrameworkElement, object> HoverMotionAttached = new();
-    private static readonly object HoverMotionMarker = new();
+    private static readonly ConditionalWeakTable<ToggleSwitch, object> ToggleMotionAttached = new();
+    private static readonly ConditionalWeakTable<Slider, object> SliderMotionAttached = new();
+    private static readonly object MotionMarker = new();
+
+    private static bool MotionEnabled => UiMotionSettingsService.EffectiveEnabled;
+
+    private static CubicBezierEasingFunction CreateIosEase(Compositor compositor)
+        => compositor.CreateCubicBezierEasingFunction(new Vector2(0.22f, 1f), new Vector2(0.36f, 1f));
+
+    private static CubicBezierEasingFunction CreateIosSpringEase(Compositor compositor)
+        => compositor.CreateCubicBezierEasingFunction(new Vector2(0.16f, 1.18f), new Vector2(0.30f, 1f));
+
+    private static void ResetMotionVisual(FrameworkElement element)
+    {
+        var visual = ElementCompositionPreview.GetElementVisual(element);
+        // Never assign Visual.Offset on XAML-owned visuals: XAML layout owns that value.
+        // Only stop any handoff animation so layout immediately regains control.
+        visual.StopAnimation("Offset");
+        visual.StopAnimation("Scale");
+        visual.StopAnimation("Opacity");
+        // Native Composition property writes are comparatively expensive. Most
+        // persistent navigation elements are already in their resting state.
+        if (visual.Scale != Vector3.One) visual.Scale = Vector3.One;
+        if (visual.Opacity != 1f) visual.Opacity = 1f;
+    }
 
     private static void AttachHoverMotion(FrameworkElement element, float hoverScale = 1.006f)
     {
-        if (!SpankyhoOptimizer.Services.UiMotionSettingsService.Enabled) return;
-        if (HoverMotionAttached.TryGetValue(element, out _)) return;
-        HoverMotionAttached.Add(element, HoverMotionMarker);
+        // Persistent controls/cards must never own compositor opacity/offset/scale animations.
+        // They caused intermittent invisible Overview/sidebar content after rapid navigation.
+        if (element.IsLoaded)
+            ResetMotionVisual(element);
+    }
 
-        Visual? visual = null;
-        Vector3KeyFrameAnimation? hoverScaleAnim = null;
-        Vector3KeyFrameAnimation? normalScaleAnim = null;
-        Vector3KeyFrameAnimation? pressedScaleAnim = null;
-        ScalarKeyFrameAnimation? fullOpacityAnim = null;
-        ScalarKeyFrameAnimation? restOpacityAnim = null;
-        ScalarKeyFrameAnimation? pressedOpacityAnim = null;
+    private static void AttachToggleMotion(ToggleSwitch toggle)
+    {
+        if (toggle.IsLoaded)
+            ResetMotionVisual(toggle);
+    }
 
-        void AnimateTo(int state)
-        {
-            visual ??= ElementCompositionPreview.GetElementVisual(element);
-            if (!SpankyhoOptimizer.Services.UiMotionSettingsService.Enabled)
-            {
-                visual.Scale = Vector3.One;
-                visual.Opacity = 1f;
-                return;
-            }
-            var compositor = visual.Compositor;
-            visual.CenterPoint = new Vector3((float)(element.ActualWidth / 2), (float)(element.ActualHeight / 2), 0);
+    private static void AttachSliderMotion(Slider slider)
+    {
+        if (slider.IsLoaded)
+            ResetMotionVisual(slider);
+    }
 
-            Vector3KeyFrameAnimation scaleAnim;
-            ScalarKeyFrameAnimation opacityAnim;
-            switch (state)
-            {
-                case 0: // hover / released
-                    scaleAnim = hoverScaleAnim ??= CreateHoverScaleAnimation(compositor, hoverScale);
-                    opacityAnim = fullOpacityAnim ??= CreateHoverOpacityAnimation(compositor, 1f);
-                    break;
-                case 1: // pointer exited
-                    scaleAnim = normalScaleAnim ??= CreateHoverScaleAnimation(compositor, 1f);
-                    opacityAnim = restOpacityAnim ??= CreateHoverOpacityAnimation(compositor, 0.97f);
-                    break;
-                default: // pressed
-                    scaleAnim = pressedScaleAnim ??= CreateHoverScaleAnimation(compositor, 0.985f);
-                    opacityAnim = pressedOpacityAnim ??= CreateHoverOpacityAnimation(compositor, 0.92f);
-                    break;
-            }
-
-            visual.StartAnimation("Scale", scaleAnim);
-            visual.StartAnimation("Opacity", opacityAnim);
-        }
-
-        element.PointerEntered += (_, _) => AnimateTo(0);
-        element.PointerExited += (_, _) => AnimateTo(1);
-        element.PointerPressed += (_, _) => AnimateTo(2);
-        element.PointerReleased += (_, _) => AnimateTo(0);
+    private static void AttachIosMotionTree(DependencyObject root)
+    {
+        // Disabled for persistent page trees. Recursive compositor event attachment made
+        // reused/cached WinUI elements capable of keeping stale visual state after navigation.
+        // Dialog enter/exit motion remains isolated below.
     }
 
     private static void AnimateDialogIn(FrameworkElement overlay, FrameworkElement card)
     {
-        if (!SpankyhoOptimizer.Services.UiMotionSettingsService.Enabled) return;
+        if (!MotionEnabled)
+        {
+            ResetMotionVisual(overlay);
+            ResetMotionVisual(card);
+            return;
+        }
+
         var overlayVisual = ElementCompositionPreview.GetElementVisual(overlay);
         var cardVisual = ElementCompositionPreview.GetElementVisual(card);
         var compositor = cardVisual.Compositor;
+        var ease = CreateIosEase(compositor);
+        var spring = CreateIosSpringEase(compositor);
+
         overlayVisual.Opacity = 0f;
         cardVisual.Opacity = 0f;
-        cardVisual.Scale = new Vector3(0.968f, 0.968f, 1);
-        cardVisual.Offset = new Vector3(0, 9, 0);
+        cardVisual.Scale = new Vector3(0.985f, 0.985f, 1);
         cardVisual.CenterPoint = new Vector3((float)(card.ActualWidth / 2), (float)(card.ActualHeight / 2), 0);
 
-        var iosEase = compositor.CreateCubicBezierEasingFunction(new Vector2(0.22f, 1f), new Vector2(0.36f, 1f));
         var overlayFade = compositor.CreateScalarKeyFrameAnimation();
-        overlayFade.InsertKeyFrame(1f, 1f, iosEase);
-        overlayFade.Duration = TimeSpan.FromMilliseconds(115);
+        overlayFade.InsertKeyFrame(1f, 1f, ease);
+        overlayFade.Duration = TimeSpan.FromMilliseconds(Ios27Motion.MicroMs + 20);
+
         var cardFade = compositor.CreateScalarKeyFrameAnimation();
-        cardFade.InsertKeyFrame(1f, 1f, iosEase);
-        cardFade.Duration = TimeSpan.FromMilliseconds(145);
+        cardFade.InsertKeyFrame(1f, 1f, ease);
+        cardFade.Duration = TimeSpan.FromMilliseconds(Ios27Motion.NormalMs);
+
         var scale = compositor.CreateVector3KeyFrameAnimation();
-        scale.InsertKeyFrame(1f, Vector3.One, iosEase);
-        scale.Duration = TimeSpan.FromMilliseconds(190);
-        var lift = compositor.CreateVector3KeyFrameAnimation();
-        lift.InsertKeyFrame(1f, Vector3.Zero, iosEase);
-        lift.Duration = TimeSpan.FromMilliseconds(205);
+        scale.InsertKeyFrame(0.72f, new Vector3(1.002f, 1.002f, 1), spring);
+        scale.InsertKeyFrame(1f, Vector3.One, spring);
+        scale.Duration = TimeSpan.FromMilliseconds(180);
+
         overlayVisual.StartAnimation("Opacity", overlayFade);
         cardVisual.StartAnimation("Opacity", cardFade);
         cardVisual.StartAnimation("Scale", scale);
-        cardVisual.StartAnimation("Offset", lift);
+    }
+
+    private static void AnimateDialogOut(FrameworkElement overlay, FrameworkElement card, Action completed)
+    {
+        if (!MotionEnabled || !overlay.IsLoaded)
+        {
+            completed();
+            return;
+        }
+
+        var overlayVisual = ElementCompositionPreview.GetElementVisual(overlay);
+        var cardVisual = ElementCompositionPreview.GetElementVisual(card);
+        var compositor = cardVisual.Compositor;
+        var ease = CreateIosEase(compositor);
+        cardVisual.CenterPoint = new Vector3((float)(card.ActualWidth / 2), (float)(card.ActualHeight / 2), 0);
+
+        var batch = compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
+
+        var overlayFade = compositor.CreateScalarKeyFrameAnimation();
+        overlayFade.InsertKeyFrame(1f, 0f, ease);
+        overlayFade.Duration = TimeSpan.FromMilliseconds(Ios27Motion.PopupExitMs - 25);
+        overlayVisual.StartAnimation("Opacity", overlayFade);
+
+        var cardFade = compositor.CreateScalarKeyFrameAnimation();
+        cardFade.InsertKeyFrame(1f, 0f, ease);
+        cardFade.Duration = TimeSpan.FromMilliseconds(Ios27Motion.PopupExitMs);
+        cardVisual.StartAnimation("Opacity", cardFade);
+
+        var scale = compositor.CreateVector3KeyFrameAnimation();
+        scale.InsertKeyFrame(1f, new Vector3(0.990f, 0.990f, 1), ease);
+        scale.Duration = TimeSpan.FromMilliseconds(Ios27Motion.PopupExitMs);
+        cardVisual.StartAnimation("Scale", scale);
+
+        batch.End();
+        batch.Completed += (_, _) =>
+            overlay.DispatcherQueue.TryEnqueue(
+                Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
+                () => completed());
+    }
+
+    private static void AnimateSectionOut(FrameworkElement element)
+    {
+        // ContentStack is a persistent host. Animating the host itself can leave the next page
+        // inheriting a stale compositor opacity/offset when navigation is superseded.
+        // Keep page containers deterministic; motion belongs inside transient controls/dialogs.
+        if (element.IsLoaded) ResetMotionVisual(element);
     }
 
     private static void AnimateSectionIn(FrameworkElement element)
     {
-        if (!SpankyhoOptimizer.Services.UiMotionSettingsService.Enabled || !element.IsLoaded) return;
-        var visual = ElementCompositionPreview.GetElementVisual(element);
-        var compositor = visual.Compositor;
-        visual.Opacity = 0.94f;
-        visual.Offset = new Vector3(0, 7, 0);
-
-        var ease = compositor.CreateCubicBezierEasingFunction(new Vector2(0.22f, 1f), new Vector2(0.36f, 1f));
-        var fade = compositor.CreateScalarKeyFrameAnimation();
-        fade.InsertKeyFrame(1f, 1f, ease);
-        fade.Duration = TimeSpan.FromMilliseconds(150);
-        var lift = compositor.CreateVector3KeyFrameAnimation();
-        lift.InsertKeyFrame(1f, Vector3.Zero, ease);
-        lift.Duration = TimeSpan.FromMilliseconds(185);
-
-        visual.StartAnimation("Opacity", fade);
-        visual.StartAnimation("Offset", lift);
+        // Never animate the persistent ContentStack host. This guarantees every page starts
+        // at full opacity and zero composition offset even after rapid/re-entrant navigation.
+        if (element.IsLoaded) ResetMotionVisual(element);
     }
 
-    private static Vector3KeyFrameAnimation CreateHoverScaleAnimation(Compositor compositor, float scale)
+    private static Vector3KeyFrameAnimation CreateScaleAnimation(Compositor compositor, float scale, int durationMs, bool spring)
     {
         var animation = compositor.CreateVector3KeyFrameAnimation();
-        var ease = compositor.CreateCubicBezierEasingFunction(new Vector2(0.22f, 1f), new Vector2(0.36f, 1f));
+        var ease = spring ? CreateIosSpringEase(compositor) : CreateIosEase(compositor);
+        if (spring && scale >= 1f)
+            animation.InsertKeyFrame(0.62f, new Vector3(scale + 0.004f, scale + 0.004f, 1), ease);
         animation.InsertKeyFrame(1f, new Vector3(scale, scale, 1), ease);
-        animation.Duration = TimeSpan.FromMilliseconds(135);
+        animation.Duration = TimeSpan.FromMilliseconds(durationMs);
         return animation;
     }
 
-    private static ScalarKeyFrameAnimation CreateHoverOpacityAnimation(Compositor compositor, float opacity)
+    private static Vector3KeyFrameAnimation CreateOffsetAnimation(Compositor compositor, float y, int durationMs, bool spring)
+    {
+        var animation = compositor.CreateVector3KeyFrameAnimation();
+        var ease = spring ? CreateIosSpringEase(compositor) : CreateIosEase(compositor);
+        if (spring && y <= 0f)
+            animation.InsertKeyFrame(0.62f, new Vector3(0, y - 0.35f, 0), ease);
+        animation.InsertKeyFrame(1f, new Vector3(0, y, 0), ease);
+        animation.Duration = TimeSpan.FromMilliseconds(durationMs);
+        return animation;
+    }
+
+    private static ScalarKeyFrameAnimation CreateOpacityAnimation(Compositor compositor, float opacity, int durationMs)
     {
         var animation = compositor.CreateScalarKeyFrameAnimation();
-        var ease = compositor.CreateCubicBezierEasingFunction(new Vector2(0.22f, 1f), new Vector2(0.36f, 1f));
-        animation.InsertKeyFrame(1f, opacity, ease);
-        animation.Duration = TimeSpan.FromMilliseconds(120);
+        animation.InsertKeyFrame(1f, opacity, CreateIosEase(compositor));
+        animation.Duration = TimeSpan.FromMilliseconds(durationMs);
         return animation;
     }
 }

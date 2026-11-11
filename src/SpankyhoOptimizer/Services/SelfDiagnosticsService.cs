@@ -43,8 +43,8 @@ public static class SelfDiagnosticsService
         items.Add(await scheduleTask.ConfigureAwait(false));
         items.Add(await wmiTask.ConfigureAwait(false));
         items.Add(await rpcTask.ConfigureAwait(false));
-        string ps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
-        items.Add(new("PowerShell", File.Exists(ps), File.Exists(ps) ? ps : "Nenalezen"));
+        // Core diagnostics use native Windows and .NET providers. PowerShell is
+        // optional and is checked by the PowerShell Center when explicitly used.
         bool nvidia = File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "nvapi64.dll"));
         items.Add(new("NVAPI", nvidia, nvidia ? "nvapi64.dll dostupná" : "NVIDIA/NVAPI není dostupná"));
         return new SelfDiagnosticReport(DateTime.UtcNow, items);

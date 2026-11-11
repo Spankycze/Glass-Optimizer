@@ -24,9 +24,9 @@ public static class CatalogService
         new("usb", "USB / HID", "USB zařízení, napájení a čištění", "\uecf0"),
         new("lianli", "Ventilátory", "Lian Li SL-Infinity • RPM • teplota CPU • RGB bez L-Connect", "\ue9ca"),
         new("startup", "Po spuštění", "Programy spouštěné s Windows", "\ue7b8"),
+        new("themes", "Personalizace", "Glass Windows, tapety, kurzory a PowerShell", "\ue771"),
         new("ui", "UI / Explorer", "Průzkumník, taskbar a vzhled Windows", "\ue771"),
         new("update", "Windows Update", "Aktualizace a Delivery Optimization", "\ue895"),
-        new("browsers", "Prohlížeče", "Firefox, Chrome, Edge, Brave, Opera GX a další", "\ue774"),
         new("spicetify", "Spotify / Spicetify", "Themes, extensions, Marketplace a správa Spotify klienta", "\ue93f"),
         new("apps", "Programy / Launchery", "Launchery, cache a aplikační optimalizace", "\ue71d"),
         new("privacy", "Soukromí", "Telemetry, oprávnění aplikací a doporučený obsah", "\ue72e"),
@@ -98,13 +98,9 @@ public static class CatalogService
         new("memory", null, MemoryTweaks),
         new("storage", null, StorageTweaks),
         new("network", null, NetworkTweaks),
-        new("browsers", "Firefox", () => BrowserTweaks("Firefox")),
-        new("browsers", "Chrome", () => BrowserTweaks("Chrome")),
-        new("browsers", "Edge", () => BrowserTweaks("Edge")),
-        new("browsers", "Brave", () => BrowserTweaks("Brave")),
-        new("browsers", "Opera", () => BrowserTweaks("Opera")),
-        new("browsers", "Opera GX", () => BrowserTweaks("Opera GX")),
-        new("browsers", "Vivaldi", () => BrowserTweaks("Vivaldi")),
+        new("components", "Služby", ServiceTweaks),
+        new("components", "Ovladače", DriverTweaks),
+        new("components", "Task Scheduler", TaskTweaks),
         new("ui", null, UiTweaks),
         new("update", null, UpdateTweaks),
         new("privacy", null, PrivacyTweaks),
@@ -129,9 +125,7 @@ public static class CatalogService
     public static List<TweakDefinition> GetTweaks(string section, string? sub = null)
     {
         string effectiveSub = sub ?? string.Empty;
-        if (section.Equals("browsers", StringComparison.OrdinalIgnoreCase) && effectiveSub.Length == 0)
-            effectiveSub = "Firefox";
-        else if (section.Equals("components", StringComparison.OrdinalIgnoreCase) && effectiveSub.Length == 0)
+        if (section.Equals("components", StringComparison.OrdinalIgnoreCase) && effectiveSub.Length == 0)
             effectiveSub = "Služby";
 
         string cacheKey = section + "|" + effectiveSub;
@@ -149,6 +143,13 @@ public static class CatalogService
         {
             TweakFactory.Dword("sys.gamemode", "system", "Gaming", "Game Mode", "Windows Game Mode.", RegistryHive.CurrentUser, "Software\\Microsoft\\GameBar", "AutoGameModeEnabled", 1, 0, false, true),
             TweakFactory.Dword("sys.gamemode2", "system", "Gaming", "Game Mode povolený systémem", "Druhá hodnota Game Mode používaná Windows.", RegistryHive.CurrentUser, "Software\\Microsoft\\GameBar", "AllowAutoGameMode", 1, 0, false, true),
+            TweakFactory.Command("sys.audioenhancements", "system", "Zvuk", "Vypnout Audio Enhancements",
+                "Volitelně vypne systémové a výrobní efekty na zvukových výstupech i mikrofonech. Před změnou ukládá původní hodnoty a při vypnutí přepínače je obnoví.",
+                AudioEnhancementsTweakService.IsDisabledAsync,
+                AudioEnhancementsTweakService.SetDisabledAsync,
+                recommended: false, risk: TweakRisk.Optional, restart: false,
+                impact: "Nízký", warning: "Může vypnout prostorový zvuk, korekce sluchátek a potlačení šumu mikrofonu. Obnova funguje pouze pro nastavení změněná Optimizerem.",
+                requiresAdmin: true, lazyDetect: true),
             TweakFactory.Dword("sys.gamedvr", "system", "Gaming", "Vypnout Game DVR", "Zakáže nahrávání na pozadí.", RegistryHive.CurrentUser, "System\\GameConfigStore", "GameDVR_Enabled", 0, 1, false, true),
             TweakFactory.Dword("sys.capture", "system", "Gaming", "Vypnout App Capture", "Omezí background capture.", RegistryHive.CurrentUser, "Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR", "AppCaptureEnabled", 0, 1, false, true),
             TweakFactory.Dword("sys.gamebarquiet", "system", "Gaming", "Tichý Game Bar", "Nevynucuje Game Bar panel při startu.", RegistryHive.CurrentUser, "Software\\Microsoft\\GameBar", "ShowStartupPanel", 0, 1, false, true),
@@ -276,107 +277,6 @@ public static class CatalogService
             async (on, ct) => { var r = await ProcessRunner.RunAsync("netsh.exe", $"int tcp set global {key}={(on ? onValue : offValue)}", TimeSpan.FromSeconds(20), ct).ConfigureAwait(false); if (!r.Success) throw new InvalidOperationException(r.StdErr + r.StdOut); TcpGlobalStateService.Invalidate(); }, recommended, TweakRisk.Safe, true);
     }
 
-    private static (RegistryHive hive, string path) BrowserPolicy(string browser)
-    {
-        return browser switch
-        {
-            "Firefox" => (hive: RegistryHive.LocalMachine, path: "SOFTWARE\\Policies\\Mozilla\\Firefox"),
-            "Chrome" => (hive: RegistryHive.LocalMachine, path: "SOFTWARE\\Policies\\Google\\Chrome"),
-            "Edge" => (hive: RegistryHive.LocalMachine, path: "SOFTWARE\\Policies\\Microsoft\\Edge"),
-            "Brave" => (hive: RegistryHive.LocalMachine, path: "SOFTWARE\\Policies\\BraveSoftware\\Brave"),
-            "Opera" => (hive: RegistryHive.LocalMachine, path: "SOFTWARE\\Policies\\Opera Software\\Opera Stable"),
-            "Opera GX" => (hive: RegistryHive.LocalMachine, path: "SOFTWARE\\Policies\\Opera Software\\Opera GX Stable"),
-            "Vivaldi" => (hive: RegistryHive.LocalMachine, path: "SOFTWARE\\Policies\\Vivaldi"),
-            _ => (hive: RegistryHive.LocalMachine, path: "SOFTWARE\\Policies\\Google\\Chrome"),
-        };
-    }
-
-    private static List<TweakDefinition> BrowserTweaks(string browser)
-    {
-        var (hive, path) = BrowserPolicy(browser);
-        if (browser == "Firefox")
-        {
-            return new List<TweakDefinition>
-            {
-                TweakFactory.Dword("ff.telemetry", "browsers", "Privacy", "Vypnout telemetry", "Firefox enterprise policy.", hive, path, "DisableTelemetry", 1, null, true, true),
-                TweakFactory.Dword("ff.studies", "browsers", "Privacy", "Vypnout Firefox Studies", "Zakáže Studies/Normandy.", hive, path, "DisableFirefoxStudies", 1, null, true, true),
-                TweakFactory.Dword("ff.feedback", "browsers", "Privacy", "Vypnout feedback příkazy", "Skryje odesílání feedbacku.", hive, path, "DisableFeedbackCommands", 1, null, true, true),
-                TweakFactory.Dword("ff.agent", "browsers", "Background", "Vypnout Default Browser Agent", "Omezí pomocnou úlohu Firefoxu.", hive, path, "DisableDefaultBrowserAgent", 1, null, true, true),
-                TweakFactory.Dword("ff.defaultcheck", "browsers", "Background", "Nekontrolovat výchozí prohlížeč", "Nevyvolá kontrolu výchozího browseru.", hive, path, "DontCheckDefaultBrowser", 1, null, true, true),
-                TweakFactory.Dword("ff.loginlaunch", "browsers", "Background", "Nespouštět Firefox po přihlášení", "Zakáže launch on login.", hive, path, "DisableLaunchOnLogin", 1, null, true, true),
-                TweakFactory.Dword("ff.pocket", "browsers", "UI", "Vypnout Pocket", "Odstraní Pocket integraci.", hive, path, "DisablePocket", 1, null, true, true),
-                TweakFactory.Dword("ff.suggest", "browsers", "Privacy", "Vypnout návrhy hledání", "Dotazy se neodesílají při psaní.", hive, path, "SearchSuggestEnabled", 0, null, true, true),
-                TweakFactory.Dword("ff.visualsearch", "browsers", "Privacy", "Vypnout Visual Search", "Vypne visual search policy.", hive, path, "VisualSearchEnabled", 0, null, true, true),
-                TweakFactory.Dword("ff.background", "browsers", "Background", "Background updates vypnuté", "Zakáže background app update policy.", hive, path, "BackgroundAppUpdate", 0, null, true, false, TweakRisk.Optional),
-                TweakFactory.Dword("ff.formhistory", "browsers", "Privacy", "Vypnout historii formulářů", "Zakáže ukládání formulářové historie.", hive, path, "DisableFormHistory", 1, null, true, false, TweakRisk.Optional),
-                TweakFactory.Dword("ff.password", "browsers", "Privacy", "Vypnout správce hesel", "Jen pokud používáš externí správce hesel.", hive, path, "PasswordManagerEnabled", 0, null, true, false, TweakRisk.Advanced),
-                TweakFactory.Dword("ff.autofilladdress", "browsers", "Privacy", "Vypnout autofill adres", "Vypne ukládání adres.", hive, path, "AutofillAddressEnabled", 0, null, true, false, TweakRisk.Optional),
-                TweakFactory.Dword("ff.autofillcard", "browsers", "Privacy", "Vypnout autofill karet", "Vypne ukládání platebních karet.", hive, path, "AutofillCreditCardEnabled", 0, null, true, false, TweakRisk.Optional),
-                TweakFactory.Dword("ff.screenshots", "browsers", "UI", "Vypnout Firefox Screenshots", "Volitelné odebrání screenshot nástroje.", hive, path, "DisableFirefoxScreenshots", 1, null, true, false, TweakRisk.Optional),
-                TweakFactory.Dword("ff.accounts", "browsers", "Sync", "Vypnout Firefox Accounts", "Zakáže účet a synchronizaci.", hive, path, "DisableFirefoxAccounts", 1, null, true, false, TweakRisk.Advanced),
-                TweakFactory.Dword("ff.logins", "browsers", "Privacy", "Nenabízet ukládání přihlášení", "Vhodné s externím password managerem.", hive, path, "OfferToSaveLogins", 0, null, true, false, TweakRisk.Optional),
-                TweakFactory.Dword("ff.hometopsites", "browsers", "Firefox Home", "Sponzorované Top Sites vypnuté", "Odstraní sponzorované dlaždice.", hive, path + "\\FirefoxHome", "SponsoredTopSites", 0, null, true, true),
-                TweakFactory.Dword("ff.homepocket", "browsers", "Firefox Home", "Sponzorovaný Pocket vypnutý", "Odstraní sponzorovaný obsah Pocket.", hive, path + "\\FirefoxHome", "SponsoredPocket", 0, null, true, true),
-                TweakFactory.Dword("ff.snippets", "browsers", "Firefox Home", "Snippets vypnuté", "Odstraní promo zprávy na nové kartě.", hive, path + "\\FirefoxHome", "Snippets", 0, null, true, true),
-                TweakFactory.Dword("ff.extensions", "browsers", "Doporučení", "Doporučení rozšíření vypnutá", "Omezí doporučování doplňků.", hive, path + "\\UserMessaging", "ExtensionRecommendations", 0, null, true, true),
-                TweakFactory.Dword("ff.features", "browsers", "Doporučení", "Doporučení funkcí vypnutá", "Omezí promo nových funkcí.", hive, path + "\\UserMessaging", "FeatureRecommendations", 0, null, true, true),
-                TweakFactory.Dword("ff.urlbar", "browsers", "Doporučení", "Urlbar intervence vypnuté", "Omezí doporučení v adresním řádku.", hive, path + "\\UserMessaging", "UrlbarInterventions", 0, null, true, true),
-                TweakFactory.Dword("ff.onboarding", "browsers", "Doporučení", "Přeskočit onboarding", "Nevyvolá úvodní promo obrazovky.", hive, path + "\\UserMessaging", "SkipOnboarding", 1, null, true, true),
-                TweakFactory.Dword("ff.moremozilla", "browsers", "Doporučení", "More from Mozilla vypnuté", "Omezí další promo Mozilly.", hive, path + "\\UserMessaging", "MoreFromMozilla", 0, null, true, true)
-            };
-        }
-        string text = browser.Replace(" ", "").ToLowerInvariant();
-        List<TweakDefinition> list2 = new List<TweakDefinition>
-        {
-            TweakFactory.Dword(text + ".background", "browsers", "Performance", "Background mode vypnutý", "Chromium policy BackgroundModeEnabled.", hive, path, "BackgroundModeEnabled", 0, null, deleteOnDisable: true, recommended: true),
-            TweakFactory.Dword(text + ".metrics", "browsers", "Privacy", "Metrics reporting vypnutý", "Omezí browser metrics reporting.", hive, path, "MetricsReportingEnabled", 0, null, deleteOnDisable: true, recommended: true),
-            TweakFactory.Dword(text + ".hwaccel", "browsers", "Performance", "Hardware acceleration zapnutá", "Nechá rendering na GPU.", hive, path, "HardwareAccelerationModeEnabled", 1, null, deleteOnDisable: true, recommended: true, TweakRisk.Safe, restart: true),
-            TweakFactory.Dword(text + ".signin", "browsers", "Privacy", "Browser sign-in vypnutý", "Volitelné — nepoužívej pokud potřebuješ sync.", hive, path, "BrowserSignin", 0, null, deleteOnDisable: true, recommended: false, TweakRisk.Advanced),
-            TweakFactory.Dword(text + ".sync", "browsers", "Privacy", "Cloud sync vypnutý", "Volitelné — zakáže synchronizaci profilu.", hive, path, "SyncDisabled", 1, null, deleteOnDisable: true, recommended: false, TweakRisk.Advanced)
-        };
-        list2.AddRange(new[]
-        {
-            TweakFactory.Dword(text + ".suggest", "browsers", "Privacy", "Návrhy hledání vypnuté", "Při psaní neodesílá návrhy vyhledávači.", hive, path, "SearchSuggestEnabled", 0, null, true, true),
-            TweakFactory.Dword(text + ".promo", "browsers", "UI", "Promo karty vypnuté", "Skryje propagační karty prohlížeče.", hive, path, "PromotionalTabsEnabled", 0, null, true, true),
-            TweakFactory.Dword(text + ".default", "browsers", "UI", "Kontrola výchozího browseru vypnutá", "Nevyvolá opakované upozornění na výchozí prohlížeč.", hive, path, "DefaultBrowserSettingEnabled", 0, null, true, true),
-            TweakFactory.Dword(text + ".dnschecks", "browsers", "Síť", "DNS interception checks vypnuté", "Omezí pomocné DNS kontrolní požadavky.", hive, path, "DNSInterceptionChecksEnabled", 0, null, true, false, TweakRisk.Optional),
-            TweakFactory.Dword(text + ".password", "browsers", "Privacy", "Správce hesel vypnutý", "Jen pokud používáš externí správce hesel.", hive, path, "PasswordManagerEnabled", 0, null, true, false, TweakRisk.Advanced),
-            TweakFactory.Dword(text + ".autofilladdress", "browsers", "Privacy", "Autofill adres vypnutý", "Vypne ukládání adres.", hive, path, "AutofillAddressEnabled", 0, null, true, false, TweakRisk.Optional),
-            TweakFactory.Dword(text + ".autofillcard", "browsers", "Privacy", "Autofill karet vypnutý", "Vypne ukládání platebních údajů.", hive, path, "AutofillCreditCardEnabled", 0, null, true, false, TweakRisk.Optional),
-            TweakFactory.Dword(text + ".translate", "browsers", "UI", "Překladač vypnutý", "Volitelné vypnutí nabídek překladu.", hive, path, "TranslateEnabled", 0, null, true, false, TweakRisk.Optional),
-            TweakFactory.Dword(text + ".quic", "browsers", "Síť", "QUIC vypnutý", "Jen pro řešení problémů se sítí; HTTP/3 se vypne.", hive, path, "QuicAllowed", 0, null, true, false, TweakRisk.Advanced),
-            TweakFactory.Dword(text + ".printing", "browsers", "Privacy", "Background cloud print vypnutý", "Omezí starší cloud print proxy.", hive, path, "CloudPrintProxyEnabled", 0, null, true, false, TweakRisk.Optional)
-        });
-        if (browser == "Brave")
-        {
-            list2.Add(TweakFactory.Dword("brave.rewards", "browsers", "Brave", "Brave Rewards vypnuté", "Zakáže Rewards komponentu.", hive, path, "BraveRewardsDisabled", 1, null, true, false, TweakRisk.Optional));
-            list2.Add(TweakFactory.Dword("brave.wallet", "browsers", "Brave", "Brave Wallet vypnutá", "Zakáže integrovanou crypto wallet.", hive, path, "BraveWalletDisabled", 1, null, true, false, TweakRisk.Optional));
-            list2.Add(TweakFactory.Dword("brave.vpn", "browsers", "Brave", "Brave VPN vypnutá", "Zakáže integrovanou nabídku Brave VPN.", hive, path, "BraveVPNDisabled", 1, null, true, false, TweakRisk.Optional));
-            list2.Add(TweakFactory.Dword("brave.leo", "browsers", "Brave", "Brave Leo AI vypnuté", "Zakáže Brave AI Chat / Leo.", hive, path, "BraveAIChatEnabled", 0, null, true, false, TweakRisk.Optional));
-            list2.Add(TweakFactory.Dword("brave.news", "browsers", "Brave", "Brave News vypnuté", "Zakáže Brave News.", hive, path, "BraveNewsDisabled", 1, null, true, false, TweakRisk.Optional));
-            list2.Add(TweakFactory.Dword("brave.p3a", "browsers", "Privacy", "Brave P3A vypnuté", "Zakáže privacy-preserving product analytics P3A.", hive, path, "BraveP3AEnabled", 0, null, true, true));
-        }
-        if (browser == "Edge")
-        {
-            list2.Add(TweakFactory.Dword("edge.startupboost", "browsers", "Performance", "Startup Boost vypnutý", "Zabrání Edge zůstávat přednačtený po startu.", hive, path, "StartupBoostEnabled", 0, null, deleteOnDisable: true, recommended: true));
-            list2.Add(TweakFactory.Dword("edge.sidebar", "browsers", "UI", "Edge Sidebar vypnutý", "Zakáže sidebar/hub.", hive, path, "HubsSidebarEnabled", 0, null, deleteOnDisable: true, recommended: true));
-            list2.Add(TweakFactory.Dword("edge.shopping", "browsers", "UI", "Shopping Assistant vypnutý", "Skryje nákupní doporučení.", hive, path, "EdgeShoppingAssistantEnabled", 0, null, true, true));
-            list2.Add(TweakFactory.Dword("edge.personalization", "browsers", "Privacy", "Personalization reporting vypnutý", "Omezí personalizaci Edge.", hive, path, "PersonalizationReportingEnabled", 0, null, true, true));
-            list2.Add(TweakFactory.Dword("edge.recommend", "browsers", "UI", "Edge doporučení vypnutá", "Skryje doporučení v browseru.", hive, path, "ShowRecommendationsEnabled", 0, null, true, true));
-            list2.Add(TweakFactory.Dword("edge.webwidget", "browsers", "Background", "Web Widget vypnutý", "Zakáže background Web Widget.", hive, path, "WebWidgetAllowed", 0, null, true, true));
-            list2.Add(TweakFactory.Dword("edge.firstrun", "browsers", "UI", "Přeskočit Edge First Run", "Skryje úvodní onboarding Edge.", hive, path, "HideFirstRunExperience", 1, null, true, true));
-            list2.Add(TweakFactory.Dword("edge.feedback", "browsers", "Privacy", "Edge feedback vypnutý", "Zakáže feedback prompts a odesílání zpětné vazby.", hive, path, "UserFeedbackAllowed", 0, null, true, true));
-            list2.Add(TweakFactory.Dword("edge.dnt", "browsers", "Privacy", "Do Not Track zapnuté", "Zapne Edge Do Not Track request header.", hive, path, "ConfigureDoNotTrack", 1, null, true, false, TweakRisk.Optional));
-            list2.Add(TweakFactory.Dword("edge.collections", "browsers", "UI", "Collections vypnuté", "Zakáže Edge Collections.", hive, path, "EdgeCollectionsEnabled", 0, null, true, false, TweakRisk.Optional));
-            list2.Add(TweakFactory.Dword("edge.rewards", "browsers", "UI", "Microsoft Rewards v Edge vypnuté", "Skryje Microsoft Rewards integraci v Edge.", hive, path, "ShowMicrosoftRewards", 0, null, true, true));
-            list2.Add(TweakFactory.Dword("edge.diagnostic", "browsers", "Privacy", "Edge diagnostic data vypnutá", "Omezí Edge diagnostic data enterprise policy.", hive, path, "DiagnosticData", 0, null, true, true));
-            list2.Add(TweakFactory.Dword("edge.assetdelivery", "browsers", "Background", "Edge Asset Delivery vypnutý", "Zakáže background delivery marketing/asset obsahu.", hive, path, "EdgeAssetDeliveryServiceEnabled", 0, null, true, true));
-            list2.Add(TweakFactory.Dword("edge.defaultcampaign", "browsers", "UI", "Default browser campaign vypnutá", "Skryje kampaně vyzývající k nastavení Edge jako výchozího browseru.", hive, path, "DefaultBrowserSettingsCampaignEnabled", 0, null, true, true));
-        }
-        list2.AddRange(GTweakPortCatalog.BrowserTweaks(browser));
-        return list2;
-    }
-
     private static List<TweakDefinition> ComponentTweaks(string sub)
     {
         return sub switch
@@ -450,18 +350,25 @@ public static class CatalogService
             ("RasMan", "Remote Access Connection Manager", 3, false, "Nech pro VPN klienty."),
             ("PcaSvc", "Program Compatibility Assistant", 3, false, "Pomáhá starším aplikacím a instalátorům."),
             ("dmwappushservice", "Device Management WAP Push", 3, false, "Pomocná MDM/WAP Push služba.")
-        }.Select(((string, string, int, bool, string) x) => ServiceStartTweak(x.Item1, x.Item2, x.Item3, x.Item4, x.Item5)).ToList();
+        }.Where(x => WindowsComponentCatalogPolicy.ServiceRegistered(x.Item1))
+         .Select(((string, string, int, bool, string) x) => ServiceStartTweak(x.Item1, x.Item2, x.Item3, x.Item4, x.Item5)).ToList();
         list.AddRange(GTweakPortCatalog.ServiceTweaks());
         return list;
     }
 
     private static TweakDefinition ServiceStartTweak(string service, string label, int target, bool recommended, string reason)
     {
-        return TweakFactory.Command("svc." + service, "components", "Služby", label, reason, async ct => await Task.Run(() =>
+        return TweakFactory.Command("svc." + service, "components", "Služby", label, reason, ct =>
         {
-            return ServiceSafetyService.ReadStartType(service) == target;
-        }, ct).ConfigureAwait(false), async (on, ct) => await Task.Run(() =>
+            // DetectAsync already runs on a thread-pool slot (TweakEngine);
+            // the inner Task.Run hop added a second scheduler dispatch per service.
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(ServiceSafetyService.ReadStartType(service) == target);
+        }, async (on, ct) =>
         {
+            // Native SCM mutation stays off the UI thread; TweakEngine runs
+            // SetAsync on its own Parallel.ForEachAsync worker, so the extra
+            // Task.Run wrapping was pure double-scheduling overhead.
             uint desired = on ? (uint)target : 3u;
             int original = ServiceSafetyService.ReadStartType(service) ?? 3;
             if (desired == 4 && !ServiceSafetyService.CanDisable(service))
@@ -474,7 +381,7 @@ public static class CatalogService
                 NativeCore.ChangeServiceStartType(service, (uint)original, out _);
                 throw new InvalidOperationException($"Read-back služby {service} nepotvrdil Start={desired}; původní hodnota byla obnovena.");
             }
-        }, ct).ConfigureAwait(false), recommended, target == 4 ? TweakRisk.Safe : TweakRisk.Optional, restart: true);
+        }, recommended, target == 4 ? TweakRisk.Safe : TweakRisk.Optional, restart: true);
     }
 
     private static List<TweakDefinition> DriverTweaks()
@@ -506,7 +413,8 @@ public static class CatalogService
             ("NdisWan", "NDIS WAN driver", "Může být potřeba pro VPN/PPP.", TweakRisk.Advanced),
             ("wanarp", "Remote Access IP ARP", "Může být potřeba pro VPN.", TweakRisk.Advanced),
             ("vwififlt", "Virtual Wi-Fi Filter", "Potřebné pro hotspot a Miracast.", TweakRisk.Advanced)
-        }.Select(((string, string, string, TweakRisk) x) => DriverStartTweak(x.Item1, x.Item2, x.Item3, x.Item1 == "Beep", x.Item4)).ToList();
+        }.Where(x => WindowsComponentCatalogPolicy.DriverRegistered(x.Item1))
+         .Select(((string, string, string, TweakRisk) x) => DriverStartTweak(x.Item1, x.Item2, x.Item3, x.Item1 == "Beep", x.Item4)).ToList();
     }
 
     private static TweakDefinition DriverStartTweak(string service, string label, string reason, bool recommended, TweakRisk risk)
@@ -532,35 +440,35 @@ public static class CatalogService
             RegistryValueName = "Start",
             RegistryEnabledValue = 4,
             RevertMode = "OriginalRegistryValue",
-            RevertAsync = async _ =>
+            RevertAsync = async ct =>
             {
-                if (!await TweakFactory.Backups.RestoreAsync(id).ConfigureAwait(false))
+                if (!await TweakFactory.Backups.RestoreAsync(id, ct).ConfigureAwait(false))
                     throw new InvalidOperationException("Pro tento driver tweak není uložená původní hodnota.");
             },
-            DetectAsync = async ct => await Task.Run(() =>
+            DetectAsync = ct =>
             {
                 using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
                 using var key = baseKey.OpenSubKey(path, false);
-                if (key == null) return false;
-                return Convert.ToInt32(key.GetValue("Start", -1)) == 4;
-            }, ct).ConfigureAwait(false),
-            SetAsync = async (on, ct) =>
+                return Task.FromResult(key != null && Convert.ToInt32(key.GetValue("Start", -1)) == 4);
+            },
+SetAsync = async (on, ct) =>
             {
-                if (on) await TweakFactory.Backups.SaveOriginalAsync(id, RegistryHive.LocalMachine, path, "Start").ConfigureAwait(false);
-                if (!on && await TweakFactory.Backups.RestoreAsync(id).ConfigureAwait(false)) return;
-                await Task.Run(() =>
+                if (on) await TweakFactory.Backups.SaveOriginalAsync(id, RegistryHive.LocalMachine, path, "Start", ct).ConfigureAwait(false);
+                if (!on && await TweakFactory.Backups.RestoreAsync(id, ct).ConfigureAwait(false)) return;
+                ct.ThrowIfCancellationRequested();
+                // TweakEngine already executes this on a thread-pool slot, so the
+                // extra Task.Run hop only added a second scheduler dispatch per
+                // driver toggle (one per page render across ~20 drivers).
+                using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+                using var key = baseKey.OpenSubKey(path, true) ?? throw new PlatformNotSupportedException($"Driver service {service} v tomto systemu není přítomný.");
+                int original = Convert.ToInt32(key.GetValue("Start", 3));
+                int desired = on ? 4 : 3;
+                key.SetValue("Start", desired, RegistryValueKind.DWord);
+if (Convert.ToInt32(key.GetValue("Start", -1)) != desired)
                 {
-                    using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-                    using var key = baseKey.OpenSubKey(path, true) ?? throw new PlatformNotSupportedException($"Driver service {service} v tomto systému není přítomný.");
-                    int original = Convert.ToInt32(key.GetValue("Start", 3));
-                    int desired = on ? 4 : 3;
-                    key.SetValue("Start", desired, RegistryValueKind.DWord);
-                    if (Convert.ToInt32(key.GetValue("Start", -1)) != desired)
-                    {
-                        key.SetValue("Start", original, RegistryValueKind.DWord);
-                        throw new InvalidOperationException($"Read-back driveru {service} nepotvrdil Start={desired}; původní hodnota byla obnovena.");
-                    }
-                }, ct).ConfigureAwait(false);
+                    key.SetValue("Start", original, RegistryValueKind.DWord);
+                    throw new InvalidOperationException($"Read-back driveru {service} nepotvrdil Start={desired}; původní hodnota byla obnovena.");
+                }
             }
         };
     }
@@ -612,7 +520,8 @@ public static class CatalogService
             ("\\Microsoft\\Office\\OfficeTelemetryAgentFallBack2016", "Office Telemetry Fallback", "Office", false),
             ("\\Microsoft\\Office\\OfficeTelemetryAgentLogOn2016", "Office Telemetry Logon", "Office", false),
             ("\\StartAllBack Update", "StartAllBack Update", "Vendor / Updaters", false)
-        }.Select(((string, string, string, bool) x) => TaskDisabledTweak(x.Item1, x.Item2, x.Item3, x.Item4)).ToList();
+        }.Where(x => WindowsComponentCatalogPolicy.TaskRegistered(x.Item1))
+         .Select(((string, string, string, bool) x) => TaskDisabledTweak(x.Item1, x.Item2, x.Item3, x.Item4)).ToList();
         list.AddRange(GTweakTaskCatalog.TaskTweaks());
         return list;
     }
@@ -626,7 +535,19 @@ public static class CatalogService
 
     private static TweakDefinition StringValueTweak(string id, string section, string group, string name, string description, RegistryHive hive, string path, string valueName, string enabled, string disabled, bool recommended = false, TweakRisk risk = TweakRisk.Optional, bool restart = false)
     {
-        return TweakFactory.Command(id, section, group, name, description, async ct => await Task.Run(() => { using var b = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64); using var k = b.OpenSubKey(path); return string.Equals(Convert.ToString(k?.GetValue(valueName)), enabled, StringComparison.OrdinalIgnoreCase); }, ct), async (on, ct) => await Task.Run(() => { using var b = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64); using var k = b.CreateSubKey(path, true); k.SetValue(valueName, on ? enabled : disabled, RegistryValueKind.String); }, ct), recommended, risk, restart);
+        return TweakFactory.Command(id, section, group, name, description, ct =>
+        {
+            // TweakEngine already runs DetectAsync on a thread-pool slot;
+            // the inner Task.Run added a second scheduler hop per string tweak.
+            using var b = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64);
+            using var k = b.OpenSubKey(path);
+            return Task.FromResult(string.Equals(Convert.ToString(k?.GetValue(valueName)), enabled, StringComparison.OrdinalIgnoreCase));
+        }, async (on, ct) =>
+        {
+            using var b = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64);
+            using var k = b.CreateSubKey(path, true);
+            k.SetValue(valueName, on ? enabled : disabled, RegistryValueKind.String);
+        }, recommended, risk, restart);
     }
 
     private static List<TweakDefinition> UiTweaks()
@@ -660,8 +581,17 @@ public static class CatalogService
             TweakFactory.Dword("ui.hoverfast", "ui", "UI Responsiveness", "Rychlejší taskbar hover", "ExtendedUIHoverTime = 100 ms.", RegistryHive.CurrentUser, adv, "ExtendedUIHoverTime", 100, null, true, true, TweakRisk.Safe),
             TweakFactory.Dword("ui.thumbhoverfast", "ui", "UI Responsiveness", "Rychlejší thumbnail preview", "ThumbnailLivePreviewHoverTime = 100 ms.", RegistryHive.CurrentUser, adv, "ThumbnailLivePreviewHoverTime", 100, null, true, true, TweakRisk.Safe),
             TweakFactory.Dword("ui.syncpromo", "ui", "Explorer", "Skrýt Explorer sync promo", "Skryje reklamní/sync provider bannery.", RegistryHive.CurrentUser, adv, "ShowSyncProviderNotifications", 0, 1, false, true),
-            TweakFactory.Command("ui.shortcutarrow", "ui", "Plocha / Zástupci", "Odebrat šipku u zástupců", "Skryje overlay šipku pomocí vlastní transparentní ikony; neodstraňuje IsShortcut a nerozbíjí připnuté položky.", async ct => await Task.Run(ShortcutAppearanceService.ShortcutArrowHidden, ct).ConfigureAwait(false), async (on, ct) => await ShortcutAppearanceService.SetShortcutArrowHiddenAsync(on, ct).ConfigureAwait(false), false, TweakRisk.Optional, false, "Nízký", null),
-            TweakFactory.Command("ui.shortcutsuffix", "ui", "Plocha / Zástupci", "Nepsat „- Shortcut“ do názvu", "Nově vytvořené zástupce Windows nebude automaticky pojmenovávat s příponou „- Shortcut“.", async ct => await Task.Run(ShortcutAppearanceService.ShortcutSuffixDisabled, ct).ConfigureAwait(false), async (on, ct) => await ShortcutAppearanceService.SetShortcutSuffixDisabledAsync(on, ct).ConfigureAwait(false), false, TweakRisk.Optional, false, "Nízký", null),
+            TweakFactory.Command("ui.shortcutarrow", "ui", "Plocha / Zástupci", "Odebrat šipku u zástupců", "Skryje overlay šipku pomocí vlastní transparentní ikony; neodstraňuje IsShortcut a nerozbíjí připnuté položky.", ct =>
+            {
+                // Pure in-memory read; the Task.Run hop only added a scheduler dispatch.
+                ct.ThrowIfCancellationRequested();
+                return Task.FromResult(ShortcutAppearanceService.ShortcutArrowHidden());
+            }, async (on, ct) => await ShortcutAppearanceService.SetShortcutArrowHiddenAsync(on, ct).ConfigureAwait(false), false, TweakRisk.Optional, false, "Nízký", null),
+            TweakFactory.Command("ui.shortcutsuffix", "ui", "Plocha / Zástupci", "Nepsat „- Shortcut“ do názvu", "Nově vytvořené zástupce Windows nebude automaticky pojmenovávat s příponou „- Shortcut“.", ct =>
+            {
+                ct.ThrowIfCancellationRequested();
+                return Task.FromResult(ShortcutAppearanceService.ShortcutSuffixDisabled());
+            }, async (on, ct) => await ShortcutAppearanceService.SetShortcutSuffixDisabledAsync(on, ct).ConfigureAwait(false), false, TweakRisk.Optional, false, "Nízký", null),
             TweakFactory.Dword("ui.seconds", "ui", "Taskbar", "Sekundy v hodinách", "Zobrazí sekundy, pokud je build podporuje.", RegistryHive.CurrentUser, adv, "ShowSecondsInSystemClock", 1, 0, false, false, TweakRisk.Optional),
             TweakFactory.Dword("ui.search", "ui", "Taskbar", "Skrýt hledání", "Start hledání zůstává dostupné.", RegistryHive.CurrentUser, "Software\\Microsoft\\Windows\\CurrentVersion\\Search", "SearchboxTaskbarMode", 0, 1, false, false, TweakRisk.Optional),
             TweakFactory.Dword("ui.searchlocation", "ui", "Search", "Search bez polohy", "Windows Search nebude používat polohu uživatele.", RegistryHive.CurrentUser, "Software\\Microsoft\\Windows\\CurrentVersion\\Search", "AllowSearchToUseLocation", 0, 1, false, true),
@@ -703,8 +633,44 @@ public static class CatalogService
 
     private static TweakDefinition ExplorerFolderDiscoveryTweak()
     {
-        const string shell = "Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell";
-        return TweakFactory.Command("ui.folderdiscovery", "ui", "Explorer", "Vypnout automatické rozpoznávání typu složek", "Vynutí Generic view pro všechny složky. Resetuje uložené Bags/BagMRU pohledy Exploreru.", async ct => await Task.Run(() => { using var k = Registry.CurrentUser.OpenSubKey(shell + "\\Bags\\AllFolders\\Shell"); return string.Equals(k?.GetValue("FolderType")?.ToString(), "NotSpecified", StringComparison.OrdinalIgnoreCase); }, ct).ConfigureAwait(false), async (on, ct) => await Task.Run(() => { Registry.CurrentUser.DeleteSubKeyTree(shell + "\\Bags", false); Registry.CurrentUser.DeleteSubKeyTree(shell + "\\BagMRU", false); if (on) { using var k = Registry.CurrentUser.CreateSubKey(shell + "\\Bags\\AllFolders\\Shell", true); k.SetValue("FolderType", "NotSpecified", RegistryValueKind.String); } }, ct).ConfigureAwait(false), false, TweakRisk.Advanced, true, "Střední", "Resetuje uložené individuální pohledy a seskupení složek Exploreru.");
+        const string path = @"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell";
+        const string backupId = "ui.folderdiscovery";
+        return TweakFactory.Command(
+            backupId, "ui", "Explorer",
+            "Vypnout automatické rozpoznávání typu složek",
+            "Nastaví obecný typ složek bez mazání vlastních pohledů Exploreru.",
+            ct =>
+            {
+                // TweakEngine runs DetectAsync on a thread-pool slot; the inner
+                // Task.Run hop only added a second scheduler dispatch.
+                ct.ThrowIfCancellationRequested();
+                using var key = Registry.CurrentUser.OpenSubKey(path);
+                return Task.FromResult(key?.GetValue("FolderType") is string value &&
+                    string.Equals(value, "NotSpecified", StringComparison.OrdinalIgnoreCase));
+            },
+            async (on, ct) =>
+            {
+                ct.ThrowIfCancellationRequested();
+                if (on)
+                {
+                    // Old implementation irreversibly erased Bags and BagMRU.
+                    // Preserve the original REG_SZ type and its absence instead.
+                    await TweakFactory.Backups.SaveOriginalAsync(
+                        backupId, RegistryHive.CurrentUser, path, "FolderType", ct)
+                        .ConfigureAwait(false);
+                    ct.ThrowIfCancellationRequested();
+                    using var key = Registry.CurrentUser.CreateSubKey(path, writable: true);
+                    key.SetValue("FolderType", "NotSpecified", RegistryValueKind.String);
+                }
+                else if (!await TweakFactory.Backups.RestoreAsync(backupId, ct)
+                    .ConfigureAwait(false))
+                {
+                    throw new InvalidOperationException(
+                        "Chybí záloha původního typu složek; nebudu mazat nastavení Exploreru.");
+                }
+            },
+            false, TweakRisk.Optional, true, "Nízký",
+            "Původní individuální pohledy složek zůstávají zachované. Změna se může projevit až po novém otevření okna Exploreru.");
     }
 
     private static List<TweakDefinition> UpdateTweaks()
@@ -809,6 +775,12 @@ public static class CatalogService
             TweakFactory.Dword("privacy.otherdevices", "privacy", "App Permissions", "Komunikace s nepárovanými zařízeními zakázaná", "Volitelné omezení komunikace aplikací s dalšími zařízeními.", RegistryHive.LocalMachine, "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy", "LetAppsAccessTrustedDevices", 2, null, true, false, TweakRisk.Optional),
             TweakFactory.Dword("privacy.syncdevices", "privacy", "App Permissions", "Synchronizace aplikací mezi zařízeními zakázaná", "Volitelné omezení cross-device synchronizace.", RegistryHive.LocalMachine, "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy", "LetAppsSyncWithDevices", 2, null, true, false, TweakRisk.Optional),
             TweakFactory.Dword("privacy.phone", "privacy", "App Permissions", "Přístup aplikací k telefonu zakázaný", "Volitelné omezení phone API.", RegistryHive.LocalMachine, "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy", "LetAppsAccessPhone", 2, null, true, false, TweakRisk.Optional),
+            TweakFactory.Dword("privacy.downloads", "privacy", "App Permissions", "Přístup aplikací ke staženým souborům zakázaný", "Volitelné globální omezení přístupu Store aplikací ke složce Downloads.", RegistryHive.LocalMachine, "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy", "LetAppsAccessDownloadsFolder", 2, null, true, false, TweakRisk.Optional),
+            TweakFactory.Dword("privacy.appdiagnostics", "privacy", "App Permissions", "Přístup aplikací k diagnostice zakázaný", "Volitelné omezení přístupu aplikací k diagnostickým údajům jiných aplikací.", RegistryHive.LocalMachine, "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy", "LetAppsGetDiagnosticInfo", 2, null, true, false, TweakRisk.Optional),
+            TweakFactory.Dword("privacy.foregroundtext", "privacy", "App Permissions", "Přístup k textu v popředí zakázaný", "Volitelné omezení čtení textu z aktivního okna Store aplikacemi.", RegistryHive.LocalMachine, "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy", "LetAppsAccessForegroundText", 2, null, true, false, TweakRisk.Optional),
+            TweakFactory.Dword("privacy.humanpresence", "privacy", "App Permissions", "Detekce přítomnosti uživatele zakázaná", "Volitelné omezení přístupu aplikací k detekci lidské přítomnosti.", RegistryHive.LocalMachine, "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy", "LetAppsAccessHumanPresence", 2, null, true, false, TweakRisk.Optional),
+            TweakFactory.Dword("privacy.spatial", "privacy", "App Permissions", "Prostorové vnímání na pozadí zakázané", "Volitelné omezení pohybu hlavy a rukou aplikacemi na pozadí; podporuje pouze HoloLens 2.", RegistryHive.LocalMachine, "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy", "LetAppsAccessBackgroundSpatialPerception", 2, null, true, false, TweakRisk.Optional),
+            TweakFactory.Dword("privacy.gaze", "privacy", "App Permissions", "Sledování pohledu zakázané", "Volitelné omezení přístupu aplikací k eye-trackerům.", RegistryHive.LocalMachine, "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy", "LetAppsAccessGazeInput", 2, null, true, false, TweakRisk.Optional),
         });
         list.AddRange(new[]
         {
@@ -835,8 +807,23 @@ public static class CatalogService
         const string path = "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager";
         string[] names = { "SubscribedContent-338393Enabled", "SubscribedContent-353694Enabled", "SubscribedContent-353696Enabled" };
         return TweakFactory.Command("privacy.settingssuggestions", "privacy", "Doporučený obsah", "Doporučený obsah v Nastavení vypnutý", "Vypne všechny tři Suggested Content přepínače používané aplikací Nastavení.",
-            async ct => await Task.Run(() => { using var k = Registry.CurrentUser.OpenSubKey(path); return k != null && names.All(n => Convert.ToInt32(k.GetValue(n) ?? 1) == 0); }, ct).ConfigureAwait(false),
-            async (on, ct) => await Task.Run(() => { using var k = Registry.CurrentUser.CreateSubKey(path, true); foreach (var n in names) k.SetValue(n, on ? 0 : 1, RegistryValueKind.DWord); }, ct).ConfigureAwait(false),
+            ct =>
+            {
+                // TweakEngine runs DetectAsync on a thread-pool slot; the inner
+                // Task.Run hop only added a second scheduler dispatch, and the
+                // LINQ All() enumerator was a per-render allocation.
+                ct.ThrowIfCancellationRequested();
+                using var k = Registry.CurrentUser.OpenSubKey(path);
+                if (k == null) return Task.FromResult(false);
+                for (int i = 0; i < names.Length; i++)
+                    if (Convert.ToInt32(k.GetValue(names[i]) ?? 1) != 0) return Task.FromResult(false);
+                return Task.FromResult(true);
+            },
+            async (on, ct) =>
+            {
+                using var k = Registry.CurrentUser.CreateSubKey(path, true);
+                foreach (var n in names) k.SetValue(n, on ? 0 : 1, RegistryValueKind.DWord);
+            },
             true, TweakRisk.Safe, false, "Nízký", null);
     }
     private static List<TweakDefinition> AiTweaks()

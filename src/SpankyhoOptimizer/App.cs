@@ -21,18 +21,66 @@ public sealed partial class App : Application
     internal static readonly string AppVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
     private const int SwRestore = 9;
+    private const int SwShowNoActivate = 4;
+    private const uint SwpNoActivate = 0x0010;
+    private const uint SwpNoZOrder = 0x0004;
+    private const int SmokeWindowX = -32000;
+    private const int SmokeWindowY = -32000;
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    internal static bool IsSmokeUi { get; private set; }
+
+    private static void PrepareSmokeWindow(Window window)
+    {
+        try
+        {
+            IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
+            SetWindowPos(hwnd, IntPtr.Zero, SmokeWindowX, SmokeWindowY, 1100, 760, SwpNoActivate | SwpNoZOrder);
+            var id = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
+            var appWindow = Microsoft.UI.Windowing.AppWindow.GetFromWindowId(id);
+            appWindow.IsShownInSwitchers = false;
+        }
+        catch { }
+    }
+
+    private static void ShowSmokeWindowWithoutActivation(Window window)
+    {
+        PrepareSmokeWindow(window);
+        try
+        {
+            IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
+            var id = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
+            var appWindow = Microsoft.UI.Windowing.AppWindow.GetFromWindowId(id);
+            appWindow.Show(false);
+        }
+        catch
+        {
+            try
+            {
+                IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
+                ShowWindow(hwnd, SwShowNoActivate);
+            }
+            catch { }
+        }
+    }
 
     public App()
     {
@@ -101,6 +149,13 @@ public sealed partial class App : Application
             return;
         }
 
+        if (HasArg(cli, "--ai-agent"))
+        {
+            await FanProfileService.RunAiAgentAsync();
+            Environment.Exit(0);
+            return;
+        }
+
         if (HasArg(cli, "--fan-watchdog"))
         {
             await FanProfileService.RunWatchdogAsync();
@@ -143,15 +198,12 @@ public sealed partial class App : Application
         bool runtimeReadyProbe = cli.Any(x => x.StartsWith("--runtime-ready-file=", StringComparison.OrdinalIgnoreCase));
         bool safeModeStartup = HasArg(cli, "--safe-mode");
         bool openSectionLaunch = cli.Any(x => x.StartsWith("--open-section=", StringComparison.OrdinalIgnoreCase));
+        bool nonStartupSmokeLaunch = cli.Any(x => x.Contains("smoke", StringComparison.OrdinalIgnoreCase)) &&
+                                     !startupHotPathSmoke &&
+                                     !startupIsolatedBundle;
         if (safeModeStartup)
             await WaitForSafeModeHandoffAsync(cli);
-        bool normalGuiLaunch = cli.Length <= 1 || safeModeStartup || openSectionLaunch;
-        if (normalGuiLaunch)
-        {
-            FanProfileService.EnsureStartupAgentRegistered();
-            FanProfileService.EnsureAgentUpdated();
-            FanProfileService.StartAgentIfNeeded();
-        }
+        bool normalGuiLaunch = cli.Length <= 1 || safeModeStartup || (openSectionLaunch && !nonStartupSmokeLaunch);
 
         if (normalGuiLaunch && !await AcquireSingleInstanceWithHandoffAsync())
         {
@@ -160,7 +212,8 @@ public sealed partial class App : Application
             return;
         }
 
-        if (cli.Length <= 1 || startupHotPathSmoke || startupIsolatedBundle || runtimeReadyProbe || safeModeStartup || openSectionLaunch)
+        if (cli.Length <= 1 || startupHotPathSmoke || startupIsolatedBundle || runtimeReadyProbe || safeModeStartup ||
+            (openSectionLaunch && !nonStartupSmokeLaunch))
         {
             await LaunchNormalStartupAsync(cli, startupHotPathSmoke || startupIsolatedBundle, startupCorrelationId);
             return;
@@ -174,11 +227,11 @@ public sealed partial class App : Application
         if (!smokeMode && HasArg(cli, "--safe-mode"))
             CrashLoopGuardService.ForceSafeMode();
 
-        Task<bool>? crashLoopStartupTask = !smokeMode
+        bool runtimeReadyProbe = cli.Any(x => x.StartsWith("--runtime-ready-file=", StringComparison.OrdinalIgnoreCase));
+        // Readiness-only CLI must not touch persistent crash-loop history.
+        Task<bool>? crashLoopStartupTask = !smokeMode && !runtimeReadyProbe
             ? Task.Run(() => CrashLoopGuardService.BeginStartup(AppVersion))
             : null;
-
-        bool runtimeReadyProbe = cli.Any(x => x.StartsWith("--runtime-ready-file=", StringComparison.OrdinalIgnoreCase));
         if (!smokeMode && !runtimeReadyProbe && !_ownsSingleInstanceMutex && !await AcquireSingleInstanceWithHandoffAsync())
         {
             LogService.Info("startup", "SECOND_INSTANCE_HANDOFF_FAILED_BEFORE_WINDOW");
@@ -188,28 +241,48 @@ public sealed partial class App : Application
 
         StartupDiagnostics.Mark("MainWindow.Create");
         _window = new MainWindow();
+        var mainWindow = _window as MainWindow;
         _window.Closed += (_, _) =>
         {
-            try { (_window as MainWindow)?.ShutdownActiveOperations(); } catch { }
+            try { mainWindow?.ShutdownActiveOperations(); } catch { }
             try { _lifetimeCts.Cancel(); } catch { }
             HardwareChangeMonitorService.Stop();
             ReleaseSingleInstance();
         };
         StartupDiagnostics.Mark("MainWindow.Created");
 
+        IsSmokeUi = smokeMode || runtimeReadyProbe;
+        if (IsSmokeUi) ShowSmokeWindowWithoutActivation(_window);
+        else _window.Activate();
+        StartupDiagnostics.Mark("Window.Activated");
+        long windowActivatedMs = StartupDiagnostics.ElapsedMilliseconds;
+
+        // Crash-loop persistence starts in parallel before MainWindow creation, but disk/registry
+        // latency must never block the first visible frame. Await it only after activation so
+        // CompleteStartup still observes a finished BeginStartup transaction.
         if (crashLoopStartupTask != null)
             await crashLoopStartupTask;
 
-        _window.Activate();
         if (!smokeMode && !runtimeReadyProbe)
         {
             SafeTaskService.Forget(
                 WatchSingleInstanceHandoffAsync(_window, _lifetimeCts.Token),
                 "startup",
                 "Single-instance handoff watcher");
+            // Migration is intentionally after first paint; only already-enabled
+            // custom Explorer verbs are upgraded and smoke runs never touch HKCU.
+            SafeTaskService.Forget(
+                MigrateContextCommandsDeferredAsync(_lifetimeCts.Token),
+                "shell", "Native context menu upgrade");
+            SafeTaskService.Forget(
+                CheckIntegrationUpdatesAfterStartupAsync(_lifetimeCts.Token),
+                "integrations", "Deferred Chris Titus update discovery");
+            // Runs after first paint. Never writes Windows without a user's
+            // explicit per-group approval in Settings.
+            SafeTaskService.Forget(
+                WindowsDefaultGuardService.RunAsync(_lifetimeCts.Token),
+                "settings", "Approved Windows default registry guard");
         }
-        StartupDiagnostics.Mark("Window.Activated");
-        long windowActivatedMs = StartupDiagnostics.ElapsedMilliseconds;
 
         if (smokeMode)
         {
@@ -238,32 +311,58 @@ public sealed partial class App : Application
 
         StartupDiagnostics.Complete();
         using var startupScope = LogService.BeginScope("startup", startupCorrelationId);
-        CrashLoopGuardService.CompleteStartup(AppVersion);
+        if (!runtimeReadyProbe)
+        {
+            CrashLoopGuardService.CompleteStartup(AppVersion);
 
-        // Maintenance/prefetch work is not required for the first usable window.
-        // Start it shortly after Ready so it cannot compete with activation/first paint.
-        SafeTaskService.ForgetDeferred(
-            RunPostReadyStartupMaintenanceAsync(_lifetimeCts.Token),
-            "startup",
-            "Post-ready startup maintenance");
-        LogService.Info("startup", "Startup background prefetch disabled; heavy modules load on demand.");
+            // Readiness probes must not queue maintenance or touch the
+            // installed fan agent, registry, service or user feature state.
+            SafeTaskService.ForgetDeferred(
+                RunPostReadyStartupMaintenanceAsync(_lifetimeCts.Token),
+                "startup",
+                "Post-ready startup maintenance");
+            LogService.Info("startup", "Startup background prefetch disabled; heavy modules load on demand.");
+        }
 
-        string? runtimeReadyFile = cli
-            .FirstOrDefault(x => x.StartsWith("--runtime-ready-file=", StringComparison.OrdinalIgnoreCase))?
+        string? explicitReadyArg = cli
+            .FirstOrDefault(x => x.StartsWith("--runtime-ready-file=", StringComparison.OrdinalIgnoreCase));
+        bool explicitReadiness = explicitReadyArg is not null;
+        string? runtimeReadyFile = explicitReadyArg?
             .Substring("--runtime-ready-file=".Length)
             .Trim('"');
-        if (string.IsNullOrWhiteSpace(runtimeReadyFile))
+        if (!explicitReadiness && string.IsNullOrWhiteSpace(runtimeReadyFile))
             runtimeReadyFile = Environment.GetEnvironmentVariable("SPANKY_RUNTIME_READY_FILE");
+        string isolatedMarker = string.Empty;
+        if (explicitReadiness &&
+            !TryValidateIsolatedReadinessMarkerPath(runtimeReadyFile, out isolatedMarker))
+        {
+            LogService.Error("startup", "RUNTIME_READY_INVALID_ISOLATED_MARKER_PATH");
+            Environment.Exit(74);
+            return;
+        }
         if (!string.IsNullOrWhiteSpace(runtimeReadyFile))
         {
             try
             {
-                string? readyDir = Path.GetDirectoryName(runtimeReadyFile);
-                if (!string.IsNullOrWhiteSpace(readyDir)) Directory.CreateDirectory(readyDir);
-                await File.WriteAllTextAsync(runtimeReadyFile,
-                    $"version={AppVersion}{Environment.NewLine}activatedMs={windowActivatedMs}{Environment.NewLine}pid={Environment.ProcessId}{Environment.NewLine}");
+                string markerText =
+                    $"version={AppVersion}{Environment.NewLine}activatedMs={windowActivatedMs}{Environment.NewLine}pid={Environment.ProcessId}{Environment.NewLine}";
+                if (explicitReadiness)
+                {
+                    // FileMode.CreateNew rejects an existing marker even if
+                    // another process creates it after path validation.
+                    await using var marker = new FileStream(isolatedMarker, FileMode.CreateNew,
+                        FileAccess.Write, FileShare.None, 4096, useAsync: true);
+                    await marker.WriteAsync(System.Text.Encoding.UTF8.GetBytes(markerText));
+                    await marker.FlushAsync();
+                }
+                else
+                {
+                    string? readyDir = Path.GetDirectoryName(runtimeReadyFile);
+                    if (!string.IsNullOrWhiteSpace(readyDir)) Directory.CreateDirectory(readyDir);
+                    await File.WriteAllTextAsync(runtimeReadyFile, markerText);
+                }
                 LogService.Info("startup", $"RUNTIME_READY_SIGNAL_OK activatedMs={windowActivatedMs}");
-                if (cli.Any(x => x.StartsWith("--runtime-ready-file=", StringComparison.OrdinalIgnoreCase)))
+                if (explicitReadiness)
                 {
                     Environment.Exit(0);
                     return;
@@ -272,18 +371,51 @@ public sealed partial class App : Application
             catch (Exception ex)
             {
                 LogService.Error("startup", "Runtime readiness signal failed", ex);
+                if (explicitReadiness)
+                {
+                    Environment.Exit(74);
+                    return;
+                }
             }
         }
     }
 
     private async Task RunPostReadyStartupMaintenanceAsync(System.Threading.CancellationToken token)
     {
-        await Task.Delay(200, token).ConfigureAwait(false);
+        // Give the first interactive second to the shell/Overview before background cleanup,
+        // revalidation and hardware monitors begin competing for CPU, disk and thread-pool time.
+        await Task.Delay(900, token).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
 
         int removedDataRoots = DataRootCleanupService.CleanupUserDataRoots();
         if (removedDataRoots > 0)
             LogService.Info("startup", $"DATA_ROOT_CLEANUP_OK removed={removedDataRoots}");
+
+        // Task Scheduler, agent-version files and heartbeat/process checks may
+        // block on disk or COM. Run them independently of the post-ready
+        // continuation so they cannot delay other UI-facing background work.
+        // Keep the order within this task (registration -> update -> startup).
+        SafeTaskService.Forget(
+            Task.Run(() =>
+            {
+                token.ThrowIfCancellationRequested();
+                BackgroundUpdateService.EnsureStartupRegistration();
+                token.ThrowIfCancellationRequested();
+                if (LianLiSlInfinityService.Detect().Present)
+                {
+                    FanProfileService.EnsureStartupAgentRegistered();
+                    token.ThrowIfCancellationRequested();
+                    FanProfileService.EnsureAgentUpdated();
+                    token.ThrowIfCancellationRequested();
+                    FanProfileService.StartAgentIfNeeded();
+                }
+                else
+                {
+                    FanProfileService.EnsureAiStartupAgentRegistered();
+                    FanProfileService.StartAiAgentIfNeeded();
+                }
+            }, token),
+            "startup", "Fan agent post-ready maintenance");
 
         SafeTaskService.Forget(RunLegacyShortcutOverlayMigrationAsync(token), "startup", "Legacy shortcut overlay migration");
         SafeTaskService.Forget(RunWindowsBuildRevalidationAsync(token), "startup", "Windows build revalidation");
@@ -655,9 +787,38 @@ public sealed partial class App : Application
     private static async Task RunPendingTransactionRecoveryAsync(System.Threading.CancellationToken token)
     {
         await Task.Delay(3500, token).ConfigureAwait(false);
-        int recovered = await WriteAheadTransactionService.RecoverPendingAsync(token).ConfigureAwait(false);
-        if (recovered > 0)
-            LogService.Info("transaction", $"WRITE_AHEAD_STARTUP_RECOVERY_OK recovered={recovered}");
+        try
+        {
+            int recovered = await WriteAheadTransactionService.RecoverPendingAsync(token)
+                .ConfigureAwait(false);
+            if (recovered > 0)
+                LogService.Info("transaction",
+                    $"WRITE_AHEAD_STARTUP_RECOVERY_OK recovered={recovered}");
+        }
+        finally
+        {
+            // RecoveryFailed and incomplete transactions are never silently
+            // dismissed at the next startup. Reuse the existing transaction
+            // error log; no new UI controls, notifications or Windows writes.
+            if (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    var attention = WriteAheadTransactionService.ReadRecoveryAttention();
+                    if (attention.Total > 0)
+                        LogService.Error("transaction",
+                            $"WRITE_AHEAD_MANUAL_REVIEW_REQUIRED total={attention.Total} " +
+                            $"pending={attention.Pending} recoveryFailed={attention.RecoveryFailed} " +
+                            $"rollbackFailed={attention.RollbackFailed} failed={attention.Failed} " +
+                            $"pendingRestart={attention.PendingRestart} unreadable={attention.Unreadable}");
+                }
+                catch (Exception ex)
+                {
+                    LogService.Error("transaction",
+                        "Cannot inspect unresolved write-ahead transactions", ex);
+                }
+            }
+        }
     }
 
     private async Task LaunchCoreLegacyAsync()
@@ -669,6 +830,101 @@ public sealed partial class App : Application
         if (await WorkerHostService.TryHandleAsync(cli))
         {
             Environment.Exit(0);
+            return;
+        }
+
+        // Isolated regression: pure registry decisions plus a disposable temp journal.
+        // No live Windows registry writes, approval changes or NIC operations.
+        if (HasArg(cli, "--windows-default-guard-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", WindowsDefaultGuardService.RunPolicySmoke());
+                LogService.Info("regression", WindowsDefaultGuardService.RunJournalContentionSmoke());
+                LogService.Info("regression", "DEFAULT_GUARD_TARGETED_SMOKE_OK liveRegistryWrites=0 nicChanges=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "DEFAULT_GUARD_TARGETED_SMOKE_FAIL", ex);
+                Environment.Exit(157);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--github-integration-smoke"))
+        {
+            try { await GithubIntegrationSmoke.RunAsync(); Environment.Exit(0); }
+            catch (Exception ex) { LogService.Error("GITHUB_INTEGRATION_SMOKE_FAIL", ex); Environment.Exit(56); }
+            return;
+        }
+        if (HasArg(cli, "--refresh-github-sources") || HasArg(cli, "--probe-github-sources"))
+        {
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(5));
+                if (HasArg(cli, "--refresh-github-sources"))
+                {
+                    string[] ids = cli.Where(x => x.StartsWith("--source=", StringComparison.Ordinal)).Select(x => x[9..]).ToArray();
+                    if (ids.Length == 0) ids = new[] { "winutil" };
+                    var statuses = await UpstreamSourceUpdateService.UpdateSourcesAsync(ids, cts.Token);
+                    await System.IO.File.WriteAllTextAsync(System.IO.Path.Combine(LogService.Root, "github-refresh-result.json"),
+                        System.Text.Json.JsonSerializer.Serialize(new { statuses, activeWinUtilData = WinUtilServicePolicy.ActiveCommit,
+                            nativeWinUtilReview = WinUtilServicePolicy.ReviewedBehaviorCommit })).ConfigureAwait(false);
+                    if (statuses.Count == 0 || statuses.Any(x => x.Error != null)) throw new InvalidOperationException("GitHub source/adapter update failed; see github-refresh-result.json");
+                }
+                else
+                {
+                    await UpstreamSourceUpdateService.ProbeUpdatesAsync(true, cts.Token);
+                    await System.IO.File.WriteAllTextAsync(System.IO.Path.Combine(LogService.Root, "github-probe-result.json"),
+                        System.Text.Json.JsonSerializer.Serialize(UpstreamSourceUpdateService.ReadCachedStatuses())).ConfigureAwait(false);
+                }
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("GITHUB_EXPLICIT_REFRESH_FAIL", ex); Environment.Exit(56); }
+            return;
+        }
+
+        if (HasArg(cli, "--tray-glass-smoke"))
+        {
+            try
+            {
+                LogService.Info("release-smoke",
+                    FanTrayIconService.RunHoverGlassOpacitySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("release-smoke", "TRAY_GLASS_SMOKE_FAIL", ex);
+                Environment.Exit(73);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--tray-render-capture"))
+        {
+            try
+            {
+                string captureDir = System.IO.Path.Combine(AppContext.BaseDirectory,
+                    "tray-render-captures");
+                LogService.Info("release-smoke",
+                    FanTrayIconService.RunHoverGdiResourceSmoke(captureDir) +
+                    " folder=" + captureDir);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("release-smoke", "TRAY_RENDER_CAPTURE_FAIL", ex);
+                Environment.Exit(72);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--release-service-policy-smoke"))
+        {
+            // Pure synthetic policy checks; never invoke the stateful full
+            // service smoke when only isolated release validation is wanted.
+            Environment.Exit(RunReadOnlyServicePolicySmoke());
             return;
         }
 
@@ -750,12 +1006,63 @@ public sealed partial class App : Application
                 if (cachedMs > 20)
                     throw new InvalidOperationException($"Hardware identity cached lookup is too slow: {cachedMs} ms.");
 
+                // Measure the hot cached-snapshot request in isolation, avoiding UI startup costs.
+                var cachedTask = SystemInfoService.GetSnapshotAsync();
+                if (!ReferenceEquals(cachedTask, HardwareSnapshotService.GetOverviewAsync()))
+                    throw new InvalidOperationException("Overview cached wrapper allocates or replaces the completed Task.");
+                for (int i = 0; i < 100; i++)
+                    _ = HardwareSnapshotService.GetOverviewAsync(); // Exclude JIT warmup
+                // No additional async wrapper work for concurrent cached users.
+                var readerTasks = Enumerable.Range(0, 6).Select(_ => Task.Run(() =>
+                {
+                    for (int i = 0; i < 1000; i++)
+                        if (!ReferenceEquals(cachedTask, HardwareSnapshotService.GetOverviewAsync()))
+                            throw new InvalidOperationException("Concurrent overview task publication was inconsistent.");
+                })).ToArray();
+                await Task.WhenAll(readerTasks);
+                long wrapperAllocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                long wrapperStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                for (int i = 0; i < 10000; i++)
+                    if (!ReferenceEquals(cachedTask, HardwareSnapshotService.GetOverviewAsync()))
+                        throw new InvalidOperationException("Overview cached wrapper lost snapshot task identity.");
+                long wrapperBytes = GC.GetAllocatedBytesForCurrentThread() - wrapperAllocatedBefore;
+                double wrapperMs = System.Diagnostics.Stopwatch.GetElapsedTime(wrapperStarted).TotalMilliseconds;
+                if (wrapperBytes > 0)
+                    throw new InvalidOperationException($"Cached overview wrapper allocated {wrapperBytes} bytes across 10000 requests.");
+                LogService.Info($"OVERVIEW_TASK_WRAPPER_CACHE_SMOKE_OK iterations=10000 ms={wrapperMs:F3} allocatedBytes={wrapperBytes}");
+                long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                var cacheBench = System.Diagnostics.Stopwatch.StartNew();
+                // Keep this loop free of exception construction on the successful path.
+                for (int i = 0; i < 10000; i++)
+                {
+                    if (!ReferenceEquals(cachedTask, SystemInfoService.GetSnapshotAsync()))
+                        throw new InvalidOperationException("Cached overview snapshot creates a new Task.");
+                }
+                cacheBench.Stop();
+                long allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                // Control probes separate snapshot-cache overhead from the clock and task caller.
+                long clockStart = GC.GetAllocatedBytesForCurrentThread();
+                for (int i = 0; i < 10000; i++) _ = DateTime.UtcNow;
+                long clockBytes = GC.GetAllocatedBytesForCurrentThread() - clockStart;
+                long directStart = GC.GetAllocatedBytesForCurrentThread();
+                for (int i = 0; i < 10000; i++)
+                    if (SystemInfoService.TryGetFreshSnapshot() is null)
+                        throw new InvalidOperationException("Overview snapshot cache expired unexpectedly.");
+                long directBytes = GC.GetAllocatedBytesForCurrentThread() - directStart;
+                long lockBaselineStart = GC.GetAllocatedBytesForCurrentThread();
+                for (int i = 0; i < 10000; i++)
+                    _ = SystemInfoService.GetSnapshotAsync(forceRefresh: false);
+                long cacheOnlyBytes = GC.GetAllocatedBytesForCurrentThread() - lockBaselineStart;
+                LogService.Info($"OVERVIEW_CACHE_BENCH_CONTROL_OK iterations=10000 cacheOnlyBytes={cacheOnlyBytes} perCall={cacheOnlyBytes / 10000d:F3}");
+                LogService.Info($"OVERVIEW_CACHE_BENCH_OK iterations=10000 totalMs={cacheBench.Elapsed.TotalMilliseconds:F2} allocatedBytes={allocatedBytes} bytesPerCall={allocatedBytes / 10000d:F3} clockBytes={clockBytes} directCacheBytes={directBytes}");
+
                 LogService.Info($"HARDWARE_IDENTITY_SMOKE_OK freshMs={freshMs} cachedMs={cachedMs} cpu={fresh.Cpu} board={fresh.Motherboard} ram={fresh.RamHardware}");
                 Environment.Exit(0);
             }
             catch (Exception ex) { LogService.Error("HARDWARE_IDENTITY_SMOKE_FAIL", ex); Environment.Exit(65); }
             return;
         }
+
 
         if (HasArg(cli, "--provider-degradation-smoke"))
         {
@@ -773,6 +1080,23 @@ public sealed partial class App : Application
             return;
         }
 
+        // Pure in-memory cache-flight lifetime regression. Unlike the GPU
+        // detection smoke this does not read/write/invalidate the machine cache.
+        if (HasArg(cli, "--gpu-persistent-flight-smoke"))
+        {
+            try
+            {
+                LogService.Info(GpuDriverService.RunGpuPersistentWarmFlightPolicySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("GPU_PERSISTENT_FLIGHT_POLICY_SMOKE_FAIL", ex);
+                Environment.Exit(67);
+            }
+            return;
+        }
+
         if (HasArg(cli, "--gpu-detection-smoke"))
         {
             try
@@ -787,7 +1111,22 @@ public sealed partial class App : Application
                 if (warm == null) throw new InvalidOperationException("GPU not detected on warm refresh.");
                 long warmMs = warmSw.ElapsedMilliseconds;
 
-                LogService.Info($"GPU_DETECTION_SMOKE_OK coldMs={coldMs} warmMs={warmMs} gpu={warm.Name} version={warm.DisplayVersion}");
+                // Read-only driver-cache invalidation regression: a PnP event
+                // must discard BOTH memory and persisted state; a subsequent
+                // fresh scan should recreate exactly one current snapshot.
+                long oldGeneration = GpuDriverService.DetectionCacheGeneration;
+                GpuDriverService.InvalidateDetectionCache();
+                if (GpuDriverService.DetectionCacheGeneration != oldGeneration + 1)
+                    throw new InvalidOperationException("GPU PnP invalidation generation did not change.");
+                var postPnP = await GpuDriverService.TryWarmPersistentDetectionCacheAsync();
+                if (postPnP != null)
+                    throw new InvalidOperationException("GPU invalidation reused stale persisted GPU information.");
+                var refreshed = await GpuDriverService.DetectPrimaryGpuAsync(forceRefresh: true);
+                var cached = await GpuDriverService.DetectPrimaryGpuAsync();
+                if (refreshed == null || !ReferenceEquals(refreshed, cached))
+                    throw new InvalidOperationException("GPU fresh scan was not published as the active cache.");
+
+                LogService.Info($"GPU_DETECTION_SMOKE_OK coldMs={coldMs} warmMs={warmMs} gpu={warm.Name} version={warm.DisplayVersion} pnpGenerationChanged=true staleDiskRejected=true");
                 Environment.Exit(0);
             }
             catch (Exception ex)
@@ -828,6 +1167,291 @@ public sealed partial class App : Application
             return;
         }
 
+        if (HasArg(cli, "--ai-cloud-auth-epoch-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", await AiCloudProfileService.RunCloudAuthEpochSmokeAsync());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "AI_CLOUD_AUTH_EPOCH_SMOKE_FAIL", ex);
+                Environment.Exit(128);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--tweak-drift-incomplete-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", TweakDriftWatchdogService.RunDriftIncompleteSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "TWEAK_DRIFT_INCOMPLETE_SMOKE_FAIL", ex);
+                Environment.Exit(127);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--google-signout-persistence-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", GoogleDriveOAuthService.RunSignOutPersistenceSafetySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "GOOGLE_SIGNOUT_PERSISTENCE_SMOKE_FAIL", ex);
+                Environment.Exit(125);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--data-root-cleanup-safety-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", DataRootCleanupService.RunRecognitionSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "DATA_ROOT_CLEANUP_SAFETY_SMOKE_FAIL", ex);
+                Environment.Exit(124);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--tweak-partial-restore-history-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", TweakBatchHistoryService.RunPartialRestoreHistorySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "TWEAK_PARTIAL_RESTORE_HISTORY_SMOKE_FAIL", ex);
+                Environment.Exit(123);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--log-tail-boundary-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", await LogTailService.RunTailBoundarySmokeAsync());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "LOG_TAIL_BOUNDARY_SMOKE_FAIL", ex);
+                Environment.Exit(122);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--wallpaper-transaction-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", WallpaperThemeService.RunWallpaperRollbackSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "WALLPAPER_TRANSACTION_SMOKE_FAIL", ex);
+                Environment.Exit(121);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--user-feature-fail-closed-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", UserFeatureProfileService.RunFeatureProfileFailClosedSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "USER_FEATURE_FAIL_CLOSED_SMOKE_FAIL", ex);
+                Environment.Exit(120);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--safe-preset-fail-closed-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", SafePresetProfileService.RunFailClosedPresetSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "SAFE_PRESET_FAIL_CLOSED_SMOKE_FAIL", ex);
+                Environment.Exit(119);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--app-uninstall-identity-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", AppUninstallService.RunCleanupIdentitySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "APP_UNINSTALL_IDENTITY_SMOKE_FAIL", ex);
+                Environment.Exit(118);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--upstream-snapshot-recovery-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", UpstreamSourceUpdateService.RunInterruptedSnapshotRecoverySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "UPSTREAM_SNAPSHOT_RECOVERY_SMOKE_FAIL", ex);
+                Environment.Exit(117);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--feature-profile-migration-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", UserFeatureProfileService.RunMigrationSafetySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "FEATURE_PROFILE_MIGRATION_SMOKE_FAIL", ex);
+                Environment.Exit(116);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--json-quarantine-preservation-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", SelfHealingJsonService.RunQuarantinePreservationSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "JSON_QUARANTINE_PRESERVATION_SMOKE_FAIL", ex);
+                Environment.Exit(115);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--storage-temperature-generation-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", await NativeSystemProbeService.RunStorageTemperatureGenerationSmokeAsync());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "STORAGE_TEMPERATURE_GENERATION_SMOKE_FAIL", ex);
+                Environment.Exit(114);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--community-cursor-atomic-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", CursorCommunityPackService.RunCommunityCursorAtomicSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "COMMUNITY_CURSOR_ATOMIC_SMOKE_FAIL", ex);
+                Environment.Exit(113);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--process-queue-deadline-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", await ProcessRunner.RunProcessQueueDeadlineSmokeAsync());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "PROCESS_QUEUE_DEADLINE_SMOKE_FAIL", ex);
+                Environment.Exit(112);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--winget-id-safety-smoke"))
+        {
+            try
+            {
+                LogService.Info("winget", WingetUpdateService.RunPackageIdSafetySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("winget", "WINGET_PACKAGE_ID_SAFETY_SMOKE_FAIL", ex);
+                Environment.Exit(111);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--operation-queue-deadline-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", await OperationCoordinator.RunQueueDeadlineSmokeAsync());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("regression", "OPERATION_QUEUE_DEADLINE_SMOKE_FAIL", ex);
+                Environment.Exit(110);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--gpu-resume-integrity-smoke"))
+        {
+            try
+            {
+                LogService.Info("drivers", GpuDriverService.RunResumeIntegritySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("drivers", "GPU_RESUME_INTEGRITY_SMOKE_FAIL", ex);
+                Environment.Exit(109);
+            }
+            return;
+        }
+
         if (HasArg(cli, "--exostenza-cache-reuse-smoke"))
         {
             try
@@ -855,6 +1479,7 @@ public sealed partial class App : Application
             try
             {
                 LogService.Info(StartupManagerService.RunDeltaSmoke());
+                LogService.Info(StartupManagerService.RunRegistryMoveCollisionSmoke());
                 Environment.Exit(0);
             }
             catch (Exception ex) { LogService.Error("STARTUP_DELTA_SMOKE_FAIL", ex); Environment.Exit(41); }
@@ -971,6 +1596,17 @@ public sealed partial class App : Application
             return;
         }
 
+        if (HasArg(cli, "--worker-ipc-output-path-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", WorkerIpcSecurity.RunOutputPathSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("WORKER_IPC_OUTPUT_PATH_SMOKE_FAIL", ex); Environment.Exit(130); }
+            return;
+        }
+
         if (HasArg(cli, "--worker-ipc-cleanup-smoke"))
         {
             try
@@ -979,6 +1615,683 @@ public sealed partial class App : Application
                 Environment.Exit(0);
             }
             catch (Exception ex) { LogService.Error("WORKER_IPC_CLEANUP_SMOKE_FAIL", ex); Environment.Exit(70); }
+            return;
+        }
+
+        if (HasArg(cli, "--network-parallel-smoke"))
+        {
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(45));
+                await NetworkDiagnosticsService.MeasureIndependentConcurrencySmokeAsync(cts.Token);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("NETWORK_PARALLEL_SMOKE_FAIL", ex);
+                Environment.Exit(101);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--repair-worker-ipc-smoke"))
+        {
+            try
+            {
+                WorkerHealthService.RunResolutionOrderingSmoke();
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(95));
+                var report = await SystemRepairDiagnosticsService.ScanAsync(cts.Token);
+                string[] expected = ["Windows Update", "Microsoft Store", "Explorer", "Network",
+                    "Škodlivé / zastaralé úpravy", "Game Bar / Capture", "GPU driver"];
+                if (report.Count != expected.Length ||
+                    report.Where((item, index) => item.Area != expected[index]).Any())
+                    throw new InvalidOperationException("Fixer worker IPC diagnostic payload does not contain seven ordered areas.");
+                if (WorkerHealthService.Snapshot().Any(x =>
+                    x.Action == "repair-scan" && (x.Failures != 0 || x.LastError != null)))
+                    throw new InvalidOperationException(
+                        "Successful repair worker did not resolve its previous error state.");
+                LogService.Info("fixer", "REPAIR_WORKER_IPC_SMOKE_OK areas=7 response=deserialized resolved=true writes=false");
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("REPAIR_WORKER_IPC_SMOKE_FAIL", ex);
+                Environment.Exit(102);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--repair-scan-parallel-smoke"))
+        {
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(95));
+                await SystemRepairDiagnosticsService.RunParallelScanCacheSmokeAsync(cts.Token);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("REPAIR_SCAN_PARALLEL_SMOKE_FAIL", ex);
+                Environment.Exit(100);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--native-service-repair-smoke"))
+        {
+            try
+            {
+                SystemRepairDiagnosticsService.VerifyNativeServiceRepairReadOnly();
+                NativeNetworkBindingRepairService.VerifyReadOnly();
+                LogService.Info("performance", "NATIVE_SERVICE_REPAIR_SMOKE_OK service=MMCSS binding=MSFT_NetAdapterBindingSettingData selection=true methods=Enable/Disable writes=false");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("NATIVE_SERVICE_REPAIR_SMOKE_FAIL", ex); Environment.Exit(93); }
+            return;
+        }
+
+        if (HasArg(cli, "--shell-profile-cache-smoke"))
+        {
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(50));
+                await ShellHealthService.RunProfileCacheSmokeAsync(cts.Token);
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("SHELL_PROFILE_CACHE_SMOKE_FAIL", ex); Environment.Exit(94); }
+            return;
+        }
+
+        if (HasArg(cli, "--shell-profile-disk-smoke"))
+        {
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var report = await ShellHealthService.AnalyzeAsync(cts.Token);
+                // Allow the async atomic cache commit to finish before the
+                // next independent process validates its cold-disk hit.
+                await Task.Delay(150, cts.Token);
+                LogService.Info("SHELL_PROFILE_DISK_SMOKE_OK profileErrors=" +
+                    report.Findings.Count(x => x.Area == "PowerShell profile" && x.Severity == "Error"));
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("SHELL_PROFILE_DISK_SMOKE_FAIL", ex); Environment.Exit(101); }
+            return;
+        }
+
+        if (HasArg(cli, "--shell-profile-costs-smoke"))
+        {
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(55));
+                var costs = await ShellHealthService.MeasureKnownProfileCostsAsync(cts.Token);
+                if (costs.Count != 6 || costs.Any(x => !double.IsFinite(x.Milliseconds) || x.Milliseconds < 0))
+                    throw new InvalidOperationException("Batched PowerShell profile costs returned invalid results.");
+                LogService.Info("performance", "SHELL_PROFILE_COSTS_SMOKE_OK count=" + costs.Count +
+                    " available=" + costs.Count(x => x.Available) +
+                    " values=" + string.Join(",", costs.Select(x => x.Name + ":" + (x.Available ? x.Milliseconds.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) : "NA"))));
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("SHELL_PROFILE_COSTS_SMOKE_FAIL", ex); Environment.Exit(92); }
+            return;
+        }
+
+        if (HasArg(cli, "--network-transition-batch-smoke"))
+        {
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(75));
+                await NetworkTransitionStateService.RunBatchParitySmokeAsync(cts.Token);
+                LogService.Info("performance",
+                    "NETWORK_TRANSITION_BATCH_SMOKE_OK runs=3 reference=5 batched=1 writes=false");
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("NETWORK_TRANSITION_BATCH_SMOKE_FAIL", ex);
+                Environment.Exit(99);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--native-network-binding-smoke"))
+        {
+            try
+            {
+                var disabled = SystemRepairDiagnosticsService.GetDisabledActiveNetworkBindings();
+                if (disabled.Any(x => !x.StartsWith("Binding ", StringComparison.Ordinal)))
+                    throw new InvalidOperationException("Native binding diagnosis returned invalid issue format.");
+                LogService.Info("NATIVE_NETWORK_BINDING_SMOKE_OK disabled=" + disabled.Count);
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("NATIVE_NETWORK_BINDING_SMOKE_FAIL", ex); Environment.Exit(91); }
+            return;
+        }
+
+        if (HasArg(cli, "--ai-power-evidence-smoke"))
+        {
+            try
+            {
+                await AiPowerTelemetryEvidenceSmoke.RunAsync();
+                LogService.Info("AI_POWER_EVIDENCE_SMOKE_OK cases=38 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("AI_POWER_EVIDENCE_SMOKE_FAIL", ex); Environment.Exit(112); }
+            return;
+        }
+        if (HasArg(cli, "--ai-power-details-cache-smoke"))
+        {
+            try
+            {
+                await AiPowerDetailsSnapshotSmoke.RunAsync();
+                LogService.Info("AI_POWER_DETAILS_CACHE_SMOKE_OK cases=25 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("AI_POWER_DETAILS_CACHE_SMOKE_FAIL", ex); Environment.Exit(116); }
+            return;
+        }
+
+        if (HasArg(cli, "--ai-power-lazy-details-smoke"))
+        {
+            try
+            {
+                await AiPowerDetailsLoadSmoke.RunAsync();
+                LogService.Info("AI_POWER_LAZY_DETAILS_SMOKE_OK cases=22 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("AI_POWER_LAZY_DETAILS_SMOKE_FAIL", ex); Environment.Exit(115); }
+            return;
+        }
+
+        if (HasArg(cli, "--ai-power-live-smoke"))
+        {
+            try
+            {
+                await AiPowerCompactLiveSmoke.RunAsync();
+                LogService.Info("AI_POWER_LIVE_SMOKE_OK cases=30 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("AI_POWER_LIVE_SMOKE_FAIL", ex); Environment.Exit(117); }
+            return;
+        }
+
+        if (HasArg(cli, "--ai-power-refresh-smoke"))
+        {
+            try
+            {
+                await AiPowerControlsRefreshSmoke.RunAsync();
+                LogService.Info("AI_POWER_REFRESH_SMOKE_OK cases=29 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("AI_POWER_REFRESH_SMOKE_FAIL", ex); Environment.Exit(114); }
+            return;
+        }
+
+        if (HasArg(cli, "--ai-power-compact-smoke"))
+        {
+            try
+            {
+                await AiPowerCompactPresentationSmoke.RunAsync();
+                LogService.Info("AI_POWER_COMPACT_SMOKE_OK cases=13 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("AI_POWER_COMPACT_SMOKE_FAIL", ex); Environment.Exit(113); }
+            return;
+        }
+
+        if (HasArg(cli, "--registry-backup-identity-smoke"))
+        {
+            try
+            {
+                await RegistryBackupStore.RunBackupTargetIdentitySmokeAsync();
+                LogService.Info("REGISTRY_BACKUP_IDENTITY_SMOKE_OK cases=24 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("REGISTRY_BACKUP_IDENTITY_SMOKE_FAIL", ex); Environment.Exit(111); }
+            return;
+        }
+
+        if (HasArg(cli, "--registry-existing-value-smoke"))
+        {
+            try
+            {
+                await RegistryBackupStore.RunExistingValueRestoreSmokeAsync();
+                LogService.Info("REGISTRY_EXISTING_VALUE_SMOKE_OK cases=20 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("REGISTRY_EXISTING_VALUE_SMOKE_FAIL", ex); Environment.Exit(110); }
+            return;
+        }
+
+        if (HasArg(cli, "--registry-restore-feedback-smoke"))
+        {
+            try
+            {
+                await RegistryRestoreFeedbackSmoke.RunAsync();
+                LogService.Info("REGISTRY_RESTORE_FEEDBACK_SMOKE_OK cases=18 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("REGISTRY_RESTORE_FEEDBACK_SMOKE_FAIL", ex); Environment.Exit(109); }
+            return;
+        }
+
+        if (HasArg(cli, "--registry-restore-all-smoke"))
+        {
+            try
+            {
+                await RegistryBackupStore.RunRestoreAllSmokeAsync();
+                LogService.Info("REGISTRY_RESTORE_ALL_SMOKE_OK cases=18 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("REGISTRY_RESTORE_ALL_SMOKE_FAIL", ex); Environment.Exit(108); }
+            return;
+        }
+
+        if (HasArg(cli, "--registry-owned-value-smoke"))
+        {
+            try
+            {
+                await RegistryBackupStore.RunOwnedValueSmokeAsync();
+                LogService.Info("REGISTRY_OWNED_VALUE_SMOKE_OK cases=18 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("REGISTRY_OWNED_VALUE_SMOKE_FAIL", ex); Environment.Exit(107); }
+            return;
+        }
+
+        if (HasArg(cli, "--registry-original-key-smoke"))
+        {
+            try
+            {
+                await RegistryBackupStore.RunOriginalKeySmokeAsync();
+                LogService.Info("REGISTRY_ORIGINAL_KEY_SMOKE_OK cases=20 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("REGISTRY_ORIGINAL_KEY_SMOKE_FAIL", ex); Environment.Exit(106); }
+            return;
+        }
+
+        if (HasArg(cli, "--generic-dword-mutation-smoke"))
+        {
+            try
+            {
+                await TweakFactory.RunDwordMutationSmokeAsync();
+                LogService.Info("GENERIC_DWORD_MUTATION_SMOKE_OK cases=19 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("GENERIC_DWORD_MUTATION_SMOKE_FAIL", ex); Environment.Exit(105); }
+            return;
+        }
+
+        if (HasArg(cli, "--uar-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunUarMutationSmokeAsync();
+                LogService.Info("UAR_MUTATION_SMOKE_OK cases=25 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("UAR_MUTATION_SMOKE_FAIL", ex); Environment.Exit(104); }
+            return;
+        }
+
+        if (HasArg(cli, "--speech-model-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunSpeechModelMutationSmokeAsync();
+                LogService.Info("SPEECH_MODEL_MUTATION_SMOKE_OK cases=25 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("SPEECH_MODEL_MUTATION_SMOKE_FAIL", ex); Environment.Exit(103); }
+            return;
+        }
+
+        if (HasArg(cli, "--ceip-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunCeipMutationSmokeAsync();
+                LogService.Info("CEIP_MUTATION_SMOKE_OK cases=25 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("CEIP_MUTATION_SMOKE_FAIL", ex); Environment.Exit(102); }
+            return;
+        }
+
+        if (HasArg(cli, "--pchealth-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunPcHealthMutationSmokeAsync();
+                LogService.Info("PCHEALTH_MUTATION_SMOKE_OK cases=23 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("PCHEALTH_MUTATION_SMOKE_FAIL", ex); Environment.Exit(101); }
+            return;
+        }
+
+        if (HasArg(cli, "--wallpaper-quality-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunWallpaperQualityMutationSmokeAsync();
+                LogService.Info("WALLPAPER_QUALITY_MUTATION_SMOKE_OK cases=18 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("WALLPAPER_QUALITY_MUTATION_SMOKE_FAIL", ex); Environment.Exit(100); }
+            return;
+        }
+
+        if (HasArg(cli, "--store-autoupdate-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunStoreUpdatesMutationSmokeAsync();
+                LogService.Info("STORE_AUTOUPDATE_MUTATION_SMOKE_OK cases=25 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("STORE_AUTOUPDATE_MUTATION_SMOKE_FAIL", ex); Environment.Exit(98); }
+            return;
+        }
+
+        if (HasArg(cli, "--lockscreen-timeout-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunLockScreenTimeoutMutationSmokeAsync();
+                LogService.Info("LOCKSCREEN_TIMEOUT_MUTATION_SMOKE_OK cases=18 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("LOCKSCREEN_TIMEOUT_MUTATION_SMOKE_FAIL", ex); Environment.Exit(99); }
+            return;
+        }
+
+        if (HasArg(cli, "--theme-mode-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunThemeModeMutationSmokeAsync();
+                LogService.Info("THEME_MODE_MUTATION_SMOKE_OK cases=19 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("THEME_MODE_MUTATION_SMOKE_FAIL", ex); Environment.Exit(97); }
+            return;
+        }
+
+        if (HasArg(cli, "--exe-warnings-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunExeWarningsMutationSmokeAsync();
+                LogService.Info("EXE_WARNINGS_MUTATION_SMOKE_OK cases=22 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("EXE_WARNINGS_MUTATION_SMOKE_FAIL", ex); Environment.Exit(96); }
+            return;
+        }
+
+        if (HasArg(cli, "--gallery-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunGalleryMutationSmokeAsync();
+                LogService.Info("GALLERY_MUTATION_SMOKE_OK cases=20 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("GALLERY_MUTATION_SMOKE_FAIL", ex); Environment.Exit(95); }
+            return;
+        }
+
+        if (HasArg(cli, "--service-start-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunServiceStartMutationSmokeAsync();
+                LogService.Info("SERVICE_START_MUTATION_SMOKE_OK cases=20 windowsServiceChanges=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("SERVICE_START_MUTATION_SMOKE_FAIL", ex); Environment.Exit(94); }
+            return;
+        }
+
+        if (HasArg(cli, "--onedrive-nav-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunOneDriveNavMutationSmokeAsync();
+                LogService.Info("ONEDRIVE_NAV_MUTATION_SMOKE_OK cases=19 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("ONEDRIVE_NAV_MUTATION_SMOKE_FAIL", ex); Environment.Exit(93); }
+            return;
+        }
+
+        if (HasArg(cli, "--explorer-home-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunExplorerHomeMutationSmokeAsync();
+                LogService.Info("EXPLORER_HOME_MUTATION_SMOKE_OK cases=16 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("EXPLORER_HOME_MUTATION_SMOKE_FAIL", ex); Environment.Exit(92); }
+            return;
+        }
+
+        if (HasArg(cli, "--this-pc-folders-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunThisPcFolderMutationSmokeAsync();
+                LogService.Info("THIS_PC_FOLDERS_MUTATION_SMOKE_OK cases=16 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("THIS_PC_FOLDERS_MUTATION_SMOKE_FAIL", ex); Environment.Exit(90); }
+            return;
+        }
+
+        if (HasArg(cli, "--desktop-icons-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunDesktopIconsMutationSmokeAsync();
+                LogService.Info("DESKTOP_ICONS_MUTATION_SMOKE_OK cases=13 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("DESKTOP_ICONS_MUTATION_SMOKE_FAIL", ex); Environment.Exit(89); }
+            return;
+        }
+
+        if (HasArg(cli, "--classic-menu-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunClassicMenuMutationSmokeAsync();
+                LogService.Info("CLASSIC_MENU_MUTATION_SMOKE_OK cases=15 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("CLASSIC_MENU_MUTATION_SMOKE_FAIL", ex); Environment.Exit(88); }
+            return;
+        }
+
+        if (HasArg(cli, "--start-layout-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunStartLayoutMutationSmokeAsync();
+                LogService.Info("START_LAYOUT_MUTATION_SMOKE_OK cases=14 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("START_LAYOUT_MUTATION_SMOKE_FAIL", ex); Environment.Exit(87); }
+            return;
+        }
+
+        if (HasArg(cli, "--multi-string-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunMultiStringMutationSmokeAsync();
+                LogService.Info("MULTI_STRING_MUTATION_SMOKE_OK cases=14 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("MULTI_STRING_MUTATION_SMOKE_FAIL", ex); Environment.Exit(86); }
+            return;
+        }
+
+        if (HasArg(cli, "--string-tweak-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunStringTweakMutationSmokeAsync();
+                LogService.Info("STRING_TWEAK_MUTATION_SMOKE_OK cases=13 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("STRING_TWEAK_MUTATION_SMOKE_FAIL", ex); Environment.Exit(85); }
+            return;
+        }
+
+        if (HasArg(cli, "--filter-keys-shortcut-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunFilterKeysShortcutSmokeAsync();
+                LogService.Info("FILTER_KEYS_SHORTCUT_SMOKE_OK cases=12 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("FILTER_KEYS_SHORTCUT_SMOKE_FAIL", ex); Environment.Exit(84); }
+            return;
+        }
+
+        if (HasArg(cli, "--cabc-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunCabcMutationSmokeAsync();
+                LogService.Info("CABC_MUTATION_SMOKE_OK cases=12 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("CABC_MUTATION_SMOKE_FAIL", ex); Environment.Exit(83); }
+            return;
+        }
+
+        if (HasArg(cli, "--location-extras-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunLocationExtrasMutationSmokeAsync();
+                LogService.Info("LOCATION_EXTRAS_MUTATION_SMOKE_OK cases=11 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("LOCATION_EXTRAS_MUTATION_SMOKE_FAIL", ex); Environment.Exit(82); }
+            return;
+        }
+
+        if (HasArg(cli, "--setting-sync-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunSettingSyncMutationSmokeAsync();
+                LogService.Info("SETTING_SYNC_MUTATION_SMOKE_OK cases=11 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("SETTING_SYNC_MUTATION_SMOKE_FAIL", ex); Environment.Exit(81); }
+            return;
+        }
+
+        if (HasArg(cli, "--realtek-idle-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunRealtekIdleMutationSmokeAsync();
+                LogService.Info("REALTEK_IDLE_MUTATION_SMOKE_OK cases=11 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("REALTEK_IDLE_MUTATION_SMOKE_FAIL", ex); Environment.Exit(80); }
+            return;
+        }
+
+        if (HasArg(cli, "--pointer-precision-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunPointerPrecisionMutationSmokeAsync();
+                LogService.Info("POINTER_PRECISION_MUTATION_SMOKE_OK cases=11 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("POINTER_PRECISION_MUTATION_SMOKE_FAIL", ex); Environment.Exit(79); }
+            return;
+        }
+
+        if (HasArg(cli, "--rotating-lock-screen-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunRotatingLockScreenMutationSmokeAsync();
+                LogService.Info("ROTATING_LOCK_SCREEN_MUTATION_SMOKE_OK cases=10 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("ROTATING_LOCK_SCREEN_MUTATION_SMOKE_FAIL", ex); Environment.Exit(78); }
+            return;
+        }
+
+        if (HasArg(cli, "--type-overlay-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunTypeOverlayMutationSmokeAsync();
+                LogService.Info("TYPE_OVERLAY_MUTATION_SMOKE_OK cases=10 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("TYPE_OVERLAY_MUTATION_SMOKE_FAIL", ex); Environment.Exit(77); }
+            return;
+        }
+
+        if (HasArg(cli, "--desktop-shadow-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunDesktopLabelShadowMutationSmokeAsync();
+                LogService.Info("DESKTOP_SHADOW_MUTATION_SMOKE_OK cases=10 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("DESKTOP_SHADOW_MUTATION_SMOKE_FAIL", ex); Environment.Exit(76); }
+            return;
+        }
+
+        if (HasArg(cli, "--explorer-hubmode-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunExplorerHubModeMutationSmokeAsync();
+                LogService.Info("EXPLORER_HUBMODE_MUTATION_SMOKE_OK cases=9 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("EXPLORER_HUBMODE_MUTATION_SMOKE_FAIL", ex); Environment.Exit(75); }
+            return;
+        }
+
+        if (HasArg(cli, "--tips-toast-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunTipsToastMutationSmokeAsync();
+                LogService.Info("TIPS_TOAST_MUTATION_SMOKE_OK cases=8 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("TIPS_TOAST_MUTATION_SMOKE_FAIL", ex); Environment.Exit(74); }
+            return;
+        }
+
+        if (HasArg(cli, "--security-notifications-mutation-smoke"))
+        {
+            try
+            {
+                await GTweakPortCatalog.RunSecurityNotificationsMutationSmokeAsync();
+                LogService.Info("SECURITY_NOTIFICATIONS_MUTATION_SMOKE_OK cases=5 windowsWrites=0");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("SECURITY_NOTIFICATIONS_MUTATION_SMOKE_FAIL", ex); Environment.Exit(73); }
             return;
         }
 
@@ -1042,6 +2355,30 @@ public sealed partial class App : Application
                 if (persistentSw.ElapsedMilliseconds > 100)
                     throw new InvalidOperationException($"Startup persistent snapshot too slow: {persistentSw.ElapsedMilliseconds} ms.");
 
+                // Verify the real asynchronous public entrypoint too. A cold
+                // caller must not synchronously read JSON on the UI thread;
+                // all consumers share the same restored snapshot and do not
+                // enumerate Task Scheduler again.
+                StartupManagerService.ClearMemoryCacheForSmoke();
+                int loadsBeforeDisk = StartupManagerService.LoadCountForDiagnostics;
+                int taskScansBeforeDisk = TaskSchedulerService.ScanCountForDiagnostics;
+                var callerSw = System.Diagnostics.Stopwatch.StartNew();
+                var diskFlights = Enumerable.Range(0, 8)
+                    .Select(_ => StartupManagerService.GetAsync()).ToArray();
+                long callerMs = callerSw.ElapsedMilliseconds;
+                var diskResults = await Task.WhenAll(diskFlights).WaitAsync(cts.Token);
+                if (diskResults.Any(x => x.Count != items.Count ||
+                        !ReferenceEquals(x, diskResults[0])) ||
+                    StartupManagerService.LoadCountForDiagnostics != loadsBeforeDisk ||
+                    TaskSchedulerService.ScanCountForDiagnostics != taskScansBeforeDisk ||
+                    !StartupManagerService.NeedsBackgroundRefresh)
+                    throw new InvalidOperationException(
+                        "Startup async persistent hydration did not share one disk snapshot without task rescans.");
+                if (callerMs > 100)
+                    throw new InvalidOperationException(
+                        $"Startup GetAsync blocked its callers: {callerMs} ms.");
+                LogService.Info($"STARTUP_ASYNC_DISK_SMOKE_OK readers=8 callerMs={callerMs} taskRescans=0 loads=0");
+
                 int taskScansBeforeBackground = TaskSchedulerService.ScanCountForDiagnostics;
                 var backgroundSw = System.Diagnostics.Stopwatch.StartNew();
                 var refreshed = await StartupManagerService.GetAsync(
@@ -1071,6 +2408,26 @@ public sealed partial class App : Application
             {
                 using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(90));
                 var report = await TweakDriftWatchdogService.CheckAppliedTweaksAsync(cts.Token);
+                LogService.Info(AdaptivePowerEppTuner.RunOfflineSmoke());
+                LogService.Info(AdaptivePowerRuntimeService.RunAdaptiveStatusHotpathSmoke());
+                LogService.Info(AdaptivePowerRuntimeService.RunAdaptiveSharedTickSmoke());
+                LogService.Info(AdaptivePowerRuntimeService.RunEppSameTickReuseSmoke());
+                LogService.Info(AiSmartRuntimeService.RunWorkloadDictionaryReuseSmoke());
+                LogService.Info(HardwareTelemetryBridgeService.RunBridgeIdentityReuseSmoke());
+                LogService.Info(HardwareTelemetryBridgeService.RunBridgeRecoveryTaskSmoke());
+                LogService.Info(AiSmartRuntimeService.RunAverageRpmNoAllocationSmoke());
+                LogService.Info(AdaptivePowerRuntimeService.RunEppStatusReadPolicySmoke());
+                LogService.Info(FanProfileService.RunFanCurveAllocationSmoke());
+                LogService.Info(AdaptivePowerRuntimeService.RunProcessNameReuseSmoke());
+                LogService.Info(AiSelfOptimizationService.RunSameProcessHealthReuseSmoke());
+                LogService.Info(AiSelfOptimizationService.RunHealthFingerprintValueSmoke());
+                LogService.Info(AdaptivePowerRuntimeService.RunAutonomousEppControlSmoke());
+                LogService.Info(ForegroundProcessProbe.RunSnapshotReuseSmoke());
+                LogService.Info(await TweakBatchHistoryService.RunOverviewSnapshotCacheSmokeAsync(cts.Token));
+                LogService.Info(AiSystemSmoothnessGuardService.RunOfflineSmoke());
+                LogService.Info(AiStorageGuardianService.RunOfflineSmoke());
+                LogService.Info(StorageOptimizationService.RunTrimParserSmoke());
+                LogService.Info(StorageOptimizationService.RunSnapshotMonotonicCacheSmoke());
                 LogService.Info($"TWEAK_DRIFT_WATCHDOG_SMOKE_OK checked={report.Checked} drifted={report.Drifted.Length}");
                 Environment.Exit(0);
             }
@@ -1135,7 +2492,8 @@ public sealed partial class App : Application
                 if (!File.Exists(PowerPlanGuardService.GuardScriptPath))
                     throw new InvalidOperationException("Power Plan guard script po recreate chybí.");
 
-                await PowerPlanGuardService.RunNowAsync(cts.Token);
+                long guardRunCursor = await PowerPlanGuardService.RunNowAsync(
+                    snapshot.ActiveGuid, cts.Token);
                 await Task.Delay(1200, cts.Token);
                 var afterRun = await PowerPlanStateService.ReadAsync(cts.Token, forceRefresh: true);
                 if (!string.Equals(afterRun.ActiveGuid, snapshot.ActiveGuid, StringComparison.OrdinalIgnoreCase))
@@ -1147,7 +2505,9 @@ public sealed partial class App : Application
                         throw new InvalidOperationException($"Power Plan guard critical read-back selhal: {id}={setting?.CurrentText ?? "missing"}");
                 }
 
-                guardStatus = await PowerPlanGuardService.ReadStatusAsync(snapshot.ActiveGuid, cts.Token);
+                guardStatus = await PowerPlanGuardService.ReadStatusAsync(
+                    snapshot.ActiveGuid, cts.Token,
+                    minimumStatusRecordOffset: guardRunCursor);
                 if (!guardStatus.LogonConfigured || !guardStatus.BootConfigured || !guardStatus.LastRunOk)
                     throw new InvalidOperationException($"Power Plan guard final status selhal boot={guardStatus.BootConfigured} logon={guardStatus.LogonConfigured} last={guardStatus.LastResult}");
 
@@ -1213,6 +2573,104 @@ public sealed partial class App : Application
             await RunBackendSmokeAsync("NIC", 42, PerformanceProfilesService.ApplyNicPerformanceProfileAsync);
             return;
         }
+        if (HasArg(cli, "--trusted-signer-identity-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", FileSecurityService.RunTrustedSignerIdentitySmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("TRUSTED_SIGNER_IDENTITY_SMOKE_FAIL", ex); Environment.Exit(131); }
+            return;
+        }
+
+        if (HasArg(cli, "--archive-entry-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", ArchiveSafetyService.RunArchiveEntrySmoke());
+                LogService.Info("regression", ArchiveSafetyService.RunExtractedTreeSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("ARCHIVE_ENTRY_SMOKE_FAIL", ex);
+                Environment.Exit(108);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--launcher-startup-match-smoke"))
+        {
+            try
+            {
+                LogService.Info("regression", LauncherProcessMatcher.RunStartupMatchingSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("LAUNCHER_STARTUP_MATCH_SMOKE_FAIL", ex); Environment.Exit(134); }
+            return;
+        }
+
+        if (HasArg(cli, "--atomic-file-smoke"))
+        {
+            try
+            {
+                LogService.Info(await AtomicFileService.RunAtomicReplacementSmokeAsync());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("ATOMIC_REPLACEMENT_SMOKE_FAIL", ex);
+                Environment.Exit(107);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--plugin-manifest-smoke"))
+        {
+            try
+            {
+                LogService.Info(SpankyExtensionService.RunManifestValidationSmoke());
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("PLUGIN_MANIFEST_VALIDATION_SMOKE_FAIL", ex);
+                Environment.Exit(106);
+            }
+            return;
+        }
+
+        if (HasArg(cli, "--storage-concurrency-smoke"))
+        {
+            try
+            {
+                LogService.Info(await StorageOptimizationService.RunScheduledOptimizeCancellationSmokeAsync());
+                int start = StorageOptimizationService.ActualProbeCountForDiagnostics;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var readers = Enumerable.Range(0, 12)
+                    .Select(_ => StorageOptimizationService.ReadAsync()).ToArray();
+                var results = await Task.WhenAll(readers);
+                sw.Stop();
+                int probes = StorageOptimizationService.ActualProbeCountForDiagnostics - start;
+                if (probes != 1)
+                    throw new InvalidOperationException($"Storage parallel reads launched {probes} probes instead of 1.");
+                if (results.Any(x => x != results[0]))
+                    throw new InvalidOperationException("Storage concurrent snapshot mismatch.");
+                var cachedSw = System.Diagnostics.Stopwatch.StartNew();
+                await StorageOptimizationService.ReadAsync();
+                cachedSw.Stop();
+                int cachedProbes = StorageOptimizationService.ActualProbeCountForDiagnostics - start;
+                if (cachedProbes != 1)
+                    throw new InvalidOperationException("Storage cache unexpectedly launched an extra probe.");
+                LogService.Info(await StorageMutationGate.RunOfflineSmokeAsync());
+                LogService.Info(await StorageOptimizationService.RunRollbackFaultInjectionSmokeAsync());
+                LogService.Info($"STORAGE_CONCURRENCY_SMOKE_OK readers=12 probes={probes} concurrentMs={sw.ElapsedMilliseconds} cacheMs={cachedSw.ElapsedMilliseconds}");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("STORAGE_CONCURRENCY_SMOKE_FAIL", ex); Environment.Exit(88); }
+            return;
+        }
         if (HasArg(cli, "--storage-probe-smoke"))
         {
             try
@@ -1243,6 +2701,51 @@ public sealed partial class App : Application
                 LogService.Error("STORAGE_PROBE_SMOKE_FAIL", ex);
                 Environment.Exit(66);
             }
+            return;
+        }
+        if (HasArg(cli, "--service-targets-read-smoke"))
+        {
+            try
+            {
+                await ServiceCatalogService.RunRecommendedStartModesSmokeAsync();
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("SERVICE_TARGETS_READ_SMOKE_FAIL", ex); Environment.Exit(96); }
+            return;
+        }
+
+        if (HasArg(cli, "--memory-state-read-bench"))
+        {
+            try
+            {
+                LogService.Info("performance", MemoryStateService.RunSnapshotReadBenchmark());
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("MEMORY_STATE_READ_BENCH_FAIL", ex); Environment.Exit(89); }
+            return;
+        }
+
+        if (HasArg(cli, "--activity-top30-bench"))
+        {
+            try
+            {
+                LogService.Info("performance", ActivityProcessSnapshotService.RunRankingBenchmark());
+                await ActivityProcessSnapshotService.RunCacheSmokeAsync();
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("ACTIVITY_TOP30_BENCH_FAIL", ex); Environment.Exit(88); }
+            return;
+        }
+
+        if (HasArg(cli, "--startup-row-orphan-bench"))
+        {
+            try
+            {
+                LogService.Info("performance",
+                    SpankyhoOptimizer.ViewModels.StartupRowViewModel.RunOrphanPathReadOnlyBenchmark());
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("STARTUP_ROW_ORPHAN_BENCH_FAIL", ex); Environment.Exit(87); }
             return;
         }
         if (HasArg(cli, "--debloat-cache-smoke"))
@@ -1289,6 +2792,16 @@ public sealed partial class App : Application
                 if (tasks.Count == 0) throw new InvalidOperationException("Task Scheduler inventář je prázdný.");
 
                 TaskSchedulerService.ClearMemoryCacheForSmoke();
+                // Cold single-task enabled lookup must not enumerate 266+ tasks.
+                var directSw = System.Diagnostics.Stopwatch.StartNew();
+                bool directState = await scheduler.GetEnabledAsync(tasks[0].Path, cts.Token);
+                directSw.Stop();
+                if (directState != tasks[0].Enabled)
+                    throw new InvalidOperationException("Single-task COM state differs from fresh inventory.");
+                bool nextState = await scheduler.GetEnabledAsync(tasks[0].Path, cts.Token);
+                bool burstState = await scheduler.GetEnabledAsync(tasks[0].Path, cts.Token);
+                if (nextState != tasks[0].Enabled || burstState != tasks[0].Enabled)
+                    throw new InvalidOperationException("Burst-enabled state mismatch.");
                 var cacheSw = System.Diagnostics.Stopwatch.StartNew();
                 var cached = await scheduler.GetAsync(false, cts.Token);
                 cacheSw.Stop();
@@ -1312,7 +2825,7 @@ public sealed partial class App : Application
                 if (TaskSchedulerService.NeedsBackgroundRefresh)
                     throw new InvalidOperationException("Task Scheduler background refresh left refreshPending set.");
 
-                LogService.Info($"TASK_SCHEDULER_BACKEND_SMOKE_OK tasks={tasks.Count} freshMs={freshSw.ElapsedMilliseconds} persistentMs={cacheSw.ElapsedMilliseconds} refreshScans={refreshScans}");
+                LogService.Info($"TASK_SCHEDULER_BACKEND_SMOKE_OK tasks={tasks.Count} freshMs={freshSw.ElapsedMilliseconds} directEnabledMs={directSw.ElapsedMilliseconds} persistentMs={cacheSw.ElapsedMilliseconds} refreshScans={refreshScans}");
                 Environment.Exit(0);
             }
             catch (Exception ex) { LogService.Error("TASK_SCHEDULER_BACKEND_SMOKE_FAIL", ex); Environment.Exit(46); }
@@ -1365,6 +2878,143 @@ public sealed partial class App : Application
                 LogService.Error("security", "AUTHENTICODE_NATIVE_SMOKE_FAIL", ex);
                 Environment.Exit(65);
             }
+            return;
+        }
+
+        if (HasArg(cli, "--powershell-status-cache-smoke"))
+        {
+            try
+            {
+                PowerShellCenterService.InvalidateStatusCache();
+                int before = PowerShellCenterService.StatusProcessLoadsForDiagnostics;
+                int nativeBefore = PowerShellCenterService.StatusNativeLoadsForDiagnostics;
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(45));
+                var statusCalls = Enumerable.Range(0, 4)
+                    .Select(_ => PowerShellCenterService.GetStatusAsync(cts.Token)).ToArray();
+                var results = await Task.WhenAll(statusCalls);
+                if ((PowerShellCenterService.StatusProcessLoadsForDiagnostics - before) +
+                    (PowerShellCenterService.StatusNativeLoadsForDiagnostics - nativeBefore) != 1 ||
+                    results.Any(x => x.PowerShellVersion is "" or "Missing"))
+                    throw new InvalidOperationException("PowerShell status single-flight smoke failed.");
+                _ = await PowerShellCenterService.GetStatusAsync(cts.Token);
+                if (PowerShellCenterService.StatusProcessLoadsForDiagnostics - before + PowerShellCenterService.StatusNativeLoadsForDiagnostics - nativeBefore != 1)
+                    throw new InvalidOperationException("PowerShell status TTL cache missed.");
+
+                int modulesBefore = PowerShellCenterService.ModulesProcessLoadsForDiagnostics;
+                var moduleCalls = Enumerable.Range(0, 4)
+                    .Select(_ => PowerShellCenterService.GetManagedModulesAsync(cts.Token)).ToArray();
+                var moduleResults = await Task.WhenAll(moduleCalls);
+                if (PowerShellCenterService.ModulesProcessLoadsForDiagnostics - modulesBefore != 1 ||
+                    moduleResults.Any(x => x.Count < 5))
+                    throw new InvalidOperationException("PowerShell module inventory single-flight smoke failed.");
+                _ = await PowerShellCenterService.GetManagedModulesAsync(cts.Token);
+                if (PowerShellCenterService.ModulesProcessLoadsForDiagnostics - modulesBefore != 1)
+                    throw new InvalidOperationException("PowerShell modules TTL cache missed.");
+
+                string temp = Path.Combine(Path.GetTempPath(), "SpankyHistory-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(temp);
+                try
+                {
+                    string path = Path.Combine(temp, "test-history.txt");
+                    var original = Enumerable.Range(0, 14000)
+                        .Select(i => i % 301 == 0 ? "" : "Get-Item -Path C:\\\\Test\\\\Folder" + (i % 13001))
+                        .ToArray();
+                    File.WriteAllLines(path, original, new System.Text.UTF8Encoding(false));
+                    string[] expected = original.TakeLast(10000)
+                        .Reverse().Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Distinct(StringComparer.Ordinal).Reverse().ToArray();
+                    int result = PowerShellCenterService.CompactHistoryFile(path, minimumBytes: 0);
+                    string[] actual = await File.ReadAllLinesAsync(path).ConfigureAwait(false);
+                    if (result != expected.Length || !actual.SequenceEqual(expected) ||
+                        Directory.GetFiles(temp).Length != 1)
+                        throw new InvalidOperationException("Bounded PowerShell history compaction changed semantics.");
+                    if (PowerShellCenterService.CompactHistoryFile(path, minimumBytes: long.MaxValue) != 0)
+                        throw new InvalidOperationException("PowerShell history size gate failed.");
+                }
+                finally { Directory.Delete(temp, recursive: true); }
+                LogService.Info("performance", "POWERSHELL_STATUS_CACHE_SMOKE_OK requests=5 processStarts=1 boundedHistory=true userHistoryUntouched=true");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("POWERSHELL_STATUS_CACHE_SMOKE_FAIL", ex); Environment.Exit(98); }
+            return;
+        }
+
+        if (HasArg(cli, "--chris-titus-auto-policy-smoke"))
+        {
+            try
+            {
+                DateTime now = DateTime.UtcNow;
+                bool due = ChrisTitusIntegrationService.IsAutoUpdateDue(true, true, now.AddHours(-25), now);
+                bool initially = ChrisTitusIntegrationService.IsAutoUpdateDue(true, true, default, now);
+                bool disabled = ChrisTitusIntegrationService.IsAutoUpdateDue(false, true, default, now);
+                bool noUpdate = ChrisTitusIntegrationService.IsAutoUpdateDue(true, false, default, now);
+                bool throttled = ChrisTitusIntegrationService.IsAutoUpdateDue(true, true, now.AddHours(-12), now);
+                if (!due || !initially || disabled || noUpdate || throttled ||
+                    !ChrisTitusIntegrationService.ShouldStartAutomaticInstaller(true, false) ||
+                    ChrisTitusIntegrationService.ShouldStartAutomaticInstaller(false, false) ||
+                    ChrisTitusIntegrationService.ShouldStartAutomaticInstaller(true, true))
+                    throw new InvalidOperationException("Automatic integration update policy invariants failed.");
+                LogService.Info("performance", "CHRIS_TITUS_AUTO_POLICY_SMOKE_OK optIn=true backoff24h=true noWrites=true");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("CHRIS_TITUS_AUTO_POLICY_SMOKE_FAIL", ex); Environment.Exit(97); }
+            return;
+        }
+
+        if (HasArg(cli, "--chris-titus-transaction-smoke"))
+        {
+            try
+            {
+                ChrisTitusIntegrationService.RunStagingTransactionSmoke();
+                LogService.Info("performance", "CHRIS_TITUS_TRANSACTION_SMOKE_OK rollback=true commit=true configRollback=true noNetwork=true");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("CHRIS_TITUS_TRANSACTION_SMOKE_FAIL", ex); Environment.Exit(96); }
+            return;
+        }
+
+        if (HasArg(cli, "--chris-titus-update-smoke"))
+        {
+            try
+            {
+                string a = new string('a', 40);
+                string b = new string('b', 40);
+                if (!ChrisTitusIntegrationService.IsGitHubCommit(a) ||
+                    ChrisTitusIntegrationService.IsGitHubCommit("main") ||
+                    ChrisTitusIntegrationService.IsGitHubCommit(new string('z', 40)) ||
+                    ChrisTitusIntegrationService.HasNewCommit(a, a.ToUpperInvariant()) ||
+                    !ChrisTitusIntegrationService.HasNewCommit(a, b) ||
+                    ChrisTitusIntegrationService.HasNewCommit("../bad", b) ||
+                    !ChrisTitusIntegrationService.IsCurrentManagedInstallation(a, a.ToUpperInvariant(), true) ||
+                    ChrisTitusIntegrationService.IsCurrentManagedInstallation(a, a, false) ||
+                    ChrisTitusIntegrationService.IsCurrentManagedInstallation(a, b, true))
+                    throw new InvalidOperationException("Titus update SHA comparison invariant failed.");
+                LogService.Info("performance", "CHRIS_TITUS_UPDATE_SMOKE_OK pinnedSha=true compare=true independentChecks=true network=false");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("CHRIS_TITUS_UPDATE_SMOKE_FAIL", ex); Environment.Exit(95); }
+            return;
+        }
+
+        if (HasArg(cli, "--spicetify-pinned-stage-smoke"))
+        {
+            try
+            {
+                bool shaValid = SpicetifyService.IsValidGitHubCommit(new string('a', 40)) &&
+                    !SpicetifyService.IsValidGitHubCommit("main") &&
+                    !SpicetifyService.IsValidGitHubCommit(new string('z', 40)) &&
+                    !SpicetifyService.IsValidGitHubCommit("../malicious");
+                bool scriptValid = SpicetifyService.IsValidMarketplaceInstaller(
+                    System.Text.Encoding.UTF8.GetBytes("# valid sample install.ps1\n" + new string('x', 80))) &&
+                    !SpicetifyService.IsValidMarketplaceInstaller(new byte[65]) &&
+                    !SpicetifyService.IsValidMarketplaceInstaller(new byte[524289]) &&
+                    !SpicetifyService.IsValidMarketplaceInstaller([1, 2, 3]);
+                if (!shaValid || !scriptValid)
+                    throw new InvalidOperationException("Pinned Marketplace script safety validation failed.");
+                LogService.Info("performance", "SPICETIFY_PINNED_STAGE_SMOKE_OK sha=true sizeBounds=true nulReject=true network=false writes=false");
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("SPICETIFY_PINNED_STAGE_SMOKE_FAIL", ex); Environment.Exit(94); }
             return;
         }
 
@@ -1612,9 +3262,7 @@ public sealed partial class App : Application
             try
             {
                 string[] sections = { "system", "gpu", "memory", "storage", "network", "ui", "update", "privacy", "ai", "defender", "services", "drivers", "tasks" };
-                string[] browsers = { "Firefox", "Chrome", "Edge", "Brave", "Opera", "Opera GX", "Vivaldi" };
                 var recommended = sections.SelectMany(x => CatalogService.GetTweaks(x))
-                    .Concat(browsers.SelectMany(x => CatalogService.GetTweaks("browsers", x)))
                     .Where(x => x.Recommended)
                     .GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
                     .Select(g => g.First())
@@ -1660,15 +3308,42 @@ public sealed partial class App : Application
                 if (system.Any(x => x.Id.Equals("sys.startupdelay", StringComparison.OrdinalIgnoreCase))) throw new InvalidOperationException("Startup Delay is still in System tweaks.");
                 var privacy = CatalogService.GetTweaks("privacy");
                 if (privacy.Any(x => x.Id.StartsWith("sec.", StringComparison.OrdinalIgnoreCase))) throw new InvalidOperationException("Privacy still exposes sec.* hardening.");
-                string[] sections = { "system", "gpu", "memory", "storage", "network", "ui", "update", "privacy", "ai", "defender", "services", "drivers", "tasks" };
-                string[] browsers = { "Firefox", "Chrome", "Edge", "Brave", "Opera", "Opera GX", "Vivaldi" };
-                var all = sections.SelectMany(x => CatalogService.GetTweaks(x))
-                    .Concat(browsers.SelectMany(x => CatalogService.GetTweaks("browsers", x)))
+                var sources = CatalogService.EnumerateTweakSources();
+                string[] requiredSources =
+                {
+                    "system|", "gpu|", "memory|", "storage|", "network|",
+                    "components|Služby", "components|Ovladače", "components|Task Scheduler",
+                    "ui|", "update|", "privacy|", "ai|", "defender|"
+                };
+                var sourceKeys = sources
+                    .Select(x => x.Section + "|" + (x.Sub ?? string.Empty))
+                    .ToArray();
+                var duplicateSourceKeys = sourceKeys
+                    .GroupBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .Where(g => g.Count() > 1)
+                    .Select(g => g.Key)
+                    .ToArray();
+                if (duplicateSourceKeys.Length > 0)
+                    throw new InvalidOperationException("Duplicate tweak catalog sources: " + string.Join(",", duplicateSourceKeys));
+
+                var missingSources = requiredSources
+                    .Where(required => !sourceKeys.Contains(required, StringComparer.OrdinalIgnoreCase))
+                    .ToArray();
+                if (missingSources.Length > 0)
+                    throw new InvalidOperationException("Required tweak catalog sources missing: " + string.Join(",", missingSources));
+
+                var emptySources = sources
+                    .Select(x => new { Source = x, Tweaks = CatalogService.GetTweaks(x.Section, x.Sub) })
+                    .Where(x => x.Tweaks.Count == 0)
+                    .Select(x => x.Source.Section + "|" + (x.Source.Sub ?? string.Empty))
+                    .ToArray();
+                if (emptySources.Length > 0)
+                    throw new InvalidOperationException("Tweak catalog sources unexpectedly empty: " + string.Join(",", emptySources));
+
+                var all = sources
+                    .SelectMany(x => CatalogService.GetTweaks(x.Section, x.Sub))
                     .ToArray();
                 var recommended = all.Where(x => x.Recommended).ToArray();
-
-                if (CatalogService.EnumerateTweakSources().Count < 20)
-                    throw new InvalidOperationException("Data-driven tweak registry is unexpectedly incomplete.");
 
                 var registryTweaks = all.Where(x =>
                         x.RegistryHive.HasValue &&
@@ -1769,7 +3444,9 @@ public sealed partial class App : Application
         StartupDiagnostics.Mark("MainWindow.Created");
         if (crashLoopStartupTask != null)
             await crashLoopStartupTask;
-        _window.Activate();
+        IsSmokeUi = smokeMode;
+        if (smokeMode) ShowSmokeWindowWithoutActivation(_window);
+        else _window.Activate();
         StartupDiagnostics.Mark("Window.Activated");
         long windowActivatedMs = StartupDiagnostics.ElapsedMilliseconds;
 
@@ -1786,21 +3463,6 @@ public sealed partial class App : Application
             SafeTaskService.Forget(RunHardwareChangeMonitorStartAsync(_lifetimeCts.Token), "startup", "Hardware change monitor start");
             SafeTaskService.Forget(RunPendingTransactionRecoveryAsync(_lifetimeCts.Token), "startup", "Pending transaction recovery");
             SafeTaskService.Forget(IdlePrewarmService.RunAsync(_lifetimeCts.Token), "startup", "Idle prewarm");
-        }
-
-        if (HasArg(cli, "--powershell-prewarm-smoke") && _window is MainWindow powerShellPrewarmMw)
-        {
-            try
-            {
-                await powerShellPrewarmMw.RunPowerShellPrewarmSmokeAsync();
-                Environment.Exit(0);
-            }
-            catch (Exception ex)
-            {
-                LogService.Error("POWERSHELL_PREWARM_SMOKE_FAIL", ex);
-                Environment.Exit(74);
-            }
-            return;
         }
 
         if (HasArg(cli, "--powershell-center-smoke") && _window is MainWindow powerShellCenterMw)
@@ -1824,6 +3486,27 @@ public sealed partial class App : Application
             catch (Exception ex) { LogService.Error("LIVE_METRICS_LIFECYCLE_SMOKE_FAIL", ex); Environment.Exit(73); }
             return;
         }
+        if (HasArg(cli, "--overview-status-smoke") && _window is MainWindow overviewStatusMw)
+        {
+            try { await Task.Delay(500); await overviewStatusMw.RunOverviewStatusSmokeAsync(); Environment.Exit(0); }
+            catch (Exception ex) { LogService.Error("OVERVIEW_STATUS_SMOKE_FAIL", ex); Environment.Exit(75); }
+            return;
+        }
+        if (HasArg(cli, "--activity-ui-smoke") && _window is MainWindow activityUiMw)
+        {
+            try
+            {
+                await Task.Delay(500);
+                await activityUiMw.RunActivityUiPopulationSmokeAsync();
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("activity", "ACTIVITY_UI_POPULATION_SMOKE_FAIL", ex);
+                Environment.Exit(105);
+            }
+            return;
+        }
         if (HasArg(cli, "--navigation-cache-smoke") && _window is MainWindow navigationMw)
         {
             try
@@ -1836,24 +3519,79 @@ public sealed partial class App : Application
             catch (Exception ex) { LogService.Error("NAVIGATION_CACHE_REPEAT_SMOKE_FAIL", ex); Environment.Exit(73); }
             return;
         }
+        if (HasArg(cli, "--system-pinned-host-smoke") && _window is MainWindow pinnedSystemMw)
+        {
+            try
+            {
+                await Task.Delay(500);
+                await pinnedSystemMw.RunSystemDeferredRenderSmokeAsync();
+                LogService.Info("performance", "SYSTEM_PINNED_HOST_SMOKE_OK");
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("performance", "SYSTEM_PINNED_HOST_SMOKE_FAIL", ex);
+                Environment.Exit(76);
+            }
+            return;
+        }
+        if (HasArg(cli, "--storage-advisor-lazy-smoke") && _window is MainWindow lazyStorageMw)
+        {
+            try
+            {
+                await lazyStorageMw.RunStorageAdvisorLazySmokeAsync();
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("storage", "STORAGE_ADVISOR_LAZY_SMOKE_FAIL", ex);
+                Environment.Exit(93);
+            }
+            return;
+        }
+        if (HasArg(cli, "--context-menu-lazy-smoke") && _window is MainWindow lazyContextMenuMw)
+        {
+            try
+            {
+                await lazyContextMenuMw.RunContextMenuLazyRenderSmokeAsync();
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("ui", "CONTEXT_MENU_LAZY_RENDER_SMOKE_FAIL", ex);
+                Environment.Exit(92);
+            }
+            return;
+        }
         if (HasArg(cli, "--release-ui-smoke") && _window is MainWindow releaseUiMw)
         {
             try
             {
-                static async Task RunGateAsync(string gate, Func<Task> action)
+                int completedUiGates = 0;
+                async Task RunGateAsync(string gate, Func<Task> action)
                 {
                     var sw = System.Diagnostics.Stopwatch.StartNew();
                     await action();
+                    completedUiGates++;
                     LogService.Info("release-ui-smoke", $"{gate}_OK ms={sw.ElapsedMilliseconds}");
                 }
 
-                // Match the standalone UI smoke startup settle once for the whole bundle.
+                // Allow the startup XAML work to settle before measuring cache navigation.
                 await Task.Delay(500);
                 await RunGateAsync("DRIVERS_UI_SMOKE", releaseUiMw.RunDriversUiSmokeAsync);
                 await RunGateAsync("TASK_SCHEDULER_UI_SMOKE", releaseUiMw.RunTaskSchedulerUiSmokeAsync);
                 await RunGateAsync("STARTUP_RENDER_SMOKE", releaseUiMw.RunStartupRenderSmokeAsync);
+                await RunGateAsync("ACTIVITY_SNAPSHOT_SMOKE", async () =>
+                {
+                    LogService.Info("performance", ActivityProcessSnapshotService.RunRankingBenchmark());
+                    await ActivityProcessSnapshotService.RunCacheSmokeAsync();
+                });
+                await RunGateAsync("ACTIVITY_UI_POPULATION_SMOKE", releaseUiMw.RunActivityUiPopulationSmokeAsync);
                 await RunGateAsync("POWER_RENDER_SMOKE", releaseUiMw.RunPowerRenderSmokeAsync);
                 await RunGateAsync("NAV_TAIL_SMOKE", releaseUiMw.RunNavigationTailLatencySmokeAsync);
+                await RunGateAsync("NAV_HOST_REUSE_SMOKE", releaseUiMw.RunNavigationHostReuseSmokeAsync);
+                await RunGateAsync("FIXER_HERO_LIFECYCLE_SMOKE", releaseUiMw.RunFixerDeferredHeroSmokeAsync);
+                await RunGateAsync("NAV_DETACHED_DEADLINE_SMOKE", releaseUiMw.RunDetachedHostCleanupUnderNavigationSmokeAsync);
                 await RunGateAsync("AI_PROGRESS_UI_SMOKE", () => releaseUiMw.RunAiProgressUiSmokeAsync());
                 await RunGateAsync("AI_RUNTIME_PAGE_CACHE_SMOKE", releaseUiMw.RunAiRuntimePageCacheSmokeAsync);
                 await RunGateAsync("NIC_UI_SMOKE", releaseUiMw.RunNicUiSmokeAsync);
@@ -1866,6 +3604,7 @@ public sealed partial class App : Application
                     LogService.Info("release-ui-smoke", releaseUiMw.RunCommunityCursorPopupLifecycleSmoke());
                     return Task.CompletedTask;
                 });
+                await RunGateAsync("COMMUNITY_CURSOR_LAYOUT_SMOKE", releaseUiMw.RunCommunityCursorLayoutSmokeAsync);
                 await RunGateAsync("CURSOR_WATCHDOG_SMOKE", () =>
                 {
                     LogService.Info("release-ui-smoke", CursorThemeService.RunWatchdogNonMutatingSmoke());
@@ -1873,6 +3612,8 @@ public sealed partial class App : Application
                 });
                 await RunGateAsync("STORAGE_TOOLS_CACHE_SMOKE", releaseUiMw.RunStorageToolsCacheSmokeAsync);
                 await RunGateAsync("OVERVIEW_CACHE_SMOKE", releaseUiMw.RunOverviewCacheSmokeAsync);
+                await RunGateAsync("OVERVIEW_STATUS_SMOKE", releaseUiMw.RunOverviewStatusSmokeAsync);
+                await RunGateAsync("OVERVIEW_GAUGE_HOTPATH_SMOKE", () => releaseUiMw.RunOverviewGaugeHotpathSmokeAsync());
                 await RunGateAsync("LIVE_METRICS_LIFECYCLE_SMOKE", releaseUiMw.RunLiveMetricsLifecycleSmokeAsync);
                 await RunGateAsync("OVERVIEW_ACTIVE_TWEAK_MERGE_SMOKE", () =>
                 {
@@ -1880,11 +3621,16 @@ public sealed partial class App : Application
                     return Task.CompletedTask;
                 });
                 await RunGateAsync("GPU_DEFERRED_TWEAK_SMOKE", releaseUiMw.RunGpuDeferredTweakSmokeAsync);
+                await RunGateAsync("GPU_STALE_CACHE_REUSE_SMOKE", releaseUiMw.RunGpuStaleCacheNavigationSmokeAsync);
+                await RunGateAsync("STORAGE_STALE_CACHE_REUSE_SMOKE", releaseUiMw.RunStorageStaleCacheNavigationSmokeAsync);
                 await RunGateAsync("PROGRESS_PREDICATE_SMOKE", releaseUiMw.RunProgressPredicateSmokeAsync);
                 await RunGateAsync("POWERSHELL_CENTER_SMOKE", releaseUiMw.RunPowerShellCenterSmokeAsync);
+                // Real WinUI Invoke on the production reset button factory, but
+                // with an isolated in-memory setting; never touch user motion.txt.
+                await RunGateAsync("GLASS_MOTION_RESET_UI_SMOKE", releaseUiMw.RunGlassMotionResetUiSmokeAsync);
                 // Theme render runs last because it intentionally rebuilds shell/page caches.
                 await RunGateAsync("THEME_RENDER_SMOKE", releaseUiMw.RunThemeRenderSmokeAsync);
-                LogService.Info("release-ui-smoke", "RELEASE_UI_SMOKE_BUNDLE_OK count=21");
+                LogService.Info("release-ui-smoke", $"RELEASE_UI_SMOKE_BUNDLE_OK count={completedUiGates}");
                 Environment.Exit(0);
             }
             catch (Exception ex)
@@ -1959,6 +3705,12 @@ public sealed partial class App : Application
             return;
         }
 
+        if (HasArg(cli, "--community-cursor-layout-smoke") && _window is MainWindow cursorLayoutMw)
+        {
+            try { await cursorLayoutMw.RunCommunityCursorLayoutSmokeAsync(); Environment.Exit(0); }
+            catch (Exception ex) { LogService.Error("COMMUNITY_CURSOR_LAYOUT_SMOKE_FAIL", ex); Environment.Exit(78); }
+            return;
+        }
         if (HasArg(cli, "--visual-capture-smoke") && _window is MainWindow captureMw)
         {
             try { await captureMw.RunVisualCaptureSmokeAsync(); Environment.Exit(0); }
@@ -1989,7 +3741,13 @@ public sealed partial class App : Application
 
         if (HasArg(cli, "--keyboard-activation-smoke") && _window is MainWindow activationMw)
         {
-            try { await activationMw.RunKeyboardActivationSmokeAsync(); Environment.Exit(0); }
+            try
+            {
+                activationMw.Activate();
+                await Task.Delay(100);
+                await activationMw.RunKeyboardActivationSmokeAsync();
+                Environment.Exit(0);
+            }
             catch (Exception ex) { LogService.Error("KEYBOARD_ACTIVATION_SMOKE_FAIL", ex); Environment.Exit(81); }
             return;
         }
@@ -2005,6 +3763,45 @@ public sealed partial class App : Application
         {
             try { await navigationRaceMw.RunNavigationRaceSmokeAsync(); Environment.Exit(0); }
             catch (Exception ex) { LogService.Error("NAVIGATION_RACE_SMOKE_FAIL", ex); Environment.Exit(83); }
+            return;
+        }
+
+        if (HasArg(cli, "--storage-stale-cache-smoke") && _window is MainWindow storageStaleMw)
+        {
+            try
+            {
+                await Task.Delay(250);
+                await storageStaleMw.RunStorageStaleCacheNavigationSmokeAsync();
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("STORAGE_STALE_CACHE_SMOKE_FAIL", ex); Environment.Exit(99); }
+            return;
+        }
+
+        if (HasArg(cli, "--gpu-stale-cache-smoke") && _window is MainWindow gpuStaleMw)
+        {
+            try
+            {
+                await Task.Delay(250);
+                await gpuStaleMw.RunGpuStaleCacheNavigationSmokeAsync();
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { LogService.Error("GPU_STALE_CACHE_SMOKE_FAIL", ex); Environment.Exit(98); }
+            return;
+        }
+
+        if (HasArg(cli, "--debloat-dialog-filter-smoke") && _window is MainWindow debloatDialogMw)
+        {
+            try
+            {
+                await debloatDialogMw.RunDebloatDialogFilterSmokeAsync();
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("DEBLOAT_DIALOG_FILTER_SMOKE_FAIL", ex);
+                Environment.Exit(95);
+            }
             return;
         }
 
@@ -2044,6 +3841,43 @@ public sealed partial class App : Application
                 if (navigationFailuresAtStart != 0)
                     throw new InvalidOperationException($"Full smoke started with {navigationFailuresAtStart} navigation failure(s).");
                 if (windowActivatedMs > 1500) throw new InvalidOperationException($"Startup audit failed: Window.Activated at {windowActivatedMs} ms.");
+                LogService.Info("regression", fullMw.RunChangelogPagingPolicySmoke());
+                LogService.Info("regression", TweakBatchHistoryService.RunPartialRestoreHistorySmoke());
+                LogService.Info("regression", await LogTailService.RunTailBoundarySmokeAsync());
+                LogService.Info("regression", WallpaperThemeService.RunWallpaperRollbackSmoke());
+                LogService.Info("regression", UserFeatureProfileService.RunFeatureProfileFailClosedSmoke());
+                LogService.Info("regression", FanProfileService.RunFanHeartbeatInputSmoke());
+                LogService.Info("regression", SafePresetProfileService.RunFailClosedPresetSmoke());
+                LogService.Info("regression", AppUninstallService.RunCleanupIdentitySmoke());
+                LogService.Info("regression", UpstreamSourceUpdateService.RunInterruptedSnapshotRecoverySmoke());
+                LogService.Info("regression", await AiCloudProfileService.RunCloudAuthEpochSmokeAsync());
+                LogService.Info("regression", TweakDriftWatchdogService.RunDriftIncompleteSmoke());
+                LogService.Info("regression", GoogleDriveOAuthService.RunSignOutPersistenceSafetySmoke());
+                LogService.Info("regression", UserFeatureProfileService.RunMigrationSafetySmoke());
+                LogService.Info("regression", SelfHealingJsonService.RunQuarantinePreservationSmoke());
+                LogService.Info("regression", await NativeSystemProbeService.RunStorageTemperatureGenerationSmokeAsync());
+                LogService.Info("regression", CursorCommunityPackService.RunCommunityCursorAtomicSmoke());
+                LogService.Info("regression", await ProcessRunner.RunProcessQueueDeadlineSmokeAsync());
+                LogService.Info("regression", WingetUpdateService.RunPackageIdSafetySmoke());
+                LogService.Info("regression", await OperationCoordinator.RunQueueDeadlineSmokeAsync());
+                LogService.Info("regression", GpuDriverService.RunResumeIntegritySmoke());
+                LogService.Info("regression", ArchiveSafetyService.RunArchiveEntrySmoke());
+                LogService.Info("regression", ArchiveSafetyService.RunExtractedTreeSmoke());
+                LogService.Info("regression", FileSecurityService.RunTrustedSignerIdentitySmoke());
+                LogService.Info("regression", SpankyExtensionService.RunManifestValidationSmoke());
+                LogService.Info("regression", await AtomicFileService.RunAtomicReplacementSmokeAsync());
+                LogService.Info("regression", LauncherProcessMatcher.RunStartupMatchingSmoke());
+                LogService.Info("regression", HardwareTelemetryBridgeService.RunBridgeRecoveryTaskSmoke());
+                LogService.Info("regression", HardwareTelemetryBridgeService.RunBridgeSnapshotAtomicRetrySmoke());
+                LogService.Info("regression", GpuNvapiUsageService.RunInteropPolicySmoke());
+                LogService.Info("regression", DiskPdhUsageService.RunRetryPolicySmoke());
+                LogService.Info("regression", BufferbloatDiagnosticService.RunPolicySmoke());
+                LogService.Info("regression", SelectedFixerChecksService.RunPolicySmoke());
+                LogService.Info("regression", FirmwareMemoryReadinessService.RunPolicySmoke());
+                LogService.Info("regression", GameReadyCompatibilityService.RunPolicySmoke());
+                LogService.Info("regression", WindowsDefaultGuardService.RunPolicySmoke());
+                LogService.Info("regression", WindowsDefaultGuardService.RunJournalContentionSmoke());
+                LogService.Info("regression", BluetoothAdapterHealthService.RunPolicySmoke());
                 LogService.Info($"STARTUP_AUDIT_OK activatedMs={windowActivatedMs}");
                 await Task.Delay(350);
                 LogService.Info("FULL_SMOKE_STARTUP_OK");
@@ -2077,6 +3911,8 @@ public sealed partial class App : Application
                 }
                 await ProcessRunner.RunHardeningSmokeAsync();
                 LogService.Info("PROCESS_HARDENING_SMOKE_OK");
+                // Real isolated atomic file I/O; no real motion.txt preference changes.
+                LogService.Info("regression", UiMotionSettingsService.RunIsolatedPersistenceSmoke());
                 FullPhase("process-hardening");
                 await fullMw.RunDirtyRefreshCoalescingSmokeAsync();
                 await fullMw.RunSectionSmokeTestAsync();
@@ -2097,9 +3933,9 @@ public sealed partial class App : Application
                 LogService.Info(MainWindow.RunDnsApplyPlanSmoke());
                 LogService.Info(DnsProfileService.RunReadbackGuardSmoke());
                 LogService.Info(StartupManagerService.RunDeltaSmoke());
+                LogService.Info(StartupManagerService.RunRegistryMoveCollisionSmoke());
                 await fullMw.RunMtuReadbackSmokeAsync();
                 await fullMw.RunMtuProbeSmokeAsync();
-                await fullMw.RunBrowserCacheSmokeAsync();
                 await fullMw.RunSpicetifyDeferredRenderSmokeAsync();
                 await fullMw.RunRestoreCacheSmokeAsync();
                 await fullMw.RunPageCacheLifetimeSmokeAsync();
@@ -2220,40 +4056,26 @@ public sealed partial class App : Application
             return;
         }
 
+        if (HasArg(cli, "--glass-stability-smoke") && _window is MainWindow glassStabilityMw)
+        {
+            try { await Task.Delay(350); await glassStabilityMw.RunGlassStabilitySmokeAsync(); Environment.Exit(0); }
+            catch (Exception ex) { LogService.Error("GLASS_STABILITY_SMOKE_FAIL", ex); Environment.Exit(55); }
+            return;
+        }
+        if (HasArg(cli, "--desktop-update-notification-smoke") && _window is MainWindow updatePopupMw)
+        {
+            await Task.Delay(350);
+            await updatePopupMw.RunDesktopUpdateNotificationSmokeAsync();
+            LogService.Info("DESKTOP_UPDATE_NOTIFICATION_SMOKE_OK");
+            Environment.Exit(0);
+            return;
+        }
+
         if (HasArg(cli, "--dialog-lifecycle-smoke") && _window is MainWindow dialogMw)
         {
             await Task.Delay(250);
             LogService.Info(dialogMw.RunDialogLifecycleSmoke());
             Environment.Exit(0);
-            return;
-        }
-
-        if (HasArg(cli, "--firefox-update-smoke"))
-        {
-            try
-            {
-                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
-                var first = await FirefoxUpdateService.GetStatusAsync(forceRefresh: true, cts.Token);
-                if (!first.Installed || string.IsNullOrWhiteSpace(first.InstalledVersion) ||
-                    string.IsNullOrWhiteSpace(first.LatestVersion) || string.IsNullOrWhiteSpace(first.ExePath))
-                    throw new InvalidOperationException("Firefox updater status je neúplný.");
-                if (!System.IO.File.Exists(first.ExePath))
-                    throw new InvalidOperationException("Firefox updater vrátil neexistující firefox.exe.");
-                if (FirefoxUpdateService.IsNewer(first.InstalledVersion, first.LatestVersion))
-                    throw new InvalidOperationException("Firefox version comparison je obráceně.");
-                var cached = await FirefoxUpdateService.GetStatusAsync(token: cts.Token);
-                if (!string.Equals(first.InstalledVersion, cached.InstalledVersion, StringComparison.Ordinal) ||
-                    !string.Equals(first.LatestVersion, cached.LatestVersion, StringComparison.Ordinal))
-                    throw new InvalidOperationException("Firefox updater cache vrátila jiný stav.");
-                LogService.Info("firefox",
-                    $"FIREFOX_UPDATE_SMOKE_OK installed={first.InstalledVersion} latest={first.LatestVersion} update={first.UpdateAvailable}");
-                Environment.Exit(0);
-            }
-            catch (Exception ex)
-            {
-                LogService.Error("firefox", "FIREFOX_UPDATE_SMOKE_FAIL", ex);
-                Environment.Exit(87);
-            }
             return;
         }
 
@@ -2511,6 +4333,21 @@ public sealed partial class App : Application
             return;
         }
 
+        if (HasArg(cli, "--background-activity-cache-smoke") && _window is MainWindow backgroundCacheMw)
+        {
+            try
+            {
+                await Task.Delay(500);
+                await backgroundCacheMw.RunBackgroundActivityCacheSmokeAsync();
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("BACKGROUND_ACTIVITY_CACHE_SMOKE_FAIL", ex);
+                Environment.Exit(94);
+            }
+            return;
+        }
         if (HasArg(cli, "--startup-render-smoke") && _window is MainWindow startupRenderMw)
         {
             try
@@ -2659,32 +4496,50 @@ public sealed partial class App : Application
             {
                 using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
                 bool managed = ShortcutAppearanceService.ManagedOverlayConfiguredForSmoke();
+                string realStateBefore = ShortcutAppearanceService.ReadRealOverlayFingerprintForSmoke();
                 int[] before = System.Diagnostics.Process.GetProcessesByName("explorer").Select(p => { try { return p.Id; } finally { p.Dispose(); } }).OrderBy(x => x).ToArray();
 
-                bool iconChanged = ShortcutAppearanceService.EnsureTransparentIconForSmoke();
-                bool restartGuardReady = !managed || ShortcutAppearanceService.PrepareManagedOverlayForExplorerRestart();
-                if (!restartGuardReady)
-                    throw new InvalidOperationException("Managed shortcut overlay restart guard is not ready.");
-
-                bool migrated = false;
-                if (managed)
-                    migrated = await ShortcutAppearanceService.MigrateLegacyShortcutOverlayAsync(cts.Token);
+                // Release smoke must never run the production icon write, legacy HKLM/HKCU
+                // migration or shell/icon-cache refresh against the live user profile.
+                string isolated = await ShortcutAppearanceService.RunIsolatedPersistenceSmokeAsync();
+                if (!isolated.Contains("actualUserSettingsTouched=false", StringComparison.Ordinal) ||
+                    !isolated.Contains("shellRefreshSkipped=true", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Isolated shortcut overlay smoke did not confirm isolation.");
 
                 await Task.Delay(350, cts.Token);
                 int[] after = System.Diagnostics.Process.GetProcessesByName("explorer").Select(p => { try { return p.Id; } finally { p.Dispose(); } }).OrderBy(x => x).ToArray();
                 if (managed && !before.SequenceEqual(after))
                     throw new InvalidOperationException($"Startup shortcut migration restarted Explorer. before={string.Join(',', before)} after={string.Join(',', after)}");
 
-                string iconPath = ShortcutAppearanceService.TransparentIconPathForSmoke;
-                string escaped = iconPath.Replace("'", "''");
-                string ps = "Add-Type -AssemblyName System.Drawing;$i=[System.Drawing.Icon]::new('" + escaped + "');$b=$i.ToBitmap();$n=0;$maxA=0;for($y=0;$y -lt $b.Height;$y++){for($x=0;$x -lt $b.Width;$x++){$a=$b.GetPixel($x,$y).A;if($a -ne 0){$n++};if($a -gt $maxA){$maxA=$a}}};$w=$b.Width;$h=$b.Height;$b.Dispose();$i.Dispose();if($w -ne 32 -or $h -ne 32 -or $n -gt 1 -or $maxA -gt 1){exit 2}else{'ICON_OK'}";
-                var decode = await ProcessRunner.RunAsync("powershell.exe",
-                    "-NoLogo -NoProfile -NonInteractive -Command \"" + ps.Replace("\"", "\\\"") + "\"",
-                    TimeSpan.FromSeconds(15), cts.Token);
-                if (!decode.Success || !decode.StdOut.Contains("ICON_OK", StringComparison.Ordinal))
-                    throw new InvalidOperationException("Transparent shortcut ICO Windows decode failed: " + (decode.StdErr + decode.StdOut).Trim());
+                string realStateAfter = ShortcutAppearanceService.ReadRealOverlayFingerprintForSmoke();
+                if (!string.Equals(realStateBefore, realStateAfter, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Shortcut overlay smoke changed real shell state.");
 
-                LogService.Info("explorer", $"SHORTCUT_OVERLAY_SMOKE_OK managed={managed} iconChanged={iconChanged} restartGuard={restartGuardReady} migrated={migrated} explorerStable={!managed || before.SequenceEqual(after)} bytes={new FileInfo(iconPath).Length}");
+                string iconProbe = Path.Combine(Path.GetTempPath(), "SpankyShortcutIconSmoke-" + Guid.NewGuid().ToString("N") + ".ico");
+                try
+                {
+                    await File.WriteAllBytesAsync(iconProbe, ShortcutAppearanceService.BuildTransparentIconForSmoke(), cts.Token);
+                    using var transparentIcon = new System.Drawing.Icon(iconProbe);
+                    using var iconBitmap = transparentIcon.ToBitmap();
+                    int nonTransparentPixels = 0;
+                    int maximumAlpha = 0;
+                    for (int y = 0; y < iconBitmap.Height; y++)
+                        for (int x = 0; x < iconBitmap.Width; x++)
+                        {
+                            int alpha = iconBitmap.GetPixel(x, y).A;
+                            if (alpha != 0) nonTransparentPixels++;
+                            maximumAlpha = Math.Max(maximumAlpha, alpha);
+                        }
+                    if (iconBitmap.Width != 32 || iconBitmap.Height != 32 ||
+                        nonTransparentPixels > 1 || maximumAlpha > 1)
+                        throw new InvalidOperationException("Transparent shortcut ICO Windows decode failed.");
+                }
+                finally
+                {
+                    try { if (File.Exists(iconProbe)) File.Delete(iconProbe); } catch { }
+                }
+
+                LogService.Info("explorer", $"SHORTCUT_OVERLAY_SMOKE_OK managed={managed} explorerStable={!managed || before.SequenceEqual(after)} realStateUnchanged=true realIconWrites=0 temporaryIconDecode=true {isolated}");
                 Environment.Exit(0);
             }
             catch (Exception ex)
@@ -2721,6 +4576,14 @@ public sealed partial class App : Application
                 Environment.Exit(0);
             }
             catch (Exception ex) { LogService.Error("PERF_TRACE_SMOKE_FAIL", ex); Environment.Exit(50); }
+            return;
+        }
+
+        if (HasArg(cli, "--overview-gauge-hotpath-smoke") && _window is MainWindow gaugeMw)
+        {
+            await Task.Delay(350);
+            try { await gaugeMw.RunOverviewGaugeHotpathSmokeAsync(includeNativeBenchmark: true); Environment.Exit(0); }
+            catch (Exception ex) { LogService.Error("OVERVIEW_GAUGE_HOTPATH_SMOKE_FAIL", ex); Environment.Exit(86); }
             return;
         }
 
@@ -2810,6 +4673,37 @@ public sealed partial class App : Application
         }
     }
 
+    private static async Task CheckIntegrationUpdatesAfterStartupAsync(System.Threading.CancellationToken token)
+    {
+        try
+        {
+            // Never impact first paint. Discovery is read-only; actual automatic
+            // installation requires explicit per-integration opt-in in the UI.
+            await Task.Delay(15000, token).ConfigureAwait(false);
+            var updates = await ChrisTitusIntegrationService.CheckForUpdatesAsync(token).ConfigureAwait(false);
+            if (updates.ProfileUpdate || updates.TitusUpdate)
+                LogService.Info("integrations", "CHRIS_TITUS_UPDATE_AVAILABLE profile=" +
+                    updates.ProfileUpdate + " titusAi=" + updates.TitusUpdate);
+            await ChrisTitusIntegrationService.RunOptInAutoUpdatesAsync(updates, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            LogService.Info("integrations", "Deferred GitHub update discovery unavailable: " + ex.Message);
+        }
+    }
+
+    private static async Task MigrateContextCommandsDeferredAsync(System.Threading.CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(5000, token).ConfigureAwait(false);
+            await Task.Run(ContextMenuService.MigrateExistingNativeCommands, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) { LogService.Error("shell", "Native context command migration failed", ex); }
+    }
+
     private static async Task RunSpicetifyStatusSmokeCoreAsync()
     {
         using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -2850,13 +4744,8 @@ public sealed partial class App : Application
         if (!ZoicwareToolsService.HasHardenedTrustedInstallerRuntime(runtimeText))
             throw new InvalidOperationException("Runtime TrustedInstaller hardening nebyl aplikován.");
 
-        string escaped = runtime.Replace("'", "''");
-        string ps = "$e=$null;$t=$null;[System.Management.Automation.Language.Parser]::ParseFile('" + escaped + "',[ref]$t,[ref]$e)|Out-Null;if($e.Count){$e|ForEach-Object{$_.Message};exit 2}else{'PARSE_OK'}";
-        var parse = await ProcessRunner.RunAsync("powershell.exe",
-            "-NoLogo -NoProfile -NonInteractive -Command \"" + ps.Replace("\"", "\\\"") + "\"",
-            TimeSpan.FromSeconds(15), cts.Token);
-        if (!parse.Success || !parse.StdOut.Contains("PARSE_OK", StringComparison.Ordinal))
-            throw new InvalidOperationException("Hardened RemoveWindowsAI runtime PowerShell parse failed: " + (parse.StdErr + parse.StdOut).Trim());
+        cts.Token.ThrowIfCancellationRequested();
+        PowerShellSyntaxService.ValidateFile(runtime);
 
         LogService.Info("ai", $"AI_RUNTIME_HARDENING_SMOKE_OK sourceBytes={sourceText.Length} runtimeBytes={runtimeText.Length} parse=ok");
     }
@@ -2867,6 +4756,8 @@ public sealed partial class App : Application
         InstalledAppService.InvalidateCache();
         InstalledAppService.ClearPersistentLogoCacheForSmoke();
         InstalledAppService.RunLogoRebaseSmoke();
+        MainWindow.RunDebloatSummaryEqualitySmoke();
+        SpankyhoOptimizer.ViewModels.DebloatRowViewModel.RunIconUpdatePolicySmoke();
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var summary = await InstalledAppService.GetInstalledAsync(cts.Token, forceRefresh: true, includeLogos: false);
         long freshSummaryMs = sw.ElapsedMilliseconds;
@@ -2912,7 +4803,11 @@ public sealed partial class App : Application
         InstalledAppService.ClearMemoryCacheForSmoke();
         var staleDisplay = InstalledAppService.TryGetDisplaySnapshot()
             ?? throw new InvalidOperationException("Debloater stale display snapshot was not available.");
+        var hydratedMemory = InstalledAppService.TryGetMemorySnapshot(includeLogos: false);
+        if (!ReferenceEquals(staleDisplay, hydratedMemory))
+            throw new InvalidOperationException("Persisted Debloat display snapshot was not published to first-paint memory cache.");
         bool staleRefreshPending = InstalledAppService.SummaryNeedsBackgroundRefresh;
+        LogService.Info("debloat", "DEBLOAT_DISPLAY_HYDRATION_SMOKE_OK firstPaintMemory=true staleRefreshPending=" + staleRefreshPending);
         sw.Restart();
         var staleFreshSummary = await InstalledAppService.GetInstalledAsync(
             cts.Token, forceRefresh: true, includeLogos: false);
@@ -2992,6 +4887,9 @@ public sealed partial class App : Application
                     throw new InvalidOperationException("Hardware identity cache mismatch.");
             });
 
+            await RunAsync("SERVICE_RECOMMENDED_FAST_READ_SMOKE",
+                ServiceCatalogService.RunRecommendedStartModesSmokeAsync);
+
             await RunAsync("STORAGE_PROBE_SMOKE", async () =>
             {
                 var disks = await Task.Run(NativeSystemProbeService.ReadStorage);
@@ -3015,6 +4913,12 @@ public sealed partial class App : Application
             {
                 using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(20));
                 await WriteAheadTransactionService.RunPersistenceSmokeAsync(cts.Token);
+            });
+
+            await RunAsync("WORKER_IPC_OUTPUT_PATH_SMOKE", () =>
+            {
+                LogService.Info("regression", WorkerIpcSecurity.RunOutputPathSmoke());
+                return Task.CompletedTask;
             });
 
             await RunAsync("WORKER_IPC_CLEANUP_SMOKE", () =>
@@ -3079,10 +4983,60 @@ public sealed partial class App : Application
                 await NetworkTransitionStateService.RunSingleFlightSmokeAsync(cts.Token);
             });
 
+            await RunAsync("AI_CLOUD_UPLOAD_DEDUP_SMOKE", () =>
+            {
+                DateTime nowUtc = DateTime.UtcNow;
+                if (!AiCloudProfileService.CanReuseRecentUpload("payload", "payload", "authA", "authA",
+                        nowUtc.AddMinutes(-1), nowUtc))
+                    throw new InvalidOperationException("Recent matching cloud upload should be reusable.");
+                if (AiCloudProfileService.CanReuseRecentUpload("payload", "payload", "authA", "authB",
+                        nowUtc.AddMinutes(-1), nowUtc))
+                    throw new InvalidOperationException("Cloud upload cache reused a different OAuth session.");
+                if (AiCloudProfileService.CanReuseRecentUpload("payload", "changed", "authA", "authA",
+                        nowUtc.AddMinutes(-1), nowUtc))
+                    throw new InvalidOperationException("Cloud upload cache reused changed content.");
+                if (AiCloudProfileService.CanReuseRecentUpload("payload", "payload", "authA", "authA",
+                        nowUtc.AddMinutes(-4), nowUtc))
+                    throw new InvalidOperationException("Cloud upload cache should expire.");
+                if (AiCloudProfileService.CanReuseRecentUpload("payload", "payload", "authA", "authA",
+                        nowUtc.AddMinutes(1), nowUtc))
+                    throw new InvalidOperationException("Future-dated cloud upload cache should not be reusable.");
+                return Task.CompletedTask;
+            });
+            await RunAsync("USER_SCOPED_CACHE_CLOCK_SKEW_SMOKE", () =>
+            {
+                string key = "release-cache-clock-skew-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    UserScopedCacheService.Write(key, "healthy");
+                    if (!UserScopedCacheService.TryRead<string>(key, TimeSpan.FromMinutes(10), out var initial) ||
+                        initial != "healthy")
+                        throw new InvalidOperationException("User-scoped cache initial write/read mismatch.");
+
+                    UserScopedCacheService.BackdateForSmoke(key, TimeSpan.FromMinutes(-5));
+                    if (UserScopedCacheService.TryRead<string>(key, TimeSpan.FromMinutes(10), out _))
+                        throw new InvalidOperationException("Future-dated user cache should not be accepted.");
+
+                    UserScopedCacheService.BackdateForSmoke(key, TimeSpan.FromMinutes(11));
+                    if (UserScopedCacheService.TryRead<string>(key, TimeSpan.FromMinutes(10), out _))
+                        throw new InvalidOperationException("Expired user cache should not be accepted.");
+                }
+                finally
+                {
+                    UserScopedCacheService.Remove(key);
+                }
+                return Task.CompletedTask;
+            });
             await RunAsync("MEMORY_COMPRESSION_CACHE_SMOKE", async () =>
             {
                 using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(20));
                 await WindowsActions.RunMemoryCompressionCacheSmokeAsync(cts.Token);
+            });
+
+            await RunAsync("MEMORY_NATIVE_STATE_SMOKE", async () =>
+            {
+                LogService.Info("performance", MemoryStateService.RunSnapshotReadBenchmark());
+                await MemoryStateService.RunWarmFirstPaintSmokeAsync();
             });
 
             await RunAsync("HARDWARE_MEMORY_TRIM_CACHE_SMOKE", async () =>
@@ -3103,11 +5057,12 @@ public sealed partial class App : Application
                 bool? before = await WindowsActions.GetUsbSelectiveSuspendDisabledAsync(cts.Token);
                 if (!before.HasValue)
                     throw new InvalidOperationException("USB Selective Suspend AC state could not be read.");
-                await WindowsActions.SetUsbSelectiveSuspendAsync(before.Value, cts.Token);
+                // Release smoke must never write a live power plan, even with
+                // an unchanged value. Confirm repeated native read-back only.
                 bool? after = await WindowsActions.GetUsbSelectiveSuspendDisabledAsync(cts.Token);
                 if (after != before)
-                    throw new InvalidOperationException($"USB Selective Suspend round-trip mismatch: before={before} after={after}.");
-                LogService.Info("release-smoke", $"USB_SELECTIVE_SUSPEND_STATE disabled={after.Value}");
+                    throw new InvalidOperationException($"USB Selective Suspend read-only readback mismatch: before={before} after={after}.");
+                LogService.Info("release-smoke", $"USB_SELECTIVE_SUSPEND_STATE disabled={after.Value} readOnly=true");
             });
 
             await RunAsync("FIREWALL_STATE_CACHE_SMOKE", () =>
@@ -3157,20 +5112,109 @@ public sealed partial class App : Application
                 if (results.Count < 8)
                     throw new InvalidOperationException($"DNS benchmark returned too few smoke resolvers: {results.Count}.");
                 if (alive.Length == 0)
-                    throw new InvalidOperationException("DNS benchmark received no resolver responses.");
-                if (alive.Any(x => x.AverageMs <= 0 || x.Successful <= 0))
-                    throw new InvalidOperationException("DNS benchmark returned invalid latency data.");
-                LogService.Info("release-smoke",
-                    $"DNS_BENCHMARK_SMOKE_OK total={results.Count} alive={alive.Length} best={alive[0].Name} avgMs={alive[0].AverageMs:0.0}");
+                {
+                    // The test machine may explicitly deny direct port-53
+                    // sockets while ordinary OS name resolution still works.
+                    // Never change its DNS/firewall just to pass a release.
+                    // Only a NATIVE AccessDenied verdict, not timeout or a
+                    // resolver regression, permits an honest Unsupported.
+                    bool blockedByHostPolicy = false;
+                    try
+                    {
+                        using var check = new System.Net.Sockets.TcpClient();
+                        using var deadline = new System.Threading.CancellationTokenSource(
+                            TimeSpan.FromSeconds(2));
+                        await check.ConnectAsync(System.Net.IPAddress.Parse("1.1.1.1"),
+                            53, deadline.Token);
+                    }
+                    catch (System.Net.Sockets.SocketException ex)
+                        when (ex.SocketErrorCode ==
+                            System.Net.Sockets.SocketError.AccessDenied)
+                    {
+                        blockedByHostPolicy = true;
+                    }
+                    catch (OperationCanceledException) { /* not an access-denied verdict */ }
+                    catch (System.Net.Sockets.SocketException) { /* not access denied */ }
+                    if (!blockedByHostPolicy)
+                        throw new InvalidOperationException(
+                            "DNS benchmark received no resolver responses without confirmed host access denial.");
+                    LogService.Info("release-smoke",
+                        $"DNS_BENCHMARK_SMOKE_UNSUPPORTED reason=host-denies-public-tcp53 " +
+                        $"catalog={results.Count} alive=0 resolver-performance-unverified=true");
+                }
+                else
+                {
+                    if (alive.Any(x => x.AverageMs <= 0 || x.Successful <= 0))
+                        throw new InvalidOperationException("DNS benchmark returned invalid latency data.");
+                    LogService.Info("release-smoke",
+                        $"DNS_BENCHMARK_SMOKE_OK total={results.Count} alive={alive.Length} best={alive[0].Name} avgMs={alive[0].AverageMs:0.0}");
+                }
             });
 
             await RunAsync("DATA_ROOT_RECOGNITION_SMOKE", () =>
             {
                 LogService.Info("release-smoke", DataRootCleanupService.RunRecognitionSmoke());
+                // Pure synthetic denial/cancellation checks; no actual MMDevices
+                // keys or saved audio ownership journal are touched by smoke.
+                LogService.Info("release-smoke",
+                    AudioEnhancementsTweakService.RunPermissionFlowSmoke());
                 return Task.CompletedTask;
             });
 
-            LogService.Info("release-smoke", "RELEASE_SERVICE_SMOKE_BUNDLE_OK count=23");
+            await RunAsync("FAN_AGENT_JSON_CONTEXT_SMOKE", () =>
+            {
+                LogService.Info("release-smoke",
+                    FanAgentJsonBenchmark.RunCompatibilityAndPerformanceSmoke());
+                return Task.CompletedTask;
+            });
+            await RunAsync("HARDWARE_TELEMETRY_READ_CACHE_SMOKE", () =>
+            {
+                LogService.Info("release-smoke",
+                    HardwareTelemetrySnapshotReadCache.RunAtomicFreshnessSmoke());
+                return Task.CompletedTask;
+            });
+            await RunAsync("HARDWARE_BRIDGE_MUTEX_THREAD_AFFINITY_SMOKE", () =>
+            {
+                LogService.Info("release-smoke",
+                    HardwareTelemetryBridgeService.RunBridgeMutexThreadAffinitySmoke());
+                return Task.CompletedTask;
+            });
+            await RunAsync("HARDWARE_BRIDGE_MUTEX_CANCEL_SMOKE", () =>
+            {
+                LogService.Info("release-smoke",
+                    HardwareTelemetryBridgeService.RunBridgeMutexCancellationSmoke());
+                return Task.CompletedTask;
+            });
+            await RunAsync("HARDWARE_BRIDGE_DIRECTORY_REUSE_SMOKE", () =>
+            {
+                LogService.Info("release-smoke",
+                    HardwareTelemetryBridgeService.RunBridgeDirectoryHotpathSmoke());
+                return Task.CompletedTask;
+            });
+            await RunAsync("FAN_TICK_PHASE_METRICS_SMOKE", () =>
+            {
+                LogService.Info("release-smoke", FanAgentStageMetrics.RunPolicySmoke());
+                return Task.CompletedTask;
+            });
+
+            await RunAsync("FAN_TRAY_DEDUP_SMOKE", () =>
+            {
+                LogService.Info("release-smoke", FanTrayIconService.RunNotificationDedupSmoke());
+                LogService.Info("release-smoke", FanTrayIconService.RunHoverGdiResourceSmoke());
+                LogService.Info("release-smoke", FanTrayIconService.RunHoverGlassOpacitySmoke());
+                // Assert the native GDI handle count stabilizes after lazy
+                // initialization, rather than merely allowing small growth.
+                LogService.Info("release-smoke", FanTrayIconService.RunHoverGdiResourceSmoke(
+                    steadyState: true));
+                LogService.Info("release-smoke", FanProfileService.RunTrayCompositionBenchmark());
+                return Task.CompletedTask;
+            });
+
+
+
+            // Passive RuntimeHost resource sampler was removed. This bundle
+            // still verifies the functional services and their safe readbacks.
+            LogService.Info("release-smoke", "RELEASE_SERVICE_SMOKE_BUNDLE_OK count=29");
             return 0;
         }
         catch (Exception ex)

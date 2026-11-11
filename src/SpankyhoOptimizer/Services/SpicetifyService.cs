@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -264,19 +267,84 @@ public static partial class SpicetifyService
         return await InstallMarketplaceAsync(token).ConfigureAwait(false);
     }
 
+    // Strict SHA parsing is shared by the offline smoke test, so upstream
+    // execution cannot silently fall back to a moving 'main' script.
+    internal static bool IsValidGitHubCommit(string? sha) =>
+        sha is { Length: 40 } && sha.All(Uri.IsHexDigit);
+
+    internal static bool IsValidMarketplaceInstaller(byte[] script) =>
+        script.Length is >= 64 and <= 524288 && !script.Contains((byte)0);
+
+    private static async Task<(string Commit, byte[] Script)> DownloadPinnedMarketplaceInstallerAsync(CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        using var commitRequest = new HttpRequestMessage(HttpMethod.Get,
+            "https://api.github.com/repos/spicetify/marketplace/commits/main");
+        commitRequest.Headers.UserAgent.ParseAdd("SpankyhoOptimizer/MarketplaceInstaller");
+        using var commitResponse = await SpotifyHttp.SendAsync(commitRequest, timeout.Token).ConfigureAwait(false);
+        commitResponse.EnsureSuccessStatusCode();
+        await using var commitStream = await commitResponse.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+        using var commitJson = await JsonDocument.ParseAsync(commitStream, cancellationToken: timeout.Token).ConfigureAwait(false);
+        string? sha = commitJson.RootElement.GetProperty("sha").GetString();
+        if (!IsValidGitHubCommit(sha))
+            throw new InvalidDataException("GitHub nevrátil ověřitelný commit Marketplace.");
+
+        string url = "https://raw.githubusercontent.com/spicetify/marketplace/" + sha + "/resources/install.ps1";
+        using var scriptResponse = await SpotifyHttp.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
+            .ConfigureAwait(false);
+        scriptResponse.EnsureSuccessStatusCode();
+        if (scriptResponse.Content.Headers.ContentLength > 524288)
+            throw new InvalidDataException("Instalační skript Marketplace překračuje bezpečný limit.");
+        await using var input = await scriptResponse.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+        using var memory = new MemoryStream();
+        byte[] buffer = new byte[16384];
+        int read;
+        while ((read = await input.ReadAsync(buffer, timeout.Token).ConfigureAwait(false)) > 0)
+        {
+            if (memory.Length + read > 524288)
+                throw new InvalidDataException("Instalační skript Marketplace překračuje bezpečný limit.");
+            memory.Write(buffer, 0, read);
+        }
+        byte[] script = memory.ToArray();
+        if (!IsValidMarketplaceInstaller(script))
+            throw new InvalidDataException("Marketplace installer nebyl platný PowerShell text.");
+        LogService.Info("spicetify", "MARKETPLACE_SCRIPT_PINNED commit=" + sha[..12] +
+            " sha256=" + Convert.ToHexString(SHA256.HashData(script)) + " bytes=" + script.Length);
+        return (sha, script);
+    }
+
     public static async Task<ProcessResult> InstallMarketplaceAsync(CancellationToken token)
     {
         string exe = ResolveExecutable();
         if (!File.Exists(exe)) return new ProcessResult(2, string.Empty, "Spicetify není nainstalované.");
-        string dir = Path.GetDirectoryName(exe) ?? string.Empty;
-        string command = "$env:Path='" + EscapePs(dir) + ";'+$env:Path; " +
-            "$u='https://raw.githubusercontent.com/spicetify/marketplace/main/resources/install.ps1'; " +
-            "Invoke-Expression (Invoke-WebRequest -UseBasicParsing $u).Content";
-
-        ProcessResult install = await UnelevatedProcessRunner.RunAsync(
-            "powershell.exe",
-            "-NoProfile -ExecutionPolicy Bypass -Command \"" + command.Replace("\"", "`\"") + "\"",
-            TimeSpan.FromMinutes(4), token).ConfigureAwait(false);
+        // Fetch with .NET over HTTPS, pin the exact upstream commit and stage
+        // a bounded script locally. Never Invoke-Expression a moving URL.
+        string stage = Path.Combine(Path.GetTempPath(), "SpankyMarketplace-" + Guid.NewGuid().ToString("N"));
+        ProcessResult install;
+        try
+        {
+            var (commit, bytes) = await DownloadPinnedMarketplaceInstallerAsync(token).ConfigureAwait(false);
+            Directory.CreateDirectory(stage);
+            string source = Path.Combine(stage, "marketplace-install.ps1");
+            string wrapper = Path.Combine(stage, "invoke-marketplace.ps1");
+            await File.WriteAllBytesAsync(source, bytes, token).ConfigureAwait(false);
+            string dir = Path.GetDirectoryName(exe) ?? string.Empty;
+            string entry = "$ErrorActionPreference='Stop'; $env:Path='" + EscapePs(dir) +
+                ";'+$env:Path; & '" + EscapePs(source) + "'";
+            await File.WriteAllTextAsync(wrapper, entry, new UTF8Encoding(true), token).ConfigureAwait(false);
+            LogService.Info("spicetify", "MARKETPLACE_EXEC_PINNED commit=" + commit[..12]);
+            install = await UnelevatedProcessRunner.RunAsync(
+                "powershell.exe", "-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"" + wrapper + "\"",
+                TimeSpan.FromMinutes(4), token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex) { return new ProcessResult(1, string.Empty, ex.Message); }
+        finally
+        {
+            try { if (Directory.Exists(stage)) Directory.Delete(stage, true); }
+            catch (Exception ex) { LogService.Info("spicetify", "Marketplace staging cleanup: " + ex.Message); }
+        }
         if (!install.Success) return install;
 
         InvalidateStatusCache();

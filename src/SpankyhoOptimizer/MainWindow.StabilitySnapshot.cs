@@ -14,13 +14,14 @@ public sealed partial class MainWindow
 {
 
 
-    private async Task AddSnapshotCenterAsync()
+    private async Task AddSnapshotCenterAsync(int generation, CancellationToken token)
     {
         // Snapshot enumeration touches disk. Run it before creating WinUI controls so callers
         // immediately yield and the Restore navigation frame is not charged for this module.
         var loadPerf = System.Diagnostics.Stopwatch.StartNew();
-        var snapshots = await Task.Run(() => SystemStateSnapshotService.ListRecent(12));
-        if (_section != "restore") return;
+        var snapshots = await Task.Run(() => SystemStateSnapshotService.ListRecent(12), token);
+        token.ThrowIfCancellationRequested();
+        if (generation != _navigationGeneration || _section != "restore") return;
         LogService.Info("performance", $"SNAPSHOT_CENTER_DATA ms={loadPerf.ElapsedMilliseconds} count={snapshots.Length}");
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -45,6 +46,7 @@ public sealed partial class MainWindow
             ProcessRunner.Open(System.IO.Path.Combine(LogService.Root, "snapshots"));
             return Task.CompletedTask;
         }));
+        if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "restore") return;
         ContentStack.Children.Add(BuildSectionSurface("restore", "System Snapshot V2",
             "Tweaky, služby, Task Scheduler a power plan", actions));
 
@@ -77,6 +79,7 @@ public sealed partial class MainWindow
         }
         if (snapshots.Length == 0)
             host.Children.Add(new TextBlock { Text = "Zatím není vytvořený žádný systémový snapshot.", Foreground = TextSecondaryBrush() });
+        if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "restore") return;
         ContentStack.Children.Add(BuildSectionSurface("restore", "Snapshot historie", "Obnovit lze jen vybrané části", host));
     }
 

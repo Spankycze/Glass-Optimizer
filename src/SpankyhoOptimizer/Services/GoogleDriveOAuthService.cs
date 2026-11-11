@@ -39,6 +39,80 @@ public static class GoogleDriveOAuthService
     private static DateTime CachedClientIdWriteUtc = DateTime.MinValue;
     private static DateTime CachedTokenWriteUtc = DateTime.MinValue;
     private static string _lastError = string.Empty;
+    private static long _tokenEpoch;
+
+    // Read-only fence for asynchronous cloud operations. SignOut advances this
+    // epoch after durable token deletion, invalidating in-flight cloud work.
+    internal static long ReadSessionEpoch()
+    {
+        lock (CacheGate) return _tokenEpoch;
+    }
+
+    // Keep durable token mutation under the same lock as logout. A refresh
+    // started before logout must never re-create a token after sign-out.
+    private static bool TryCommitTokenMutation(long? expectedEpoch, Action commit)
+    {
+        lock (CacheGate)
+        {
+            if (expectedEpoch.HasValue && expectedEpoch.Value != _tokenEpoch)
+                return false;
+            commit();
+            return true;
+        }
+    }
+
+    private static void DeleteTokenAndClearCache(string path, Action clear)
+    {
+        // A sharing violation/ACL error means sign-out did NOT succeed.
+        // Never clear in-memory state while leaving a usable token on disk.
+        // File.Exists can hide access errors by returning false, therefore
+        // attempt deletion directly and trust only its completion.
+        File.Delete(path);
+        clear();
+    }
+
+    internal static string RunSignOutPersistenceSafetySmoke()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "spanky-google-signout-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "synthetic-token.dat");
+            File.WriteAllText(path, "fake-token-for-test-only");
+            bool cleared = false;
+            bool deletionRejected = false;
+            using (var held = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                try { DeleteTokenAndClearCache(path, () => cleared = true); }
+                catch (IOException) { deletionRejected = true; }
+            }
+            if (!deletionRejected || cleared || !File.Exists(path))
+                throw new InvalidOperationException(
+                    "Google sign-out falsely reported success despite a locked token file.");
+
+            DeleteTokenAndClearCache(path, () => cleared = true);
+            if (!cleared || File.Exists(path))
+                throw new InvalidOperationException("Google sign-out did not delete the token first.");
+
+            long before;
+            lock (CacheGate) before = _tokenEpoch;
+            bool saved = false;
+            if (!TryCommitTokenMutation(before, () => saved = true) || !saved)
+                throw new InvalidOperationException("Current Google token generation cannot persist.");
+            lock (CacheGate) _tokenEpoch++;
+            saved = false;
+            if (TryCommitTokenMutation(before, () => saved = true) || saved)
+                throw new InvalidOperationException("A late token refresh resurrected a signed-out session.");
+
+            return "GOOGLE_SIGNOUT_PERSISTENCE_SMOKE_OK lockedTokenPreserved=true " +
+                "successfulDeletion=true staleRefreshRejected=true liveCredentialsTouched=0";
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
 
     public static string LoadClientId()
     {
@@ -77,13 +151,27 @@ public static class GoogleDriveOAuthService
         }
     }
 
-    public static void SignOut()
+    public static bool SignOut()
     {
-        try { if (File.Exists(TokenPath)) File.Delete(TokenPath); } catch { }
         lock (CacheGate)
         {
-            CachedToken = null;
-            CachedTokenWriteUtc = DateTime.MinValue;
+            try
+            {
+                DeleteTokenAndClearCache(TokenPath, () =>
+                {
+                    CachedToken = null;
+                    CachedTokenWriteUtc = DateTime.MinValue;
+                    _tokenEpoch++;
+                });
+                _lastError = string.Empty;
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _lastError = "Odhlášení Google Drive se nezdařilo; uložený token je stále aktivní.";
+                LogService.Error("google-drive", _lastError, ex);
+                return false;
+            }
         }
     }
 
@@ -95,6 +183,8 @@ public static class GoogleDriveOAuthService
     }
     public static async Task<bool> SignInAsync(CancellationToken token)
     {
+        long signInEpoch;
+        lock (CacheGate) signInEpoch = _tokenEpoch;
         string clientId = LoadClientId();
         if (string.IsNullOrWhiteSpace(clientId))
         {
@@ -170,16 +260,31 @@ public static class GoogleDriveOAuthService
         if (string.IsNullOrWhiteSpace(access))
             return false;
 
-        SaveToken(new GoogleTokenState(access, refresh, DateTime.UtcNow.AddSeconds(expires - 60)));
+        if (!SaveToken(
+                new GoogleTokenState(access, refresh, DateTime.UtcNow.AddSeconds(expires - 60)),
+                signInEpoch))
+        {
+            _lastError = "Google přihlášení bylo přerušeno odhlášením.";
+            return false;
+        }
         _lastError = string.Empty;
         return true;
     }
     public static async Task<string?> GetAccessTokenAsync(CancellationToken token)
     {
-        GoogleTokenState? saved = LoadToken();
+        GoogleTokenState? saved;
+        long tokenEpoch;
+        lock (CacheGate)
+        {
+            saved = LoadToken();
+            tokenEpoch = _tokenEpoch;
+        }
         if (saved == null) return null;
         if (saved.ExpiresUtc > DateTime.UtcNow.AddMinutes(1))
-            return saved.AccessToken;
+        {
+            lock (CacheGate)
+                return tokenEpoch == _tokenEpoch ? saved.AccessToken : null;
+        }
         if (string.IsNullOrWhiteSpace(saved.RefreshToken))
             return null;
 
@@ -199,12 +304,13 @@ public static class GoogleDriveOAuthService
         string access = doc.RootElement.GetProperty("access_token").GetString() ?? string.Empty;
         int expires = doc.RootElement.TryGetProperty("expires_in", out JsonElement e) ? e.GetInt32() : 3600;
         if (string.IsNullOrWhiteSpace(access)) return null;
-        SaveToken(saved with { AccessToken = access, ExpiresUtc = DateTime.UtcNow.AddSeconds(expires - 60) });
-        return access;
+        return SaveToken(
+            saved with { AccessToken = access, ExpiresUtc = DateTime.UtcNow.AddSeconds(expires - 60) },
+            tokenEpoch) ? access : null;
     }
     private static int GetFreeLoopbackPort()
     {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        using var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
@@ -214,17 +320,17 @@ public static class GoogleDriveOAuthService
     private static string Base64Url(byte[] data) =>
         Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
-    private static void SaveToken(GoogleTokenState token)
+    private static bool SaveToken(GoogleTokenState token, long? expectedEpoch = null)
     {
-        Directory.CreateDirectory(StateDir);
-        byte[] plain = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(token));
-        byte[] protectedBytes = ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser);
-        File.WriteAllBytes(TokenPath, protectedBytes);
-        lock (CacheGate)
+        return TryCommitTokenMutation(expectedEpoch, () =>
         {
+            Directory.CreateDirectory(StateDir);
+            byte[] plain = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(token));
+            byte[] protectedBytes = ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser);
+            AtomicFileService.WriteAllBytesAtomic(TokenPath, protectedBytes);
             CachedToken = token;
             CachedTokenWriteUtc = File.GetLastWriteTimeUtc(TokenPath);
-        }
+        });
     }
 
     private static GoogleTokenState? LoadToken()

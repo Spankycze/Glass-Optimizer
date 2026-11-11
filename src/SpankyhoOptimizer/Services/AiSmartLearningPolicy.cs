@@ -23,7 +23,7 @@ public static class AiSmartLearningPolicy
         if (lastSampleUtc == DateTime.MinValue || lastWorkload != workload)
             return true;
         if (nowUtc < lastSampleUtc)
-            return false;
+            return true;
         return nowUtc - lastSampleUtc >= MinimumSampleInterval(workload);
     }
 
@@ -48,7 +48,7 @@ public static class AiSmartLearningPolicy
         if (lastPersistUtc == DateTime.MinValue)
             return true;
         if (nowUtc < lastPersistUtc)
-            return false;
+            return true;
         return nowUtc - lastPersistUtc >= PersistenceInterval(workload);
     }
 }

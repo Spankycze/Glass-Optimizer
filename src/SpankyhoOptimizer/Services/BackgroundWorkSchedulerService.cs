@@ -16,22 +16,28 @@ public static class BackgroundWorkSchedulerService
     private static long _lastDurationMs;
 
     public static BackgroundWorkSnapshot Snapshot() =>
-        new(Volatile.Read(ref _pending), Volatile.Read(ref _active), _current, Interlocked.Read(ref _lastDurationMs));
+        new(Volatile.Read(ref _pending), Volatile.Read(ref _active),
+            Volatile.Read(ref _current), Interlocked.Read(ref _lastDurationMs));
 
     public static async Task RunAsync(string name, Func<CancellationToken, Task> action, CancellationToken token = default)
     {
         Interlocked.Increment(ref _pending);
-        await Gate.WaitAsync(token);
-        Interlocked.Decrement(ref _pending);
+        try { await Gate.WaitAsync(token).ConfigureAwait(false); }
+        finally { Interlocked.Decrement(ref _pending); }
         Interlocked.Exchange(ref _active, 1);
-        _current = name;
-        var sw = Stopwatch.StartNew();
-        try { await action(token); }
+        Volatile.Write(ref _current, name);
+        // Timestamp arithmetic avoids allocating a Stopwatch per background job.
+        long started = Stopwatch.GetTimestamp();
+        try { await action(token).ConfigureAwait(false); }
         finally
         {
-            sw.Stop(); Interlocked.Exchange(ref _lastDurationMs, sw.ElapsedMilliseconds);
-            _current = null; Interlocked.Exchange(ref _active, 0); Gate.Release();
-            if (sw.ElapsedMilliseconds > 1000) LogService.Info("scheduler", $"BACKGROUND name={name} ms={sw.ElapsedMilliseconds}");
+            long durationMs = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            Interlocked.Exchange(ref _lastDurationMs, durationMs);
+            Volatile.Write(ref _current, null);
+            Interlocked.Exchange(ref _active, 0);
+            Gate.Release();
+            if (durationMs > 1000)
+                LogService.Info("scheduler", $"BACKGROUND name={name} ms={durationMs}");
         }
     }
 }

@@ -1,10 +1,20 @@
-﻿using System;
+using System;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace SpankyhoOptimizer.Models;
+
+public enum TweakExecutionState
+{
+    Unsupported,
+    NotApplied,
+    Applied,
+    Failed,
+    RequiresRestart,
+    RequiresElevation
+}
 
 public sealed class TweakDefinition : INotifyPropertyChanged
 {
@@ -17,6 +27,7 @@ public sealed class TweakDefinition : INotifyPropertyChanged
     private bool _isBusy;
 
     private string _status = "Načítám…";
+    private TweakExecutionState _executionState = TweakExecutionState.NotApplied;
     private DateTime? _lastVerifiedUtc;
     private string? _lastError;
     private int _revision;
@@ -49,6 +60,9 @@ public sealed class TweakDefinition : INotifyPropertyChanged
     public bool SupportsRevert => true;
     public bool CanRestoreOriginal => RevertAsync != null;
     public string RevertMode { get; init; } = "BooleanState";
+    // Only the audited single-DWORD factory may opt into automatic
+    // crash-time recovery. Complex custom tweakers remain manual-only.
+    public bool SupportsSafeCrashRecovery { get; init; }
     public bool RequiresAdmin { get; init; } = true;
     public int MinWindowsBuild { get; init; } = 19041;
     public string HardwareScope { get; init; } = "Any";
@@ -97,6 +111,8 @@ public sealed class TweakDefinition : INotifyPropertyChanged
             if (_current != value)
             {
                 _current = value;
+                if (_executionState is TweakExecutionState.NotApplied or TweakExecutionState.Applied)
+                    _executionState = value ? TweakExecutionState.Applied : TweakExecutionState.NotApplied;
                 Interlocked.Increment(ref _revision);
                 OnChanged("Current");
                 OnChanged("IsDirty");
@@ -135,6 +151,7 @@ public sealed class TweakDefinition : INotifyPropertyChanged
                 _isLoaded = value;
                 Interlocked.Increment(ref _revision);
                 OnChanged("IsLoaded");
+                OnChanged("IsDirty");
             }
         }
     }
@@ -181,6 +198,23 @@ public sealed class TweakDefinition : INotifyPropertyChanged
                 _status = value;
                 Interlocked.Increment(ref _revision);
                 OnChanged("Status");
+            }
+        }
+    }
+
+    public TweakExecutionState ExecutionState
+    {
+        get
+        {
+            return _executionState;
+        }
+        set
+        {
+            if (_executionState != value)
+            {
+                _executionState = value;
+                Interlocked.Increment(ref _revision);
+                OnChanged("ExecutionState");
             }
         }
     }

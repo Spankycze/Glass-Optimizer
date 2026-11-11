@@ -49,15 +49,18 @@ internal static class AuthenticodeVerifier
         public IntPtr CertContext;
     }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("wintrust.dll", ExactSpelling = true, CharSet = CharSet.Unicode)]
     private static extern uint WinVerifyTrust(
         IntPtr hwnd,
         ref Guid actionId,
         ref WinTrustData trustData);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("wintrust.dll", ExactSpelling = true)]
     private static extern IntPtr WTHelperProvDataFromStateData(IntPtr stateData);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("wintrust.dll", ExactSpelling = true)]
     private static extern IntPtr WTHelperGetProvSignerFromChain(
         IntPtr providerData,
@@ -65,9 +68,11 @@ internal static class AuthenticodeVerifier
         [MarshalAs(UnmanagedType.Bool)] bool counterSigner,
         uint counterSignerIndex);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("wintrust.dll", ExactSpelling = true)]
     private static extern IntPtr WTHelperGetProvCertFromChain(IntPtr signer, uint certIndex);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern uint CertGetNameStringW(
         IntPtr certContext,

@@ -29,6 +29,8 @@ public sealed partial class MainWindow
         public ToggleSwitch VsCode { get; set; } = null!;
         public ToggleSwitch AdvancedStartup { get; set; } = null!;
         public ToggleSwitch RestartExplorer { get; set; } = null!;
+        public ToggleSwitch TaskManager { get; set; } = null!;
+        public ToggleSwitch DeviceManager { get; set; } = null!;
         public bool Busy { get; set; }
     }
 
@@ -51,7 +53,35 @@ public sealed partial class MainWindow
         bool NewFile,
         bool VsCode,
         bool AdvancedStartup,
-        bool RestartExplorer);
+        bool RestartExplorer,
+        bool TaskManager,
+        bool DeviceManager);
+
+    private static IEnumerable<ToggleSwitch> ContextMenuToggles(ContextMenuUiState state)
+    {
+        yield return state.Classic;
+        yield return state.Terminal;
+        yield return state.Cmd;
+        yield return state.PowerShell;
+        yield return state.AdminPowerShell;
+        yield return state.AdminTerminal;
+        yield return state.Notepad;
+        yield return state.CopyPath;
+        yield return state.Take;
+        yield return state.Sha256;
+        yield return state.NewFile;
+        yield return state.VsCode;
+        yield return state.AdvancedStartup;
+        yield return state.RestartExplorer;
+        yield return state.TaskManager;
+        yield return state.DeviceManager;
+    }
+
+    private static void SetContextMenuTogglesEnabled(ContextMenuUiState state, bool enabled)
+    {
+        foreach (ToggleSwitch item in ContextMenuToggles(state))
+            item.IsEnabled = enabled;
+    }
 
     private static ContextMenuStateSnapshot ReadContextMenuStateSnapshot() => new(
         ContextMenuService.ClassicMenuEnabled(),
@@ -67,7 +97,9 @@ public sealed partial class MainWindow
         ContextMenuService.NewEmptyFileEnabled(),
         ContextMenuService.VsCodeEnabled(),
         ContextMenuService.AdvancedStartupEnabled(),
-        ContextMenuService.RestartExplorerEnabled());
+        ContextMenuService.RestartExplorerEnabled(),
+        ContextMenuService.TaskManagerEnabled(),
+        ContextMenuService.DeviceManagerEnabled());
 
     private void ApplyContextMenuStateSnapshot(ContextMenuUiState state, ContextMenuStateSnapshot snapshot)
     {
@@ -88,6 +120,8 @@ public sealed partial class MainWindow
             state.VsCode.IsOn = snapshot.VsCode;
             state.AdvancedStartup.IsOn = snapshot.AdvancedStartup;
             state.RestartExplorer.IsOn = snapshot.RestartExplorer;
+            state.TaskManager.IsOn = snapshot.TaskManager;
+            state.DeviceManager.IsOn = snapshot.DeviceManager;
             _contextMenuUiCacheAt = DateTime.UtcNow;
         }
         finally
@@ -96,28 +130,37 @@ public sealed partial class MainWindow
         }
     }
 
+    private int _contextMenuRefreshVersion;
+
     private async Task RefreshContextMenuUiStateAsync(ContextMenuUiState state, bool force = false)
     {
+        int generation = _navigationGeneration;
+        int refreshVersion = System.Threading.Interlocked.Increment(ref _contextMenuRefreshVersion);
         if (!force && DateTime.UtcNow - _contextMenuUiCacheAt <= ContextMenuStateFreshness)
         {
-            state.Busy = false;
+            if (refreshVersion == System.Threading.Volatile.Read(ref _contextMenuRefreshVersion))
+                state.Busy = false;
             return;
         }
 
         try
         {
             ContextMenuStateSnapshot snapshot = await Task.Run(ReadContextMenuStateSnapshot).ConfigureAwait(false);
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            bool queued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                if (_section == "ui")
+                if (refreshVersion != System.Threading.Volatile.Read(ref _contextMenuRefreshVersion)) return;
+                if (generation == _navigationGeneration && _section == "ui" && ReferenceEquals(_contextMenuUiCache, state))
                     ApplyContextMenuStateSnapshot(state, snapshot);
                 else
                     state.Busy = false;
             });
+            if (!queued && refreshVersion == System.Threading.Volatile.Read(ref _contextMenuRefreshVersion))
+                state.Busy = false;
         }
         catch (Exception ex)
         {
-            state.Busy = false;
+            if (refreshVersion == System.Threading.Volatile.Read(ref _contextMenuRefreshVersion))
+                state.Busy = false;
             LogService.Error("ui", "Context Menu state refresh failed", ex);
         }
     }
@@ -154,6 +197,8 @@ public sealed partial class MainWindow
             state.VsCode.IsOn = ContextMenuService.VsCodeEnabled();
             state.AdvancedStartup.IsOn = ContextMenuService.AdvancedStartupEnabled();
             state.RestartExplorer.IsOn = ContextMenuService.RestartExplorerEnabled();
+            state.TaskManager.IsOn = ContextMenuService.TaskManagerEnabled();
+            state.DeviceManager.IsOn = ContextMenuService.DeviceManagerEnabled();
             _contextMenuUiCacheAt = now;
             return true;
         }
@@ -175,7 +220,7 @@ public sealed partial class MainWindow
         var contextState = new ContextMenuUiState();
         var intro = new StackPanel { Spacing = 5 };
         intro.Children.Add(new TextBlock { Text = "Pravé tlačítko ve Windows 11", FontSize = 17, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
-        intro.Children.Add(new TextBlock { Text = "Vlastní položky se přidávají bezpečně jen pro aktuálního uživatele. Systémová rozšíření se pouze zapínají nebo vypínají, nemažou se.", Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap });
+        intro.Children.Add(new TextBlock { Text = "Doporučený režim: plné menu hned napoprvé, transparency ON a Power / systémové nástroje v hover submenu bez duplicit.", Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap });
         ContentStack.Children.Add(BuildSectionHero("ui", "Explorer", "Kontextové menu", "Klasické menu, vlastní příkazy a správa rozšíření", null));
         ContentStack.Children.Add(BuildSectionSurface("ui", "Kontextové menu", "Bez mazání systémových souborů", intro));
         long introMs = perf.ElapsedMilliseconds;
@@ -252,6 +297,14 @@ public sealed partial class MainWindow
         restartExplorer.Toggled += (_, _) => SafeTaskService.Forget(
             ApplyContextToggleAsync(contextState, restartExplorer, ContextMenuService.SetRestartExplorer, ContextMenuService.RestartExplorerEnabled, restartExplorer: true),
             "ui", "Context menu restart Explorer toggle");
+        var taskManager = new ToggleSwitch { IsOn = false, OnContent = "", OffContent = "", VerticalAlignment = VerticalAlignment.Center };
+        taskManager.Toggled += (_, _) => SafeTaskService.Forget(
+            ApplyContextToggleAsync(contextState, taskManager, ContextMenuService.SetTaskManager, ContextMenuService.TaskManagerEnabled, restartExplorer: true),
+            "ui", "Context menu Task Manager toggle");
+        var deviceManager = new ToggleSwitch { IsOn = false, OnContent = "", OffContent = "", VerticalAlignment = VerticalAlignment.Center };
+        deviceManager.Toggled += (_, _) => SafeTaskService.Forget(
+            ApplyContextToggleAsync(contextState, deviceManager, ContextMenuService.SetDeviceManager, ContextMenuService.DeviceManagerEnabled, restartExplorer: true),
+            "ui", "Context menu Device Manager toggle");
         contextState.Classic = classic;
         contextState.Terminal = terminal;
         contextState.Cmd = cmd;
@@ -266,14 +319,24 @@ public sealed partial class MainWindow
         contextState.VsCode = vsCode;
         contextState.AdvancedStartup = advancedStartup;
         contextState.RestartExplorer = restartExplorer;
+        contextState.TaskManager = taskManager;
+        contextState.DeviceManager = deviceManager;
         long toggleMs = perf.ElapsedMilliseconds - introMs;
 
+        // Keep the two everyday settings immediately visible. Other commands
+        // remain accessible but do not create a long scrolling wall of rows.
+        var essentialToggles = new StackPanel { Spacing = 8 };
+        ContentStack.Children.Add(BuildSectionSurface("ui", "Hlavní nastavení", "Klasické menu", essentialToggles));
         var toggles = new StackPanel { Spacing = 8 };
-        ContentStack.Children.Add(BuildSectionSurface("ui", "Rychlé položky", "Vlastní příkazy pro soubory a složky", toggles));
+        var advancedCard = BuildDashboardExpander(
+            "Další příkazy", "Terminál, PowerShell, soubory a systémové nástroje", toggles);
+        ContentStack.Children.Add(advancedCard);
         long rowsMs = perf.ElapsedMilliseconds - introMs - toggleMs;
 
         var maintenance = new StackPanel { Spacing = 8 };
-        ContentStack.Children.Add(BuildSectionSurface("ui", "Správa a údržba", "Handlery • synchronizace stavu • Explorer • obnova", maintenance));
+        var maintenanceCard = BuildDashboardExpander(
+            "Správa a údržba", "Ověření • rozšíření • Explorer • obnova", maintenance);
+        ContentStack.Children.Add(maintenanceCard);
         long maintenanceMs = perf.ElapsedMilliseconds - introMs - toggleMs - rowsMs;
         for (int i = cacheStart; i < ContentStack.Children.Count; i++) contextState.Elements.Add(ContentStack.Children[i]);
         _contextMenuUiCache = contextState;
@@ -283,43 +346,63 @@ public sealed partial class MainWindow
         Func<Border>[] contextMenuRowFactories =
         {
             () => ContextMenuToggleRow("Klasické celé kontextové menu", "Vrátí klasické plné menu místo zkráceného Windows 11 menu.", classic),
-            () => ContextMenuToggleRow("Otevřít Terminal zde", "Přidá Windows Terminal do pravého tlačítka na pozadí složky.", terminal),
-            () => ContextMenuToggleRow("Otevřít CMD zde", "Přidá klasický příkazový řádek otevřený v aktuální složce.", cmd),
-            () => ContextMenuToggleRow("Otevřít PowerShell zde", "Spustí PowerShell přímo v aktuální složce.", powershell),
-            () => ContextMenuToggleRow("PowerShell jako správce zde", "Spustí zvýšený PowerShell v aktuální složce přes UAC.", adminPowerShell, "ADMIN"),
-            () => ContextMenuToggleRow("Terminal jako správce zde", "Spustí Windows Terminal v aktuální složce se zvýšenými právy.", adminTerminal, "ADMIN"),
+            () => ContextMenuToggleRow("Otevřít Terminal zde", "V hover submenu Terminál a PowerShell.", terminal, "HOVER"),
+            () => ContextMenuToggleRow("Otevřít CMD zde", "V hover submenu Terminál a PowerShell.", cmd, "HOVER"),
+            () => ContextMenuToggleRow("Otevřít PowerShell 7 zde", "V hover submenu Terminál a PowerShell.", powershell, "HOVER"),
+            () => ContextMenuToggleRow("PowerShell 7 jako správce", "V hover submenu Terminál a PowerShell, se zvýšenými právy.", adminPowerShell, "HOVER"),
+            () => ContextMenuToggleRow("Terminal jako správce", "V hover submenu Terminál a PowerShell, se zvýšenými právy.", adminTerminal, "HOVER"),
             () => ContextMenuToggleRow("Otevřít v Poznámkovém bloku", "Přidá rychlé otevření libovolného souboru v Notepadu.", notepad),
             () => ContextMenuToggleRow("Kopírovat úplnou cestu", "Přidá rychlé zkopírování celé cesty k vybranému souboru nebo složce.", copyPath),
             () => ContextMenuToggleRow("SHA256 hash", "Vypočítá SHA-256 vybraného souboru přes vestavěný PowerShell příkaz.", sha256),
             () => ContextMenuToggleRow("Nový prázdný soubor", "Vytvoří v aktuální složce nový prázdný .txt soubor s bezpečným číslováním názvu.", newFile),
             () => ContextMenuToggleRow("Otevřít ve VS Code", "Přidá rychlé otevření aktuální složky ve Visual Studio Code.", vsCode),
-            () => ContextMenuToggleRow("Pokročilé spuštění", "Přidá rychlou volbu pro restart do pokročilých možností spuštění Windows.", advancedStartup, "ADMIN"),
-            () => ContextMenuToggleRow("Restart Explorer", "Přidá rychlý restart explorer.exe do kontextového menu.", restartExplorer, "ADMIN"),
+            () => ContextMenuToggleRow("Pokročilé spuštění", "V hover submenu Systémové nástroje.", advancedStartup, "HOVER"),
+            () => ContextMenuToggleRow("Restart Explorer", "V hover submenu Systémové nástroje.", restartExplorer, "HOVER"),
+            () => ContextMenuToggleRow("Správce úloh", "V hover submenu Systémové nástroje.", taskManager, "HOVER"),
+            () => ContextMenuToggleRow("Správce zařízení", "V hover submenu Systémové nástroje.", deviceManager, "HOVER"),
             () => ContextMenuToggleRow("Převzít vlastnictví souboru", "Pokročilá změna vlastníka a oprávnění vybraného souboru.", take, "POKROČILÉ")
         };
         long maxDeferredRowMs = 0;
 
-        void QueueContextMenuRow(int index)
+        void QueueContextMenuRow(int index, bool advancedRequested = false, bool maintenanceRequested = false, Action? rejected = null)
         {
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            // A rejected low-priority enqueue must release the caller's pending
+            // group flag, otherwise re-expanding the card can never retry.
+            bool queued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
+                // Do not allocate invisible advanced command rows on first
+                // navigation. Materialize each group only when first expanded.
                 if (index < contextMenuRowFactories.Length)
                 {
-                    if (toggles.Children.Count == index)
+                    if (index >= 1 && !advancedRequested) return;
+                    var target = index < 1 ? essentialToggles : toggles;
+                    int targetIndex = index < 1 ? index : index - 1;
+                    if (target.Children.Count == targetIndex)
                     {
                         var rowSw = System.Diagnostics.Stopwatch.StartNew();
-                        toggles.Children.Add(contextMenuRowFactories[index]());
+                        target.Children.Add(contextMenuRowFactories[index]());
                         maxDeferredRowMs = Math.Max(maxDeferredRowMs, rowSw.ElapsedMilliseconds);
                         if (rowSw.ElapsedMilliseconds >= 8)
                             LogService.Info("performance", $"CONTEXT_MENU_ROW_DEFERRED index={index} ms={rowSw.ElapsedMilliseconds}");
                     }
-                    QueueContextMenuRow(index + 1);
+                    QueueContextMenuRow(index + 1, advancedRequested, rejected: rejected);
                     return;
                 }
 
-                if (maintenance.Children.Count == 0)
+                if (maintenanceRequested && maintenance.Children.Count == 0)
                 {
                     var maintenanceSw = System.Diagnostics.Stopwatch.StartNew();
+                    maintenance.Children.Add(ActionCard("Vyčistit a optimalizovat", "Zapne klasické plné menu hned na první klik, průhlednost a dvě hover submenu bez duplicit.", "Optimalizovat", async () =>
+                    {
+                        try
+                        {
+                            ContextMenuService.OptimizeContextMenuExperience();
+                            RefreshContextMenuUiStateIfStale(contextState, force: true);
+                            await WindowsActions.RestartExplorerAsync();
+                            await ShowMessageAsync("Kontextové menu", "Hotovo: plné menu • transparency ON • hover Power nástroje • hover Systémové nástroje.");
+                        }
+                        catch (Exception ex) { await ShowMessageAsync("Kontextové menu", ex.Message); }
+                    }));
                     maintenance.Children.Add(ActionCard("Rozšíření kontextového menu", "Zobrazí nalezená rozšíření pro soubory, složky a pozadí složky. Jednotlivé položky lze bezpečně zapnout nebo vypnout.", "Spravovat", ShowContextHandlersAsync));
                     maintenance.Children.Add(ActionCard("Ověřit stav", "Načte skutečný stav všech položek a znovu synchronizuje přepínače.", "Ověřit", async () =>
                     {
@@ -342,11 +425,34 @@ public sealed partial class MainWindow
                         try { ContextMenuService.RestoreOurEntries(); RefreshContextMenuUiStateIfStale(contextState, force: true); await WindowsActions.RestartExplorerAsync(); await ShowMessageAsync("Context Menu", "Vlastní položky Optimizeru byly odstraněny."); }
                         catch (Exception ex) { await ShowMessageAsync("Context Menu", ex.Message); }
                     }));
-                    LogService.Info("performance", $"CONTEXT_MENU_ROWS_DEFERRED rows={toggles.Children.Count} maintenance={maintenance.Children.Count} maxRowMs={maxDeferredRowMs} maintenanceMs={maintenanceSw.ElapsedMilliseconds}");
+                    LogService.Info("performance", $"CONTEXT_MENU_ROWS_DEFERRED rows={essentialToggles.Children.Count + toggles.Children.Count} maintenance={maintenance.Children.Count} maxRowMs={maxDeferredRowMs} maintenanceMs={maintenanceSw.ElapsedMilliseconds}");
                 }
             });
+            if (!queued) rejected?.Invoke();
         }
         QueueContextMenuRow(0);
+        // The two collapsed groups stay lightweight until explicitly opened.
+        // WinUI keeps the existing cached elements after first expansion.
+        if (advancedCard.Child is Expander advancedExpander)
+        {
+            bool advancedQueued = false;
+            advancedExpander.Expanding += (_, _) =>
+            {
+                if (advancedQueued) return;
+                advancedQueued = true;
+                QueueContextMenuRow(1, advancedRequested: true, rejected: () => advancedQueued = false);
+            };
+        }
+        if (maintenanceCard.Child is Expander maintenanceExpander)
+        {
+            bool maintenanceQueued = false;
+            maintenanceExpander.Expanding += (_, _) =>
+            {
+                if (maintenanceQueued) return;
+                maintenanceQueued = true;
+                QueueContextMenuRow(contextMenuRowFactories.Length, maintenanceRequested: true, rejected: () => maintenanceQueued = false);
+            };
+        }
 
         LogService.Info("performance", $"CONTEXT_MENU_BUILD_PHASE introMs={introMs} togglesMs={toggleMs} rowsMs={rowsMs} maintenanceMs={maintenanceMs} totalMs={perf.ElapsedMilliseconds}");
     }
@@ -355,6 +461,7 @@ public sealed partial class MainWindow
     {
         // Custom WinUI theme can make ToggleSwitch hit-testing unreliable.
         // The whole row owns the click; the switch is display-only and IsOn change still raises Toggled.
+        NormalizeToggleAppearance(toggle);
         toggle.IsHitTestVisible = false;
 
         var text = new StackPanel { Spacing = 2 };
@@ -371,7 +478,7 @@ public sealed partial class MainWindow
             titleRow.Children.Add(new TextBlock
             {
                 Text = badge,
-                FontSize = 10,
+                FontSize = 10.5,
                 Foreground = TextSecondaryBrush(),
                 VerticalAlignment = VerticalAlignment.Center
             });
@@ -396,14 +503,15 @@ public sealed partial class MainWindow
             Background = SectionCardBackgroundBrush(),
             BorderBrush = SectionBorderBrush(),
             BorderThickness = new Thickness(_darkTheme ? 1.2 : 1),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(12, 9, 12, 9),
+            CornerRadius = new CornerRadius(UseGlassChrome ? 18 : 10),
+            Padding = new Thickness(UseGlassChrome ? 14 : 12, UseGlassChrome ? 11 : 9, UseGlassChrome ? 14 : 12, UseGlassChrome ? 11 : 9),
             Child = grid
         };
         row.Tapped += (_, _) =>
         {
-            LogService.Info("ui", $"CONTEXT_MENU_ROW_TAP title={title} before={toggle.IsOn}");
-            toggle.IsOn = !toggle.IsOn;
+            // The row itself remains hit-testable while an async registry
+            // change disables its switch. Never queue conflicting toggles.
+            if (toggle.IsEnabled) toggle.IsOn = !toggle.IsOn;
         };
         return row;
     }
@@ -411,15 +519,31 @@ public sealed partial class MainWindow
     private readonly HashSet<ToggleSwitch> _verifiedImmediateToggleBusy = new();
 
     private async Task ApplyVerifiedImmediateToggleAsync(
-        ToggleSwitch toggle, Action<bool> setter, Func<bool> getter, string area, string name)
+        ToggleSwitch toggle, Action<bool> setter, Func<bool> getter, string area, string name,
+        bool offloadPersistence = false)
     {
         if (!_verifiedImmediateToggleBusy.Add(toggle)) return;
         bool requested = toggle.IsOn;
         try
         {
             toggle.IsEnabled = false;
-            setter(requested);
-            bool actual = getter();
+            // Only the Guard's file-backed consent uses this branch. An
+            // exclusive cross-process lease may take up to ~1.3 s; never
+            // hold the WinUI dispatcher while waiting for another process.
+            bool actual;
+            if (offloadPersistence)
+            {
+                actual = await Task.Run(() =>
+                {
+                    setter(requested);
+                    return getter();
+                });
+            }
+            else
+            {
+                setter(requested);
+                actual = getter();
+            }
             if (actual != requested)
                 throw new InvalidOperationException($"{name}: read-back nesouhlasí. Požadováno={requested}, skutečnost={actual}.");
             if (toggle.IsOn != actual) toggle.IsOn = actual;
@@ -427,7 +551,7 @@ public sealed partial class MainWindow
         }
         catch (Exception ex)
         {
-            bool actual = getter();
+            bool actual = offloadPersistence ? await Task.Run(getter) : getter();
             if (toggle.IsOn != actual) toggle.IsOn = actual;
             LogService.Error(area, $"VERIFIED_TOGGLE_FAIL name={name} requested={requested} actual={actual}", ex);
             await ShowMessageAsync(name, ex.Message);
@@ -442,11 +566,18 @@ public sealed partial class MainWindow
     private async Task ApplyContextToggleAsync(ContextMenuUiState state, ToggleSwitch toggle,
         Action<bool> setter, Func<bool> getter, bool restartExplorer)
     {
-        // Busy is only a guard for programmatic IsOn refreshes. User changes are queued
-        // instead of being silently dropped while another context-menu toggle restarts Explorer.
-        if (state.Busy) return;
+        // Programmatic refreshes may raise Toggled. Never leave the switch showing a state
+        // that was not actually applied; snap it back to the verified backing state.
+        if (state.Busy)
+        {
+            bool actualBusyState = getter();
+            if (toggle.IsOn != actualBusyState) toggle.IsOn = actualBusyState;
+            return;
+        }
         bool requested = toggle.IsOn;
         await _contextMenuToggleGate.WaitAsync();
+        state.Busy = true;
+        SetContextMenuTogglesEnabled(state, false);
         try
         {
             setter(requested);
@@ -456,9 +587,7 @@ public sealed partial class MainWindow
             if (actual != requested)
                 throw new InvalidOperationException($"Context Menu read-back nesouhlasí. Požadováno: {requested}, skutečnost: {actual}.");
 
-            state.Busy = true;
-            try { if (toggle.IsOn != actual) toggle.IsOn = actual; }
-            finally { state.Busy = false; }
+            if (toggle.IsOn != actual) toggle.IsOn = actual;
             _contextMenuUiCacheAt = DateTime.UtcNow;
 
             if (restartExplorer)
@@ -467,9 +596,7 @@ public sealed partial class MainWindow
                 bool postRestart = getter();
                 if (postRestart != requested)
                     throw new InvalidOperationException($"Context Menu stav se po restartu Exploreru změnil. Požadováno: {requested}, skutečnost: {postRestart}.");
-                state.Busy = true;
-                try { if (toggle.IsOn != postRestart) toggle.IsOn = postRestart; }
-                finally { state.Busy = false; }
+                if (toggle.IsOn != postRestart) toggle.IsOn = postRestart;
                 _contextMenuUiCacheAt = DateTime.UtcNow;
                 LogService.Info("ui", $"CONTEXT_MENU_POST_RESTART requested={requested} actual={postRestart}");
             }
@@ -477,15 +604,15 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             bool actual = getter();
-            state.Busy = true;
-            try { if (toggle.IsOn != actual) toggle.IsOn = actual; }
-            finally { state.Busy = false; }
+            if (toggle.IsOn != actual) toggle.IsOn = actual;
             _contextMenuUiCacheAt = DateTime.UtcNow;
             LogService.Error("ui", $"Context Menu toggle failed requested={requested} actual={actual}", ex);
             await ShowMessageAsync("Context Menu", ex.Message);
         }
         finally
         {
+            SetContextMenuTogglesEnabled(state, true);
+            state.Busy = false;
             _contextMenuToggleGate.Release();
         }
     }
@@ -493,7 +620,9 @@ public sealed partial class MainWindow
     private async Task ApplyTakeOwnershipToggleAsync(ContextMenuUiState state, ToggleSwitch take)
     {
         if (state.Busy) return;
+        await _contextMenuToggleGate.WaitAsync();
         state.Busy = true;
+        SetContextMenuTogglesEnabled(state, false);
         try
         {
             if (take.IsOn && !await ShowStyledConfirmAsync(
@@ -501,7 +630,7 @@ public sealed partial class MainWindow
                 "Přidá do kontextového menu pokročilou změnu vlastníka a oprávnění. Používej ji jen tam, kde je to opravdu potřeba.",
                 "Přidat", "Zrušit", "Pokročilé kontextové menu"))
             {
-                take.IsOn = false;
+                take.IsOn = ContextMenuService.TakeOwnershipEnabled();
                 return;
             }
 
@@ -510,23 +639,66 @@ public sealed partial class MainWindow
             bool actual = ContextMenuService.TakeOwnershipEnabled();
             if (actual != requested)
                 throw new InvalidOperationException($"Ověření změny vlastnictví nesouhlasí. Požadováno: {requested}, skutečnost: {actual}.");
-            take.IsOn = actual;
+            if (take.IsOn != actual) take.IsOn = actual;
             _contextMenuUiCacheAt = DateTime.UtcNow;
             LogService.Info("ui", $"CONTEXT_MENU_TAKE_OWNERSHIP requested={requested} actual={actual}");
             await WindowsActions.RestartExplorerAsync();
             bool postRestart = ContextMenuService.TakeOwnershipEnabled();
             if (postRestart != requested)
                 throw new InvalidOperationException($"Stav převzetí vlastnictví se po restartu Exploreru změnil. Požadováno: {requested}, skutečnost: {postRestart}.");
-            take.IsOn = postRestart;
+            if (take.IsOn != postRestart) take.IsOn = postRestart;
             _contextMenuUiCacheAt = DateTime.UtcNow;
         }
         catch (Exception ex)
         {
-            take.IsOn = ContextMenuService.TakeOwnershipEnabled();
+            bool actual = ContextMenuService.TakeOwnershipEnabled();
+            if (take.IsOn != actual) take.IsOn = actual;
             _contextMenuUiCacheAt = DateTime.UtcNow;
             await ShowMessageAsync("Context Menu", ex.Message);
         }
-        finally { state.Busy = false; }
+        finally
+        {
+            SetContextMenuTogglesEnabled(state, true);
+            state.Busy = false;
+            _contextMenuToggleGate.Release();
+        }
+    }
+
+    internal async Task RunContextMenuLazyRenderSmokeAsync()
+    {
+        await ShowSectionAsync("ui");
+        ContextMenuUiState state = _contextMenuUiCache
+            ?? throw new InvalidOperationException("Context Menu UI was not constructed.");
+        Expander[] groups = state.Elements.OfType<Border>()
+            .Select(card => card.Child).OfType<Expander>().ToArray();
+        if (groups.Length != 2 ||
+            groups[0].Content is not StackPanel advanced ||
+            groups[1].Content is not StackPanel maintenance)
+            throw new InvalidOperationException("Expected two lazy Context Menu groups.");
+
+        // This test does not flip toggles, mutate registry entries or restart Explorer.
+        if (advanced.Children.Count != 0 || maintenance.Children.Count != 0)
+            throw new InvalidOperationException("Collapsed Context Menu groups allocated their hidden rows.");
+
+        groups[0].IsExpanded = true;
+        for (int i = 0; advanced.Children.Count < 15 && i < 40; i++)
+            await Task.Delay(50);
+        if (advanced.Children.Count != 15)
+            throw new InvalidOperationException($"Advanced Context Menu group rows={advanced.Children.Count}, expected=15.");
+
+        groups[1].IsExpanded = true;
+        for (int i = 0; maintenance.Children.Count < 5 && i < 40; i++)
+            await Task.Delay(50);
+        if (maintenance.Children.Count != 5)
+            throw new InvalidOperationException($"Context Menu maintenance cards={maintenance.Children.Count}, expected=5.");
+
+        groups[0].IsExpanded = false;
+        groups[0].IsExpanded = true;
+        await Task.Delay(75);
+        if (advanced.Children.Count != 15 || maintenance.Children.Count != 5)
+            throw new InvalidOperationException("Context Menu group re-expansion created duplicate controls.");
+
+        LogService.Info("ui", "CONTEXT_MENU_LAZY_RENDER_SMOKE_OK initialHidden=0 advanced=15 maintenance=5 reexpand=no-duplicates");
     }
 
     internal async Task RunContextMenuUiSmokeAsync()
@@ -551,47 +723,53 @@ public sealed partial class MainWindow
                 throw new InvalidOperationException("Context Menu toggle znovu používá Header/OnContent/OffContent text.");
         }
 
-        var backendChecks = new (string Name, Func<bool> Get, Action<bool> Set)[]
+        var backendChecks = new (string Name, Func<bool> Get)[]
         {
-            ("Classic", ContextMenuService.ClassicMenuEnabled, ContextMenuService.SetClassicMenu),
-            ("Terminal", ContextMenuService.TerminalHereEnabled, ContextMenuService.SetTerminalHere),
-            ("CMD", ContextMenuService.CmdHereEnabled, ContextMenuService.SetCmdHere),
-            ("PowerShell", ContextMenuService.PowerShellHereEnabled, ContextMenuService.SetPowerShellHere),
-            ("Admin PowerShell", ContextMenuService.AdminPowerShellHereEnabled, ContextMenuService.SetAdminPowerShellHere),
-            ("Admin Terminal", ContextMenuService.AdminTerminalHereEnabled, ContextMenuService.SetAdminTerminalHere),
-            ("Notepad", ContextMenuService.NotepadEnabled, ContextMenuService.SetNotepad),
-            ("Copy Path", ContextMenuService.CopyPathEnabled, ContextMenuService.SetCopyPath),
-            ("Take Ownership", ContextMenuService.TakeOwnershipEnabled, ContextMenuService.SetTakeOwnership)
+            ("Classic", ContextMenuService.ClassicMenuEnabled),
+            ("Terminal", ContextMenuService.TerminalHereEnabled),
+            ("CMD", ContextMenuService.CmdHereEnabled),
+            ("PowerShell", ContextMenuService.PowerShellHereEnabled),
+            ("Admin PowerShell", ContextMenuService.AdminPowerShellHereEnabled),
+            ("Admin Terminal", ContextMenuService.AdminTerminalHereEnabled),
+            ("Notepad", ContextMenuService.NotepadEnabled),
+            ("Copy Path", ContextMenuService.CopyPathEnabled),
+            ("Take Ownership", ContextMenuService.TakeOwnershipEnabled)
         };
+        // Read-only stability checks on the real menu; the real enable/disable
+        // and read-back logic is exercised in a disposable app-owned test key.
         foreach (var check in backendChecks)
         {
-            bool before = check.Get();
-            check.Set(before);
-            if (check.Get() != before)
-                throw new InvalidOperationException($"Context Menu backend read-back selhal: {check.Name}.");
+            bool first = check.Get();
+            bool second = check.Get();
+            if (first != second)
+                throw new InvalidOperationException($"Context Menu backend read není stabilní: {check.Name}.");
         }
+        LogService.Info("ui", ContextMenuService.RunIsolatedPersistenceSmoke());
 
         // Top-level cards are intentionally compacted: hero + intro + quick toggles + maintenance.
         // Validate functional coverage above instead of depending on the old number of wrapper cards.
         if (state.Elements.Count < 4)
             throw new InvalidOperationException($"Context Menu UI je neúplné: elements={state.Elements.Count}.");
 
-        LogService.Info("ui", $"CONTEXT_MENU_UI_SMOKE_OK toggles={toggles.Length} elements={state.Elements.Count}");
+        LogService.Info("ui", $"CONTEXT_MENU_UI_SMOKE_OK toggles={toggles.Length} elements={state.Elements.Count} actualUserSettingsTouched=false");
     }
 
     internal Task RunImmediateToggleBackendSmokeAsync()
     {
+        // Exercise both persistence backends on disposable paths. The old
+        // "set the current value" calls rewrote the real user motion.txt and
+        // UpstreamSources\auto-check.txt during every release smoke.
         bool motion = UiMotionSettingsService.Enabled;
-        UiMotionSettingsService.SetEnabled(motion);
+        LogService.Info("ui", UiMotionSettingsService.RunIsolatedPersistenceSmoke());
         if (UiMotionSettingsService.Enabled != motion)
-            throw new InvalidOperationException("UI motion toggle backend read-back selhal.");
+            throw new InvalidOperationException("UI motion isolated persistence smoke changed the live preference.");
 
         bool upstream = UpstreamSourceUpdateService.AutoCheckEnabled;
-        UpstreamSourceUpdateService.SetAutoCheckEnabled(upstream);
+        LogService.Info("ui", UpstreamSourceUpdateService.RunIsolatedPersistenceSmoke());
         if (UpstreamSourceUpdateService.AutoCheckEnabled != upstream)
-            throw new InvalidOperationException("Upstream auto-check toggle backend read-back selhal.");
+            throw new InvalidOperationException("Upstream auto-check isolated persistence smoke changed the live preference.");
 
-        LogService.Info("ui", "IMMEDIATE_TOGGLE_BACKEND_SMOKE_OK motion=true upstream=true");
+        LogService.Info("ui", "IMMEDIATE_TOGGLE_BACKEND_SMOKE_OK motion=true upstream=true actualUserSettingsTouched=false");
         return Task.CompletedTask;
     }
 

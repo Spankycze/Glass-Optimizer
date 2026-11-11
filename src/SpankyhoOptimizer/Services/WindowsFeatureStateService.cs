@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Management;
@@ -189,9 +189,12 @@ public static class WindowsFeatureStateService
             using var results = searcher.Get();
             foreach (ManagementObject item in results)
             {
-                string name = item["Name"]?.ToString() ?? string.Empty;
-                if (name.Length == 0 || item["InstallState"] == null) continue;
-                map[name] = Convert.ToUInt32(item["InstallState"]) == 1u;
+                using (item)
+                {
+                    string name = item["Name"]?.ToString() ?? string.Empty;
+                    if (name.Length == 0 || item["InstallState"] == null) continue;
+                    map[name] = Convert.ToUInt32(item["InstallState"]) == 1u;
+                }
             }
 
             // Win32_OptionalFeature may omit features that are disabled or unavailable on
@@ -221,7 +224,9 @@ public static class WindowsFeatureStateService
     {
         var result = await ProcessRunner.RunAsync("dism.exe", $"/Online /Get-FeatureInfo /FeatureName:{feature} /English", TimeSpan.FromSeconds(20), CancellationToken.None).ConfigureAwait(false);
         if (!result.Success) return false;
-        return result.StdOut.IndexOf("State : Enabled", StringComparison.OrdinalIgnoreCase) >= 0;
+        string output = result.StdOut ?? string.Empty;
+        return output.IndexOf("State : Enabled", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               output.IndexOf("State : Enable Pending", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     internal static async Task<Dictionary<string, bool>> GetStatesLocalSnapshotAsync(CancellationToken token = default)
@@ -258,8 +263,11 @@ public static class WindowsFeatureStateService
                 foreach (var item in await Task.WhenAll(tasks).ConfigureAwait(false))
                 {
                     if (!item.result.Success) { map[item.name] = false; continue; }
-                    bool enabled = item.result.StdOut.IndexOf("State : Enabled", StringComparison.OrdinalIgnoreCase) >= 0;
-                    bool disabled = item.result.StdOut.IndexOf("State : Disabled", StringComparison.OrdinalIgnoreCase) >= 0;
+                    string output = item.result.StdOut ?? string.Empty;
+                    bool enabled = output.IndexOf("State : Enabled", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                   output.IndexOf("State : Enable Pending", StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool disabled = output.IndexOf("State : Disabled", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                    output.IndexOf("State : Disable Pending", StringComparison.OrdinalIgnoreCase) >= 0;
                     map[item.name] = enabled || !disabled ? enabled : false;
                 }
             }

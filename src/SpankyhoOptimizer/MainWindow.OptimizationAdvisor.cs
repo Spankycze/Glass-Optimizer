@@ -66,7 +66,7 @@ public sealed partial class MainWindow
         badge.Child = new TextBlock
         {
             Text = badgeText,
-            FontSize = 8.5,
+            FontSize = 10.5,
             FontWeight = FontWeights.Bold,
             Foreground = OnAccentTextBrush()
         };
@@ -83,7 +83,7 @@ public sealed partial class MainWindow
         var nowLabel = new TextBlock
         {
             Text = "Teď:",
-            FontSize = 10,
+            FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
             Foreground = TextSecondaryBrush(),
             VerticalAlignment = VerticalAlignment.Center
@@ -100,7 +100,7 @@ public sealed partial class MainWindow
         var recommendedLabel = new TextBlock
         {
             Text = kind == OptimizationAdvisorKind.Test ? "Porovnat:" : "Doporučeno:",
-            FontSize = 10,
+            FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
             Foreground = TextSecondaryBrush(),
             Margin = new Thickness(8, 0, 0, 0),
@@ -129,7 +129,7 @@ public sealed partial class MainWindow
         root.Children.Add(new TextBlock
         {
             Text = reason,
-            FontSize = 10,
+            FontSize = 10.5,
             Foreground = TextSecondaryBrush(),
             TextWrapping = TextWrapping.Wrap,
             MaxLines = 2,

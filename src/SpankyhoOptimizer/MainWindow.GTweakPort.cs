@@ -20,6 +20,7 @@ public sealed partial class MainWindow
 
         var row2 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         row2.Children.Add(QuickButton("Vyčistit Temp / shader cache", RunSafeCacheCleanupAsync));
+        row2.Children.Add(QuickButton("Vyčistit Event Viewer logy", RunEventLogCleanupAsync));
         row2.Children.Add(QuickButton("Obnovit icon cache", RunIconCacheCleanupAsync));
         row2.Children.Add(QuickButton("Obnovit thumbnail cache", RunThumbnailCacheCleanupAsync));
         root.Children.Add(row2);
@@ -85,7 +86,7 @@ public sealed partial class MainWindow
             "Obnovit", "Zrušit", "UI / Explorer")) return;
         try
         {
-            await GTweakMaintenanceService.ClearIconCacheAsync(_loadCts?.Token ?? CancellationToken.None);
+            await GTweakMaintenanceService.ClearIconCacheAsync(_loadCts?.Token ?? _windowLifetimeCts.Token);
             await ShowMessageAsync("Icon cache", "Icon cache byla vyčištěna a Explorer restartován.");
         }
         catch (Exception ex)
@@ -101,7 +102,7 @@ public sealed partial class MainWindow
             "Obnovit", "Zrušit", "UI / Explorer")) return;
         try
         {
-            await GTweakMaintenanceService.ClearThumbnailCacheAsync(_loadCts?.Token ?? CancellationToken.None);
+            await GTweakMaintenanceService.ClearThumbnailCacheAsync(_loadCts?.Token ?? _windowLifetimeCts.Token);
             await ShowMessageAsync("Thumbnail cache", "Thumbnail cache byla vyčištěna a Explorer restartován.");
         }
         catch (Exception ex)
@@ -116,5 +117,23 @@ public sealed partial class MainWindow
         if (!await ShowStyledConfirmAsync("Vyčistit dočasné cache?", $"Bezpečné Temp/shader cache mají přibližně {bytes / 1048576d:0.0} MB.", "Vyčistit", "Zrušit", "Úložiště / NVMe")) return;
         var result = await StorageMaintenanceService.ClearSafeCachesAsync();
         await ShowMessageAsync("Cleanup", $"Uvolněno {result.FreedBytes / 1048576d:0.0} MB. Selhané soubory: {result.FailedFiles}.");
+    }
+
+    private async Task RunEventLogCleanupAsync()
+    {
+        if (!await ShowStyledConfirmAsync("Vyčistit Event Viewer logy?",
+            "Smaže záznamy ze všech dostupných Windows Event Viewer logů. Tato operace odstraní historické záznamy a nelze ji vrátit.",
+            "Vyčistit", "Zrušit", "Úložiště / NVMe")) return;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+            var result = await GTweakMaintenanceService.ClearEventLogsAsync(cts.Token);
+            await ShowMessageAsync("Event Viewer", $"Zpracováno {result.Cleared} z {result.Discovered} logů. Selhalo: {result.Failed}.");
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("storage", "Event Viewer cleanup failed", ex);
+            await ShowMessageAsync("Event Viewer", "Čištění selhalo: " + ex.Message);
+        }
     }
 }

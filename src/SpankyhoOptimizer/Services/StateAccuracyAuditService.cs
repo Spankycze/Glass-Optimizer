@@ -17,9 +17,7 @@ public static class StateAccuracyAuditService
         ("system", null), ("gpu", null), ("memory", null), ("storage", null),
         ("network", null), ("ui", null), ("update", null), ("privacy", null),
         ("ai", null), ("defender", null),
-        ("components", "Služby"), ("components", "Ovladače"), ("components", "Task Scheduler"),
-        ("browsers", "Firefox"), ("browsers", "Chrome"), ("browsers", "Edge"),
-        ("browsers", "Brave"), ("browsers", "Opera"), ("browsers", "Opera GX"), ("browsers", "Vivaldi")
+        ("components", "Služby"), ("components", "Ovladače"), ("components", "Task Scheduler")
     };
 
     public static async Task<StateAccuracyAuditResult> RunAsync(CancellationToken token = default)

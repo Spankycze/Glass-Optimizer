@@ -34,6 +34,12 @@ public static class AdvancedCenterService
     private static DateTime _storageCacheAt;
     private static readonly object StorageGate = new();
     private static Task<StorageAdvancedStatus>? _storageInFlight;
+    private static readonly string[] WindowsUpdatePauseValueNames =
+    {
+        "PauseUpdatesStartTime", "PauseUpdatesExpiryTime",
+        "PauseFeatureUpdatesStartTime", "PauseFeatureUpdatesEndTime",
+        "PauseQualityUpdatesStartTime", "PauseQualityUpdatesEndTime"
+    };
 
     public static async Task<WindowsUpdateCenterStatus> GetWindowsUpdateStatusAsync(CancellationToken token = default)
     {
@@ -82,29 +88,104 @@ public static class AdvancedCenterService
 
     public static async Task SetWindowsUpdatePauseAsync(bool pause, CancellationToken token = default)
     {
+        if (!WorkerExecutionContext.IsWorker && !WorkerPrivilegePolicy.IsAdministrator())
+        {
+            await WorkerClientService.RunAsync<WorkerAck>(
+                "windows-update-pause",
+                WorkerPayloads.Encode(new BooleanMutationRequest(pause)),
+                TimeSpan.FromSeconds(45),
+                token).ConfigureAwait(false);
+            InvalidateWindowsUpdateCaches();
+            WindowsUpdateCenterStatus clientVerified = NativeSystemProbeService.ReadWindowsUpdateStatus();
+            if (clientVerified.Paused != pause)
+                throw new InvalidOperationException(
+                    $"Windows Update pause read-back po workeru nesouhlasí. Požadováno={pause}, skutečnost={clientVerified.Paused}.");
+            return;
+        }
+
         using var key = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Microsoft\WindowsUpdate\UX\Settings", writable: true);
         if (key == null) throw new InvalidOperationException("Windows Update settings registry není dostupný.");
-        if (pause)
+
+        var original = WindowsUpdatePauseValueNames.ToDictionary(
+            name => name,
+            name =>
+            {
+                bool exists = key.GetValueNames().Contains(name, StringComparer.OrdinalIgnoreCase);
+                object? value = exists
+                    ? key.GetValue(name, null, Microsoft.Win32.RegistryValueOptions.DoNotExpandEnvironmentNames)
+                    : null;
+                Microsoft.Win32.RegistryValueKind kind = exists
+                    ? key.GetValueKind(name)
+                    : Microsoft.Win32.RegistryValueKind.String;
+                return (Exists: exists, Value: value, Kind: kind);
+            },
+            StringComparer.OrdinalIgnoreCase);
+
+        try
         {
-            var now = DateTime.UtcNow; var end = now.AddDays(7);
-            key.SetValue("PauseUpdatesStartTime", now.ToString("o")); key.SetValue("PauseUpdatesExpiryTime", end.ToString("o"));
-            key.SetValue("PauseFeatureUpdatesStartTime", now.ToString("o")); key.SetValue("PauseFeatureUpdatesEndTime", end.ToString("o"));
-            key.SetValue("PauseQualityUpdatesStartTime", now.ToString("o")); key.SetValue("PauseQualityUpdatesEndTime", end.ToString("o"));
+            if (pause)
+            {
+                var now = DateTime.UtcNow;
+                var end = now.AddDays(7);
+                key.SetValue("PauseUpdatesStartTime", now.ToString("o"));
+                key.SetValue("PauseUpdatesExpiryTime", end.ToString("o"));
+                key.SetValue("PauseFeatureUpdatesStartTime", now.ToString("o"));
+                key.SetValue("PauseFeatureUpdatesEndTime", end.ToString("o"));
+                key.SetValue("PauseQualityUpdatesStartTime", now.ToString("o"));
+                key.SetValue("PauseQualityUpdatesEndTime", end.ToString("o"));
+            }
+            else
+            {
+                foreach (string name in WindowsUpdatePauseValueNames)
+                    key.DeleteValue(name, throwOnMissingValue: false);
+                await PrivilegedProcessRunner.RunAsync(
+                    "UsoClient.exe", "StartScan", TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+            }
+
+            InvalidateWindowsUpdateCaches();
+            WindowsUpdateCenterStatus verified = NativeSystemProbeService.ReadWindowsUpdateStatus();
+            if (verified.Paused != pause)
+                throw new InvalidOperationException(
+                    $"Windows Update pause read-back nesouhlasí. Požadováno={pause}, skutečnost={verified.Paused}.");
         }
-        else
+        catch
         {
-            foreach (var n in new[] { "PauseUpdatesStartTime", "PauseUpdatesExpiryTime", "PauseFeatureUpdatesStartTime", "PauseFeatureUpdatesEndTime", "PauseQualityUpdatesStartTime", "PauseQualityUpdatesEndTime" })
-                key.DeleteValue(n, throwOnMissingValue: false);
-            await ProcessRunner.RunAsync("UsoClient.exe", "StartScan", TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+            foreach (string name in WindowsUpdatePauseValueNames)
+            {
+                var snapshot = original[name];
+                if (snapshot.Exists)
+                    key.SetValue(name, snapshot.Value!, snapshot.Kind);
+                else
+                    key.DeleteValue(name, throwOnMissingValue: false);
+            }
+
+            foreach (string name in WindowsUpdatePauseValueNames)
+            {
+                var snapshot = original[name];
+                bool exists = key.GetValueNames().Contains(name, StringComparer.OrdinalIgnoreCase);
+                if (exists != snapshot.Exists)
+                    throw new InvalidOperationException(
+                        $"Windows Update pause rollback nepotvrdil existenci hodnoty {name}.");
+                if (!snapshot.Exists) continue;
+
+                object? actual = key.GetValue(name, null, Microsoft.Win32.RegistryValueOptions.DoNotExpandEnvironmentNames);
+                Microsoft.Win32.RegistryValueKind actualKind = key.GetValueKind(name);
+                if (actualKind != snapshot.Kind || !RegistryValueEquals(actual, snapshot.Value))
+                    throw new InvalidOperationException(
+                        $"Windows Update pause rollback nepotvrdil původní hodnotu {name}.");
+            }
+
+            InvalidateWindowsUpdateCaches();
+            throw;
         }
-        lock (WindowsUpdateGate)
-        {
-            _windowsUpdateGeneration++;
-            _windowsUpdateCache = null;
-            _windowsUpdateCacheAt = default;
-            _windowsUpdateInFlight = null;
-        }
-        _appHealthCache = null; _appHealthCacheAt = default;
+    }
+
+    private static bool RegistryValueEquals(object? left, object? right)
+    {
+        if (ReferenceEquals(left, right)) return true;
+        if (left is byte[] lb && right is byte[] rb) return lb.AsSpan().SequenceEqual(rb);
+        if (left is string[] ls && right is string[] rs) return ls.SequenceEqual(rs, StringComparer.Ordinal);
+        return Equals(left, right);
     }
 
     public static Task<IReadOnlyList<AvailableDriverUpdate>> GetAvailableDriverUpdatesAsync(CancellationToken token = default)
@@ -115,9 +196,9 @@ public static class AdvancedCenterService
 
     public static async Task RepairWindowsUpdateAsync(CancellationToken token = default)
     {
-        var dism = await ProcessRunner.RunAsync("dism.exe", "/Online /Cleanup-Image /RestoreHealth", TimeSpan.FromMinutes(25), token).ConfigureAwait(false);
+        var dism = await PrivilegedProcessRunner.RunAsync("dism.exe", "/Online /Cleanup-Image /RestoreHealth", TimeSpan.FromMinutes(25), token).ConfigureAwait(false);
         if (dism.ExitCode != 0) throw new InvalidOperationException("DISM RestoreHealth selhal: " + dism.StdErr);
-        var sfc = await ProcessRunner.RunAsync("sfc.exe", "/scannow", TimeSpan.FromMinutes(25), token).ConfigureAwait(false);
+        var sfc = await PrivilegedProcessRunner.RunAsync("sfc.exe", "/scannow", TimeSpan.FromMinutes(25), token).ConfigureAwait(false);
         if (sfc.ExitCode != 0 && sfc.ExitCode != 1) throw new InvalidOperationException("SFC selhal: " + sfc.StdErr);
     }
 
@@ -298,6 +379,19 @@ public static class AdvancedCenterService
                 if (ReferenceEquals(_wingetHealthInFlight, created))
                     _wingetHealthInFlight = null;
         }
+    }
+    private static void InvalidateWindowsUpdateCaches()
+    {
+        lock (WindowsUpdateGate)
+        {
+            _windowsUpdateGeneration++;
+            _windowsUpdateCache = null;
+            _windowsUpdateCacheAt = default;
+            _windowsUpdateInFlight = null;
+        }
+
+        _appHealthCache = null;
+        _appHealthCacheAt = default;
     }
     private static async Task<AppHealthCheck> ProbeWingetHealthAsync()
     {

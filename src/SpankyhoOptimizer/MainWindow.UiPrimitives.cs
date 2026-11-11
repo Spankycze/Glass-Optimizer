@@ -10,14 +10,14 @@ namespace SpankyhoOptimizer;
 
 public sealed partial class MainWindow
 {
-    private Button PrimaryQuickButton(string text, Func<Task> action)
+    private Button PrimaryQuickButton(string text, Func<Task> action, Func<bool>? canExecute = null)
     {
-        var button = QuickButton(text, action);
+        var button = QuickButton(text, action, canExecute);
         ApplyMaterialButtonAppearance(button, primary: true);
         button.BorderThickness = new Thickness(1);
-        button.CornerRadius = new CornerRadius(7);
-        button.MinHeight = 34;
-        button.Padding = new Thickness(14, 6, 14, 6);
+        button.CornerRadius = new CornerRadius(UseGlassChrome ? 14 : 7);
+        button.MinHeight = UseGlassChrome ? 36 : 34;
+        button.Padding = new Thickness(UseGlassChrome ? 16 : 14, 6, UseGlassChrome ? 16 : 14, 6);
         button.FontSize = 12.5;
         button.FontWeight = FontWeights.SemiBold;
         EnsureAccessibleButton(button);

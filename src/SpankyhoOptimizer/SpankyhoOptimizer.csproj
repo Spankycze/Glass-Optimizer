@@ -44,27 +44,42 @@
   <PropertyGroup Condition="'$(EnableOpenTelemetry)'=='true'">
     <DefineConstants>$(DefineConstants);SPANKY_OTEL</DefineConstants>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(ExtendedAnalyzerAudit)'=='true'">
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-all</AnalysisLevel>
+    <RunAnalyzersDuringBuild>true</RunAnalyzersDuringBuild>
+    <ReportAnalyzer>true</ReportAnalyzer>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ExtendedAnalyzerAudit)'=='true'">
+    <GlobalAnalyzerConfigFiles Include="$(MSBuildProjectDirectory)\..\..\extended-analyzers.globalconfig" />
+  </ItemGroup>
   <ItemGroup>
     <Compile Remove="Models\*.cs" />
     <Compile Remove="Services\*.cs" />
     <Compile Include="Services\UiResourceService.cs" />
     <ProjectReference Include="..\SpankyhoOptimizer.Core\SpankyhoOptimizer.Core.csproj" />
+    <!-- GPL-3.0-or-later upstream integration; preserve notices and source distribution obligations. -->
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.10-experimental" />
-    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.5.4-experimental" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.6" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.5.1" />
     <PackageReference Include="System.Management" Version="11.0.0-rc.1.26425.128" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="11.0.0-rc.1.26425.128" />
     <PackageReference Include="System.Diagnostics.EventLog" Version="11.0.0-rc.1.26425.128" />
-    <PackageReference Include="Meziantou.Analyzer" Version="3.0.290" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerMeziantou)'=='true'" />
+    <PackageReference Include="Meziantou.Analyzer" Version="3.0.292" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerMeziantou)'=='true'" />
     <PackageReference Include="Microsoft.VisualStudio.Threading.Analyzers" Version="18.7.23" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerThreading)'=='true'" />
     <PackageReference Include="AsyncFixer" Version="2.1.0" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerAsyncFixer)'=='true'" />
     <PackageReference Include="Philips.CodeAnalysis.MaintainabilityAnalyzers" Version="2.0.0" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerPhilips)'=='true'" />
+    <PackageReference Include="Roslynator.Analyzers" Version="4.16.1" PrivateAssets="all" Condition="'$(ExtendedAnalyzerAudit)'=='true' Or '$(AnalyzerRoslynator)'=='true'" />
     <PackageReference Include="OpenTelemetry" Version="1.19.1" Condition="'$(EnableOpenTelemetry)'=='true'" />
     <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.19.1" Condition="'$(EnableOpenTelemetry)'=='true'" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Assets\App.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\TrayWarning.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\TrayError.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\AppLogo.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\HeroTargetExact.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\OverviewCpuVisual.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
@@ -75,16 +90,23 @@
     <Content Include="Assets\OverviewUptimeVisual.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\SidebarIcons\*.svg" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Hardware\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Wallpapers\*.jpg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\Cursors\**\*.cur" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\Cursors\**\*.ani" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\Cursors\**\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="Assets\Tools\PowerShell_Terminal_Setup.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="Assets\Tools\PowerShellTerminalApply.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\Tools\CursorsCommunity\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Native\Spanky.NativeCore.dll" Link="Spanky.NativeCore.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Resources\GTweakBlocklist.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Resources\GTweakTelemetryIps.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\WinUtilServicePolicy.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\WinUtilServicePolicy.NOTICE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Licenses\WinUtil-MIT.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\GTweakToolsetStore.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="..\..\WORK_PROGRESS.md" Link="Assets\Changelog.md" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+    <Content Include="..\..\CHANGELOG.md" Link="Assets\Changelog.md" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+  </ItemGroup>
+  <!-- Windows SDK build dependency updates 2026-10-09 -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools.MSIX" Version="1.7.261008100" PrivateAssets="all" />
   </ItemGroup>
 </Project>

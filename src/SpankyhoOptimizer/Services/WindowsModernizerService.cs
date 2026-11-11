@@ -27,9 +27,7 @@ public sealed record WindowsModernizerSnapshot(
     bool ArmouryDownloadPresent,
     bool ArmouryDownloadDisabled,
     int? ActiveMtu,
-    bool RssOverridesPresent,
-    bool FirefoxDynamicRamConfigured,
-    bool? FirefoxDefaultAgentEnabled);
+    bool RssOverridesPresent);
 
 
 public enum AdaptiveTweakState
@@ -80,6 +78,8 @@ public static class WindowsModernizerService
     private static AdaptiveScanReport? _adaptiveCache;
     private static DateTime _adaptiveCacheUtc;
     private static readonly TimeSpan AdaptiveCacheTtl = TimeSpan.FromSeconds(20);
+    private static bool ShouldBrokerPrivilegedMutation =>
+        !WorkerExecutionContext.IsWorker && !WorkerPrivilegePolicy.IsAdministrator();
 
     public static WindowsModernizerSnapshot ReadSnapshot()
     {
@@ -97,9 +97,7 @@ public static class WindowsModernizerService
             ServiceExists("ArmouryCrateDownloadTool"),
             QueryServiceStartMode("ArmouryCrateDownloadTool").Equals("DISABLED", StringComparison.OrdinalIgnoreCase),
             ReadActiveMtu(),
-            HasRssOverrides(),
-            FirefoxHasDynamicRamBlock(),
-            ReadFirefoxDefaultAgentEnabled());
+            HasRssOverrides());
     }
 
 
@@ -133,7 +131,7 @@ public static class WindowsModernizerService
 
             foreach (var kv in ContextMenuService.ReadOurEntryStates())
             {
-                bool desired = kv.Key is "Terminal" or "CMD" or "PowerShell" or "Admin PowerShell" or "Copy path" or "SHA256" or "New empty file" or "VS Code" or "Advanced startup" or "Restart Explorer";
+                bool desired = kv.Key is "Klasické menu" or "Terminal" or "CMD" or "PowerShell" or "Admin PowerShell" or "Admin Terminal" or "Copy path" or "SHA256" or "New empty file" or "VS Code" or "Advanced startup" or "Restart Explorer" or "Task Manager" or "Device Manager";
                 if (!desired) continue;
                 Add("context:" + kv.Key, "Context Menu", kv.Key,
                     kv.Value ? "Položka je dostupná." : "Položka z WindowsModernizer profilu chybí.",
@@ -202,8 +200,6 @@ public static class WindowsModernizerService
                 }
                 else if (task.Name.Equals("StartAllBack Update", StringComparison.OrdinalIgnoreCase))
                     Add("task.startallback-update", "Task Scheduler", task.Name, "Updater task je zapnutý.", AdaptiveTweakState.Needed, true, AdaptiveImpact.Low);
-                else if (task.Name.Contains("Firefox Default Browser Agent", StringComparison.OrdinalIgnoreCase))
-                    Add("firefox.agent", "Firefox", task.Name, "Default Browser Agent task je zapnutý.", AdaptiveTweakState.Needed, true, AdaptiveImpact.Low);
                 else if (!microsoft && task.StartupTrigger &&
                          !task.Name.StartsWith("WindowsModernizer", StringComparison.OrdinalIgnoreCase) &&
                          !task.Name.StartsWith("Spankyho Optimizer", StringComparison.OrdinalIgnoreCase))
@@ -248,20 +244,6 @@ public static class WindowsModernizerService
                 $"Aktivní MTU={s.ActiveMtu?.ToString() ?? "N/A"} • RSS overrides={(s.RssOverridesPresent ? "nalezené" : "ne")}",
                 s.RssOverridesPresent ? AdaptiveTweakState.Needed : AdaptiveTweakState.AlreadyOptimal, s.RssOverridesPresent, AdaptiveImpact.Medium);
 
-            bool firefox = FirefoxProfileExists();
-            if (!firefox)
-                Add("firefox.ram", "Firefox", "Firefox Dynamic RAM", "Firefox profil nebyl nalezen.", AdaptiveTweakState.NotApplicable);
-            else
-            {
-                Add("firefox.ram", "Firefox", "Firefox Dynamic RAM",
-                    s.FirefoxDynamicRamConfigured ? "Dynamic RAM profil je aktivní." : "Dynamic RAM profil není aktivní.",
-                    s.FirefoxDynamicRamConfigured ? AdaptiveTweakState.AlreadyOptimal : AdaptiveTweakState.Needed, true, AdaptiveImpact.Medium);
-                if (s.FirefoxDefaultAgentEnabled == false)
-                    Add("firefox.agent-state", "Firefox", "Firefox Default Browser Agent", "Task je vypnutý.", AdaptiveTweakState.AlreadyOptimal);
-                else if (s.FirefoxDefaultAgentEnabled == true && !findings.Any(x => x.Id == "firefox.agent"))
-                    Add("firefox.agent", "Firefox", "Firefox Default Browser Agent", "Task je zapnutý.", AdaptiveTweakState.Needed, true);
-            }
-
             int fixedDrives = DriveInfo.GetDrives().Count(d => d.IsReady && d.DriveType == DriveType.Fixed);
             Add("storage.analyze", "Storage", "Storage analyze / reliability", fixedDrives > 0 ? $"{fixedDrives} fixed drive(s) lze analyzovat." : "Žádný fixed drive.", fixedDrives > 0 ? AdaptiveTweakState.ManualReview : AdaptiveTweakState.NotApplicable);
             Add("storage.retrim", "Storage", "SSD/NVMe Retrim", fixedDrives > 0 ? "Retrim je dostupný jako ruční maintenance akce." : "Žádný fixed drive.", fixedDrives > 0 ? AdaptiveTweakState.ManualReview : AdaptiveTweakState.NotApplicable);
@@ -272,7 +254,6 @@ public static class WindowsModernizerService
                 crashDumpBytes >= 100 * 1048576L ? AdaptiveTweakState.ManualReview : AdaptiveTweakState.AlreadyOptimal);
 
             Add("audit.postlogin", "Diagnostics", "60s post-login audit", "CPU/RAM startup sampler je dostupný na vyžádání.", AdaptiveTweakState.ManualReview);
-            Add("audit.firefox-soak", "Diagnostics", "Firefox RAM soak", "RAM growth audit je dostupný na vyžádání.", firefox ? AdaptiveTweakState.ManualReview : AdaptiveTweakState.NotApplicable);
 
             return new AdaptiveScanReport(findings,
                 findings.Count(x => x.State == AdaptiveTweakState.Needed),
@@ -300,6 +281,13 @@ public static class WindowsModernizerService
 
     public static async Task<IReadOnlyList<string>> ApplyAdaptiveRecommendedAsync(AdaptiveScanReport report, CancellationToken token)
     {
+        if (ShouldBrokerPrivilegedMutation)
+            return await WorkerClientService.RunAsync<string[]>(
+                "modernizer-adaptive",
+                WorkerPayloads.Encode(new ModernizerAdaptiveRequest(report)),
+                TimeSpan.FromMinutes(10),
+                token).ConfigureAwait(false);
+
         var applied = new List<string>();
         bool uiBaselineApplied = false;
         foreach (AdaptiveTweakFinding finding in report.Findings.Where(x => x.SafeAutoApply && x.State == AdaptiveTweakState.Needed))
@@ -335,14 +323,6 @@ public static class WindowsModernizerService
                     break;
                 case "network.rss-mtu":
                     await OptimizeNetworkAsync(token).ConfigureAwait(false);
-                    applied.Add(finding.Title);
-                    break;
-                case "firefox.ram":
-                    ApplyFirefoxDynamicRam();
-                    applied.Add(finding.Title);
-                    break;
-                case "firefox.agent":
-                    await SetFirefoxDefaultAgentEnabledAsync(false, token).ConfigureAwait(false);
                     applied.Add(finding.Title);
                     break;
                 case "task.startallback-update":
@@ -391,28 +371,41 @@ public static class WindowsModernizerService
 
     private static async Task<Dictionary<string, ProcessUsage>> CaptureProcessUsageAsync(CancellationToken token)
     {
-        var first = new Dictionary<int, (string Name,double Cpu,long Private)>();
-        foreach (var p in Process.GetProcesses())
+        token.ThrowIfCancellationRequested();
+        var first = new Dictionary<int, double>();
+        ProcessSnapshotCleanup.Inspect(() => Process.GetProcesses(), processes =>
         {
-            try { first[p.Id] = (p.ProcessName, p.TotalProcessorTime.TotalSeconds, p.PrivateMemorySize64); }
-            catch { }
-            finally { p.Dispose(); }
-        }
+            foreach (Process process in processes)
+            {
+                token.ThrowIfCancellationRequested();
+                try { first[process.Id] = process.TotalProcessorTime.TotalSeconds; }
+                catch (Exception ex) when (ex is InvalidOperationException or
+                    System.ComponentModel.Win32Exception or NotSupportedException) { }
+            }
+            return true;
+        });
         await Task.Delay(250, token).ConfigureAwait(false);
         var agg = new Dictionary<string, (int Count,long Private,double Cpu)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var p in Process.GetProcesses())
+        ProcessSnapshotCleanup.Inspect(() => Process.GetProcesses(), processes =>
         {
-            try
+            foreach (Process process in processes)
             {
-                if (!first.TryGetValue(p.Id, out var a)) continue;
-                double cpu = Math.Max(0, p.TotalProcessorTime.TotalSeconds - a.Cpu);
-                long priv = p.PrivateMemorySize64;
-                if (!agg.TryGetValue(p.ProcessName, out var cur)) cur = default;
-                agg[p.ProcessName] = (cur.Count + 1, cur.Private + priv, cur.Cpu + cpu);
+                token.ThrowIfCancellationRequested();
+                try
+                {
+                    if (!first.TryGetValue(process.Id, out double initialCpu)) continue;
+                    double cpu = Math.Max(0, process.TotalProcessorTime.TotalSeconds - initialCpu);
+                    long priv = process.PrivateMemorySize64;
+                    string name = process.ProcessName;
+                    if (!agg.TryGetValue(name, out var cur)) cur = default;
+                    agg[name] = (cur.Count + 1, cur.Private + priv, cur.Cpu + cpu);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or
+                    System.ComponentModel.Win32Exception or NotSupportedException) { }
             }
-            catch { }
-            finally { p.Dispose(); }
-        }
+            return true;
+        });
+        token.ThrowIfCancellationRequested();
         return agg.ToDictionary(x => x.Key, x => new ProcessUsage(x.Value.Count, x.Value.Private, x.Value.Cpu), StringComparer.OrdinalIgnoreCase);
     }
 
@@ -517,11 +510,6 @@ public static class WindowsModernizerService
         return list.ToArray();
     }
 
-    private static bool FirefoxProfileExists()
-    {
-        try { _ = ResolveFirefoxProfile(); return true; } catch { return false; }
-    }
-
     private static long DirectorySizeSafe(string path, int maxFiles)
     {
         try
@@ -561,7 +549,7 @@ public static class WindowsModernizerService
         string old = QueryServiceStartMode(service);
         if (string.IsNullOrWhiteSpace(old)) return;
         BackupSimple("svc." + service, old);
-        await RunAsync("sc.exe", $"config \"{service}\" start= demand", token, true).ConfigureAwait(false);
+        await SetServiceStartModeNativeAsync(service, "demand", token).ConfigureAwait(false);
     }
 
     private static async Task ApplyArmouryDownloadOnlyAsync(CancellationToken token)
@@ -569,8 +557,8 @@ public static class WindowsModernizerService
         string old = QueryServiceStartMode("ArmouryCrateDownloadTool");
         if (string.IsNullOrWhiteSpace(old)) return;
         BackupSimple("svc.ArmouryCrateDownloadTool", old);
-        await RunAsync("sc.exe", "stop ArmouryCrateDownloadTool", token, true).ConfigureAwait(false);
-        await RunAsync("sc.exe", "config ArmouryCrateDownloadTool start= disabled", token, true).ConfigureAwait(false);
+        await TryStopVendorServiceNativeAsync("ArmouryCrateDownloadTool", token).ConfigureAwait(false);
+        await SetServiceStartModeNativeAsync("ArmouryCrateDownloadTool", "disabled", token).ConfigureAwait(false);
     }
 
     private static async Task SetTaskEnabledByNameAsync(string name, bool enabled, CancellationToken token)
@@ -589,12 +577,16 @@ public static class WindowsModernizerService
             case "CMD": ContextMenuService.SetCmdHere(true); break;
             case "PowerShell": ContextMenuService.SetPowerShellHere(true); break;
             case "Admin PowerShell": ContextMenuService.SetAdminPowerShellHere(true); break;
+            case "Admin Terminal": ContextMenuService.SetAdminTerminalHere(true); break;
             case "Copy path": ContextMenuService.SetCopyPath(true); break;
             case "SHA256": ContextMenuService.SetSha256(true); break;
             case "New empty file": ContextMenuService.SetNewEmptyFile(true); break;
             case "VS Code": ContextMenuService.SetVsCode(true); break;
             case "Advanced startup": ContextMenuService.SetAdvancedStartup(true); break;
             case "Restart Explorer": ContextMenuService.SetRestartExplorer(true); break;
+            case "Task Manager": ContextMenuService.SetTaskManager(true); break;
+            case "Device Manager": ContextMenuService.SetDeviceManager(true); break;
+            case "Klasické menu": ContextMenuService.OptimizeContextMenuExperience(); break;
         }
     }
 
@@ -618,15 +610,31 @@ public static class WindowsModernizerService
         SetString(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Policies\Comdlg32\PlacesBar", "Place3", Path.Combine(u,"Documents"));
         SetString(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Policies\Comdlg32\PlacesBar", "Place4", "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}");
         InvalidateAdaptiveScanCache();
-        return "Desktop • Downloads • Projects • Documents • This PC";
+        var verify = ReadSnapshot();
+        if (!verify.FileDialogProfileConfigured)
+            throw new InvalidOperationException("File Dialog profil read-back nepotvrdil cílové rychlé položky.");
+        return "Desktop • Downloads • Projects • Documents • This PC • read-back OK";
     }
 
     public static void ClearFileDialogHistory()
     {
         using var root = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32", writable:true);
         if (root == null) return;
-        foreach (var n in new[]{"OpenSavePidlMRU","LastVisitedPidlMRU","LastVisitedPidlMRULegacy"})
-            try { root.DeleteSubKeyTree(n, false); } catch {}
+        string[] targets = {"OpenSavePidlMRU","LastVisitedPidlMRU","LastVisitedPidlMRULegacy"};
+        var errors = new List<Exception>();
+        foreach (var n in targets)
+        {
+            try { root.DeleteSubKeyTree(n, false); }
+            catch (Exception ex) { errors.Add(new InvalidOperationException($"Nelze odstranit {n}.", ex)); }
+        }
+        foreach (var n in targets)
+        {
+            using var verify = root.OpenSubKey(n);
+            if (verify != null)
+                errors.Add(new InvalidOperationException($"Historie {n} po smazání stále existuje."));
+        }
+        if (errors.Count > 0)
+            throw new AggregateException("Historii Otevřít/Uložit se nepodařilo kompletně vyčistit.", errors);
         InvalidateAdaptiveScanCache();
     }
 
@@ -672,6 +680,13 @@ public static class WindowsModernizerService
 
     public static async Task ApplyStartupProfileAsync(CancellationToken token)
     {
+        if (ShouldBrokerPrivilegedMutation)
+        {
+            await WorkerClientService.RunAsync<WorkerAck>("modernizer-startup-apply", timeout: TimeSpan.FromMinutes(2), token: token).ConfigureAwait(false);
+            InvalidateAdaptiveScanCache();
+            return;
+        }
+
         BackupReg("startup.delay", RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize", "StartupDelayInMSec");
         SetDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize", "StartupDelayInMSec", 0);
         await StageRunEntryAsync("Battle.net", "WindowsModernizer - Battle.net delayed", 20, token);
@@ -681,63 +696,135 @@ public static class WindowsModernizerService
 
     public static async Task RestoreStartupProfileAsync(CancellationToken token)
     {
-        RestoreReg("startup.delay");
-        var b = LoadBackup();
-        foreach (var pair in new[]{("Battle.net","WindowsModernizer - Battle.net delayed")})
+        if (ShouldBrokerPrivilegedMutation)
         {
-            await RunAsync("schtasks.exe", $"/Delete /TN \"{pair.Item2}\" /F", token, ignoreExit:true);
-            if (b.Values.TryGetValue("run."+pair.Item1, out var cmd))
+            await WorkerClientService.RunAsync<WorkerAck>("modernizer-startup-restore", timeout: TimeSpan.FromMinutes(2), token: token).ConfigureAwait(false);
+        }
+        else
+        {
+            RestoreReg("startup.delay");
+            var localBackup = LoadBackup();
+            foreach (var pair in new[]{("Battle.net","WindowsModernizer - Battle.net delayed")})
             {
-                using var k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-                if (cmd == null) k?.DeleteValue(pair.Item1, false); else k?.SetValue(pair.Item1, cmd, RegistryValueKind.String);
+                await RunAsync("schtasks.exe", $"/Delete /TN \"{pair.Item2}\" /F", token, ignoreExit:true);
+                if (localBackup.Values.TryGetValue("run."+pair.Item1, out var cmd))
+                {
+                    using var k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
+                    if (cmd == null) k?.DeleteValue(pair.Item1, false); else k?.SetValue(pair.Item1, cmd, RegistryValueKind.String);
+                }
             }
         }
+
         InvalidateAdaptiveScanCache();
+        var b = LoadBackup();
+        if (!RegistryBackupMatches("startup.delay"))
+            throw new InvalidOperationException("Startup restore read-back nepotvrdil původní StartupDelayInMSec.");
+        if (TaskExists("WindowsModernizer - Battle.net delayed"))
+            throw new InvalidOperationException("Startup restore read-back našel zbylou Battle.net delayed task.");
+        if (b.Values.TryGetValue("run.Battle.net", out var expectedRun))
+        {
+            string? actualRun = ReadString(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Run", "Battle.net");
+            if (!string.Equals(actualRun, expectedRun, StringComparison.Ordinal))
+                throw new InvalidOperationException("Startup restore read-back nepotvrdil původní Battle.net Run hodnotu.");
+        }
     }
 
     public static async Task ApplySystemMaintenanceAsync(CancellationToken token)
     {
+        if (ShouldBrokerPrivilegedMutation)
+        {
+            await WorkerClientService.RunAsync<WorkerAck>("modernizer-maintenance-apply", timeout: TimeSpan.FromMinutes(2), token: token).ConfigureAwait(false);
+            InvalidateAdaptiveScanCache();
+            return;
+        }
+
         BackupReg("maint.disabled", RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance", "MaintenanceDisabled");
         SetDword(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance", "MaintenanceDisabled", 0);
         BackupSimple("svc.lltdio", QueryServiceStartMode("lltdio"));
-        await RunAsync("sc.exe", "config lltdio start= demand", token);
+        await SetServiceStartModeNativeAsync("lltdio", "demand", token);
         InvalidateAdaptiveScanCache();
     }
 
-    public static async Task RestoreSystemMaintenanceAsync()
+    public static async Task RestoreSystemMaintenanceAsync(CancellationToken token)
     {
-        RestoreReg("maint.disabled");
-        var b = LoadBackup();
-        if (b.Values.TryGetValue("svc.lltdio", out var mode) && !string.IsNullOrWhiteSpace(mode))
-            await RunAsync("sc.exe", "config lltdio start= " + ScMode(mode), CancellationToken.None, ignoreExit:true);
+        if (ShouldBrokerPrivilegedMutation)
+        {
+            await WorkerClientService.RunAsync<WorkerAck>("modernizer-maintenance-restore", timeout: TimeSpan.FromMinutes(2), token: token).ConfigureAwait(false);
+        }
+        else
+        {
+            RestoreReg("maint.disabled");
+            var localBackup = LoadBackup();
+            if (localBackup.Values.TryGetValue("svc.lltdio", out var mode) && !string.IsNullOrWhiteSpace(mode))
+                await SetServiceStartModeNativeAsync("lltdio", ScMode(mode), token);
+        }
+
         InvalidateAdaptiveScanCache();
+        var b = LoadBackup();
+        if (!RegistryBackupMatches("maint.disabled"))
+            throw new InvalidOperationException("System Maintenance restore read-back nepotvrdil původní MaintenanceDisabled.");
+        if (b.Values.TryGetValue("svc.lltdio", out var expectedMode) && !string.IsNullOrWhiteSpace(expectedMode) &&
+            !QueryServiceStartMode("lltdio").Equals(expectedMode, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("System Maintenance restore read-back nepotvrdil původní lltdio start mode.");
     }
 
     public static async Task ApplyVendorIdleAsync(CancellationToken token)
     {
+        if (ShouldBrokerPrivilegedMutation)
+        {
+            await WorkerClientService.RunAsync<WorkerAck>("modernizer-vendor-apply", timeout: TimeSpan.FromMinutes(3), token: token).ConfigureAwait(false);
+            InvalidateAdaptiveScanCache();
+            return;
+        }
+
         foreach (var s in GetVendorServiceNames())
         {
             string old = QueryServiceStartMode(s);
             if (!string.IsNullOrWhiteSpace(old))
             {
                 BackupSimple("svc."+s, old);
-                await RunAsync("sc.exe", $"config \"{s}\" start= demand", token, true);
+                await SetServiceStartModeNativeAsync(s, "demand", token);
             }
         }
         string arm = QueryServiceStartMode("ArmouryCrateDownloadTool");
         if (!string.IsNullOrWhiteSpace(arm))
         {
             BackupSimple("svc.ArmouryCrateDownloadTool", arm);
-            await RunAsync("sc.exe", "stop ArmouryCrateDownloadTool", token, true);
-            await RunAsync("sc.exe", "config ArmouryCrateDownloadTool start= disabled", token, true);
+            await TryStopVendorServiceNativeAsync("ArmouryCrateDownloadTool", token);
+            await SetServiceStartModeNativeAsync("ArmouryCrateDownloadTool", "disabled", token);
         }
+        bool? p508Enabled = ReadTaskEnabledState(@"\ASUS\P508PowerAgent_sdk");
         BackupSimple("task.P508PowerAgent_sdk", TaskExists(@"\ASUS\P508PowerAgent_sdk") ? "1":"0");
+        BackupSimple("task.P508PowerAgent_sdk.enabled", p508Enabled.HasValue ? (p508Enabled.Value ? "1" : "0") : null);
         await RunAsync("schtasks.exe", "/Change /TN \"\\ASUS\\P508PowerAgent_sdk\" /Disable", token, true);
         InvalidateAdaptiveScanCache();
     }
 
     public static async Task RestoreVendorIdleAsync(CancellationToken token)
     {
+        if (ShouldBrokerPrivilegedMutation)
+        {
+            await WorkerClientService.RunAsync<WorkerAck>("modernizer-vendor-restore", timeout: TimeSpan.FromMinutes(3), token: token).ConfigureAwait(false);
+        }
+        else
+        {
+            var localBackup = LoadBackup();
+            var localServiceKeys = localBackup.Values.Keys
+                .Where(k => k.StartsWith("svc.", StringComparison.OrdinalIgnoreCase))
+                .Select(k => k["svc.".Length..])
+                .Where(IsVendorServiceName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            foreach (var s in localServiceKeys)
+                if (localBackup.Values.TryGetValue("svc."+s, out var m) && !string.IsNullOrWhiteSpace(m))
+                    await SetServiceStartModeNativeAsync(s, ScMode(m), token);
+            if (localBackup.Values.TryGetValue("task.P508PowerAgent_sdk.enabled", out var enabledBackup) && enabledBackup != null)
+                await RunAsync("schtasks.exe", $"/Change /TN \"\\ASUS\\P508PowerAgent_sdk\" /{(enabledBackup=="1" ? "Enable" : "Disable")}", token, true);
+            else if (localBackup.Values.TryGetValue("task.P508PowerAgent_sdk", out var was) && was=="1")
+                await RunAsync("schtasks.exe", "/Change /TN \"\\ASUS\\P508PowerAgent_sdk\" /Enable", token, true);
+        }
+
+        InvalidateAdaptiveScanCache();
         var b = LoadBackup();
         var serviceKeys = b.Values.Keys
             .Where(k => k.StartsWith("svc.", StringComparison.OrdinalIgnoreCase))
@@ -745,21 +832,34 @@ public static class WindowsModernizerService
             .Where(IsVendorServiceName)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        foreach (var s in serviceKeys)
-            if (b.Values.TryGetValue("svc."+s, out var m) && !string.IsNullOrWhiteSpace(m))
-                await RunAsync("sc.exe", $"config \"{s}\" start= {ScMode(m)}", token, true);
-        if (b.Values.TryGetValue("task.P508PowerAgent_sdk", out var was) && was=="1")
-            await RunAsync("schtasks.exe", "/Change /TN \"\\ASUS\\P508PowerAgent_sdk\" /Enable", token, true);
-        InvalidateAdaptiveScanCache();
+        string[] mismatched = serviceKeys.Where(s =>
+            b.Values.TryGetValue("svc."+s, out var expected) && !string.IsNullOrWhiteSpace(expected) &&
+            !QueryServiceStartMode(s).Equals(expected, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (mismatched.Length > 0)
+            throw new InvalidOperationException("Vendor restore read-back mismatch: " + string.Join(", ", mismatched));
+        if (b.Values.TryGetValue("task.P508PowerAgent_sdk.enabled", out var expectedTask) && expectedTask != null)
+        {
+            bool? actualTask = ReadTaskEnabledState(@"\ASUS\P508PowerAgent_sdk");
+            if (!actualTask.HasValue || actualTask.Value != (expectedTask == "1"))
+                throw new InvalidOperationException("Vendor restore read-back nepotvrdil původní stav P508PowerAgent tasku.");
+        }
     }
 
     public static async Task<int> OptimizeNetworkAsync(CancellationToken token)
     {
+        if (ShouldBrokerPrivilegedMutation)
+        {
+            int result = await WorkerClientService.RunAsync<int>("modernizer-network-optimize", timeout: TimeSpan.FromMinutes(3), token: token).ConfigureAwait(false);
+            InvalidateAdaptiveScanCache();
+            return result;
+        }
+
         var nic = NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.NetworkInterfaceType!=NetworkInterfaceType.Loopback && n.OperationalStatus==OperationalStatus.Up)
             .OrderByDescending(n=>n.Speed).FirstOrDefault() ?? throw new InvalidOperationException("Aktivní síťový adaptér nebyl nalezen.");
         string name = nic.Name;
         int oldMtu = ReadActiveMtu() ?? 1500;
         BackupSimple("network.mtu", oldMtu.ToString(CultureInfo.InvariantCulture));
+        BackupSimple("network.mtu.adapter", name);
         string guid = nic.Id.Trim('{','}').ToLowerInvariant();
         string classPath = FindNicClassPath(guid) ?? throw new InvalidOperationException("NIC class registry key nebyl nalezen.");
         foreach (var n in new[]{"*RssBaseProcGroup","*RssBaseProcNumber","*RSSMaxProcGroup","*RssMaxProcNumber"})
@@ -768,30 +868,51 @@ public static class WindowsModernizerService
             DeleteValue(RegistryHive.LocalMachine, classPath, n);
         }
         string gw = nic.GetIPProperties().GatewayAddresses.FirstOrDefault(x=>x.Address.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork)?.Address.ToString() ?? "1.1.1.1";
-        foreach (int mtu in new[]{1500,1492,1488})
+        bool committed = false;
+        try
         {
-            await RunAsync("netsh.exe", $"interface ipv4 set subinterface \"{name}\" mtu={mtu} store=active", token);
-            bool g = await PingDfAsync(gw, mtu, token);
-            bool i = await PingDfAsync("1.1.1.1", mtu, token);
-            if (g && i)
+            foreach (int mtu in new[]{1500,1492,1488})
             {
-                await RunAsync("netsh.exe", $"interface ipv4 set subinterface \"{name}\" mtu={mtu} store=persistent", token);
-                InvalidateAdaptiveScanCache();
-                return mtu;
+                await RunAsync("netsh.exe", $"interface ipv4 set subinterface \"{name}\" mtu={mtu} store=active", token);
+                bool g = await PingDfAsync(gw, mtu, token);
+                bool i = await PingDfAsync("1.1.1.1", mtu, token);
+                if (g && i)
+                {
+                    await RunAsync("netsh.exe", $"interface ipv4 set subinterface \"{name}\" mtu={mtu} store=persistent", token);
+                    committed = true;
+                    InvalidateAdaptiveScanCache();
+                    return mtu;
+                }
             }
         }
-        await RunAsync("netsh.exe", $"interface ipv4 set subinterface \"{name}\" mtu={oldMtu} store=active", token, true);
+        finally
+        {
+            // Cancel/exception/no candidate: restore the original active MTU with a non-cancelled token.
+            if (!committed)
+                await RunAsync("netsh.exe", $"interface ipv4 set subinterface \"{name}\" mtu={oldMtu} store=active", CancellationToken.None, true);
+        }
         InvalidateAdaptiveScanCache();
         return oldMtu;
     }
 
     public static async Task RestoreNetworkAsync(CancellationToken token)
     {
+        if (ShouldBrokerPrivilegedMutation)
+        {
+            await WorkerClientService.RunAsync<WorkerAck>("modernizer-network-restore", timeout: TimeSpan.FromMinutes(3), token: token).ConfigureAwait(false);
+            InvalidateAdaptiveScanCache();
+            return;
+        }
+
         var b = LoadBackup();
         foreach (var n in new[]{"*RssBaseProcGroup","*RssBaseProcNumber","*RSSMaxProcGroup","*RssMaxProcNumber"}) RestoreReg("network."+n);
-        if (b.Values.TryGetValue("network.mtu", out var s) && int.TryParse(s, out int mtu))
+        if (b.Values.TryGetValue("network.mtu", out var s) && int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out int mtu))
         {
-            var nic = NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.NetworkInterfaceType!=NetworkInterfaceType.Loopback && n.OperationalStatus==OperationalStatus.Up).OrderByDescending(n=>n.Speed).FirstOrDefault();
+            // Restore on the adapter that was backed up; older backups without the name keep the previous fastest-active fallback.
+            string? backedUpAdapter = b.Values.GetValueOrDefault("network.mtu.adapter");
+            var all = NetworkInterface.GetAllNetworkInterfaces();
+            var nic = (!string.IsNullOrWhiteSpace(backedUpAdapter) ? all.FirstOrDefault(n=>n.Name.Equals(backedUpAdapter, StringComparison.OrdinalIgnoreCase)) : null)
+                ?? (string.IsNullOrWhiteSpace(backedUpAdapter) ? all.Where(n=>n.NetworkInterfaceType!=NetworkInterfaceType.Loopback && n.OperationalStatus==OperationalStatus.Up).OrderByDescending(n=>n.Speed).FirstOrDefault() : null);
             if (nic != null) await RunAsync("netsh.exe", $"interface ipv4 set subinterface \"{nic.Name}\" mtu={mtu} store=persistent", token, true);
         }
         InvalidateAdaptiveScanCache();
@@ -811,6 +932,9 @@ public static class WindowsModernizerService
 
     public static async Task<string> RetrimFixedDrivesAsync(CancellationToken token)
     {
+        if (ShouldBrokerPrivilegedMutation)
+            return await WorkerClientService.RunAsync<string>("modernizer-retrim", timeout: TimeSpan.FromMinutes(15), token: token).ConfigureAwait(false);
+
         var sb = new StringBuilder();
         foreach (var d in DriveInfo.GetDrives().Where(d=>d.IsReady && d.DriveType==DriveType.Fixed))
         {
@@ -819,37 +943,6 @@ public static class WindowsModernizerService
             sb.Append(letter).Append(": ").Append(r.ExitCode==0?"Retrim OK":"check").Append(" | ");
         }
         return sb.ToString().TrimEnd(' ', '|');
-    }
-
-    public static string ApplyFirefoxDynamicRam()
-    {
-        string profile=ResolveFirefoxProfile();
-        string userJs=Path.Combine(profile,"user.js");
-        Directory.CreateDirectory(profile);
-        if (!File.Exists(userJs)) File.WriteAllText(userJs,"");
-        BackupSimple("firefox.userjs.backup", EnsureFirefoxBackup(userJs));
-        int totalMb=(int)(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes/1024/1024);
-        if (totalMb<=0) totalMb=16384;
-        int cacheKb, inactiveMs, undo, lowCommit;
-        if(totalMb<=8192){lowCommit=2048;cacheKb=131072;inactiveMs=300000;undo=7;}
-        else if(totalMb<=16384){lowCommit=Round256(totalMb*0.25);cacheKb=262144;inactiveMs=300000;undo=10;}
-        else if(totalMb<=32768){lowCommit=Round256(totalMb*0.25);cacheKb=393216;inactiveMs=900000;undo=15;}
-        else {lowCommit=Math.Min(8192,(int)Math.Round(totalMb*0.20));cacheKb=524288;inactiveMs=1200000;undo=20;}
-        string start="// === RAM OPTIMIZATION START ===", end="// === RAM OPTIMIZATION END ===";
-        string block=$"{start}\nuser_pref(\"browser.tabs.unloadOnLowMemory\", true);\nuser_pref(\"browser.tabs.min_inactive_duration_before_unload\", {inactiveMs});\nuser_pref(\"browser.cache.memory.capacity\", {cacheKb});\nuser_pref(\"browser.sessionstore.max_tabs_undo\", {undo});\nuser_pref(\"browser.sessionstore.restore_on_demand\", true);\nuser_pref(\"browser.sessionstore.restore_pinned_tabs_on_demand\", true);\nuser_pref(\"browser.sessionstore.restore_hidden_tabs\", false);\nuser_pref(\"browser.newtab.preload\", false);\nuser_pref(\"default-browser-agent.enabled\", false);\nuser_pref(\"browser.low_commit_space_threshold_mb\", {lowCommit});\n{end}";
-        string txt=File.ReadAllText(userJs);
-        int a=txt.IndexOf(start,StringComparison.Ordinal), z=a>=0?txt.IndexOf(end,a,StringComparison.Ordinal):-1;
-        if(a>=0 && z>=0) txt=txt[..a]+block+txt[(z+end.Length)..]; else txt=txt.TrimEnd()+Environment.NewLine+block+Environment.NewLine;
-        File.WriteAllText(userJs,txt,new UTF8Encoding(false));
-        InvalidateAdaptiveScanCache();
-        return $"RAM {Math.Round(totalMb/1024d,1)} GB • cache {cacheKb/1024} MB • inactive {inactiveMs/60000} min • undo {undo}";
-    }
-
-    public static bool RestoreFirefoxDynamicRam()
-    {
-        var b=LoadBackup();
-        if(!b.Values.TryGetValue("firefox.userjs.backup", out var backup) || string.IsNullOrWhiteSpace(backup) || !File.Exists(backup)) return false;
-        string profile=ResolveFirefoxProfile(); File.Copy(backup,Path.Combine(profile,"user.js"),true); InvalidateAdaptiveScanCache(); return true;
     }
 
     public static async Task ApplyUiBaselineAsync(CancellationToken token)
@@ -880,6 +973,13 @@ public static class WindowsModernizerService
             ("ui.hover1",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","ExtendedUIHoverTime",100),
             ("ui.hover2",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","ThumbnailLivePreviewHoverTime",100),
             ("ui.taskbarAnimations",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","TaskbarAnimations",1),
+            ("ui.taskbarAlign",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","TaskbarAl",0),
+            ("ui.taskbarLabels",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","TaskbarGlomLevel",2),
+            ("ui.taskbarLabelsMulti",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","MMTaskbarGlomLevel",2),
+            ("ui.taskbarSmall",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","TaskbarSmallIcons",0),
+            ("ui.darkApps",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","AppsUseLightTheme",0),
+            ("ui.darkSystem",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","SystemUsesLightTheme",0),
+            ("ui.transparency",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","EnableTransparency",1),
             ("ui.listAlpha",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","ListviewAlphaSelect",1),
             ("ui.listShadow",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","ListviewShadow",1),
             ("ui.previewDesktop",RegistryHive.CurrentUser,@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","DisablePreviewDesktop",0),
@@ -895,83 +995,62 @@ public static class WindowsModernizerService
         DeleteValue(RegistryHive.CurrentUser,@"Software\Microsoft\Windows\DWM","AccentColorInactive");
         await RestartExplorerAsync(token);
         InvalidateAdaptiveScanCache();
+        if (!UiBaselineMatches())
+            throw new InvalidOperationException("Windows UI baseline read-back nepotvrdil cílové nastavení.");
     }
 
     public static async Task RestoreUiBaselineAsync(CancellationToken token)
     {
-        foreach(var id in new[]{"ui.launchTo","ui.hideExt","ui.syncNotif","ui.trackDocs","ui.taskview","ui.widgets","ui.chat","ui.altTab","ui.snap","ui.endTask","ui.searchWeb","ui.searchHist","ui.searchMsa","ui.searchAad","ui.searchFeed","ui.searchLoc","ui.softLanding","ui.lockOverlay","ui.content338388","ui.content338389","ui.content353694","ui.content353696","ui.hover1","ui.hover2","ui.taskbarAnimations","ui.listAlpha","ui.listShadow","ui.previewDesktop","ui.thumbs","ui.thumbCache","ui.previewHandlers","ui.networkThumbsDb","ui.separateProcess","ui.colorPrev","ui.accentInactive"}) RestoreReg(id);
+        string[] ids={"ui.launchTo","ui.hideExt","ui.syncNotif","ui.trackDocs","ui.taskview","ui.widgets","ui.chat","ui.altTab","ui.snap","ui.endTask","ui.searchWeb","ui.searchHist","ui.searchMsa","ui.searchAad","ui.searchFeed","ui.searchLoc","ui.softLanding","ui.lockOverlay","ui.content338388","ui.content338389","ui.content353694","ui.content353696","ui.hover1","ui.hover2","ui.taskbarAnimations","ui.taskbarAlign","ui.taskbarLabels","ui.taskbarLabelsMulti","ui.taskbarSmall","ui.darkApps","ui.darkSystem","ui.transparency","ui.listAlpha","ui.listShadow","ui.previewDesktop","ui.thumbs","ui.thumbCache","ui.previewHandlers","ui.networkThumbsDb","ui.separateProcess","ui.colorPrev","ui.accentInactive"};
+        foreach(var id in ids) RestoreReg(id);
         await RestartExplorerAsync(token);
         InvalidateAdaptiveScanCache();
+        string[] mismatched=ids.Where(id=>!RegistryBackupMatches(id)).ToArray();
+        if(mismatched.Length>0)
+            throw new InvalidOperationException("Windows UI restore read-back mismatch: "+string.Join(", ",mismatched));
     }
 
-
-    public static async Task<string> SetFirefoxDefaultAgentEnabledAsync(bool enabled, CancellationToken token)
-    {
-        var svc = new TaskSchedulerService();
-        var tasks = await svc.GetBasicAsync(forceRefresh: true, token).ConfigureAwait(false);
-        var item = tasks.FirstOrDefault(x => x.Name.Contains("Firefox Default Browser Agent", StringComparison.OrdinalIgnoreCase));
-        if (item == null) return "Firefox Default Browser Agent task nebyl nalezen.";
-        BackupSimple("firefox.agent.path", item.Path);
-        BackupSimple("firefox.agent.enabled", item.Enabled ? "1" : "0");
-        await svc.SetEnabledAsync(item.Path, enabled, token).ConfigureAwait(false);
-        InvalidateAdaptiveScanCache();
-        return enabled ? "Firefox Default Browser Agent zapnutý." : "Firefox Default Browser Agent vypnutý.";
-    }
-
-    public static async Task<string> RestoreFirefoxDefaultAgentAsync(CancellationToken token)
-    {
-        var b = LoadBackup();
-        if (!b.Values.TryGetValue("firefox.agent.path", out var path) || string.IsNullOrWhiteSpace(path))
-            return "Backup Firefox Default Browser Agent nebyl nalezen.";
-        bool enabled = b.Values.GetValueOrDefault("firefox.agent.enabled") == "1";
-        await new TaskSchedulerService().SetEnabledAsync(path, enabled, token).ConfigureAwait(false);
-        InvalidateAdaptiveScanCache();
-        return "Firefox Default Browser Agent obnoven do původního stavu.";
-    }
-
-    public static async Task<string> RunFirefoxSoakAuditAsync(int seconds, CancellationToken token)
-    {
-        seconds = Math.Clamp(seconds, 10, 1800);
-        long startPrivate = FirefoxPrivateBytes();
-        long maxPrivate = startPrivate;
-        var sw = Stopwatch.StartNew();
-        while (sw.Elapsed < TimeSpan.FromSeconds(seconds))
-        {
-            await Task.Delay(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
-            long now = FirefoxPrivateBytes();
-            if (now > maxPrivate) maxPrivate = now;
-        }
-        long endPrivate = FirefoxPrivateBytes();
-        long delta = endPrivate - startPrivate;
-        return $"Firefox private: start {startPrivate / 1048576d:0} MB • end {endPrivate / 1048576d:0} MB • delta {delta / 1048576d:+0;-0;0} MB • peak {maxPrivate / 1048576d:0} MB";
-    }
 
     public static async Task<string> RunPostLoginAuditAsync(int seconds, CancellationToken token)
     {
         seconds = Math.Clamp(seconds, 10, 300);
-        var before = Process.GetProcesses().ToDictionary(p => p.Id, p => SafeCpu(p));
+        // Both native process snapshots must be released in full, including
+        // when the audit is cancelled or a process exits while being inspected.
+        var before = ProcessSnapshotCleanup.Inspect(Process.GetProcesses, processes =>
+        {
+            var cpu = new Dictionary<int, double>(processes.Length);
+            foreach (Process process in processes)
+            {
+                token.ThrowIfCancellationRequested();
+                try { cpu[process.Id] = SafeCpu(process); }
+                catch (InvalidOperationException) { /* Exited during snapshot. */ }
+            }
+            return cpu;
+        });
         await Task.Delay(TimeSpan.FromSeconds(seconds), token).ConfigureAwait(false);
         var rows = new List<(string Name,double Cpu,long Private)>();
-        foreach (var p in Process.GetProcesses())
+        ProcessSnapshotCleanup.Inspect(Process.GetProcesses, processes =>
         {
-            double now = SafeCpu(p);
-            if (!before.TryGetValue(p.Id, out double old)) continue;
-            double delta = Math.Max(0, now - old);
-            if (delta < 0.05) continue;
-            long priv = 0; try { priv = p.PrivateMemorySize64; } catch {}
-            rows.Add((p.ProcessName, delta, priv));
-        }
+            foreach (Process process in processes)
+            {
+                token.ThrowIfCancellationRequested();
+                try
+                {
+                    double now = SafeCpu(process);
+                    if (!before.TryGetValue(process.Id, out double old)) continue;
+                    double delta = Math.Max(0, now - old);
+                    if (delta < 0.05) continue;
+                    long priv = 0; try { priv = process.PrivateMemorySize64; } catch { }
+                    rows.Add((process.ProcessName, delta, priv));
+                }
+                catch (InvalidOperationException) { /* Process exited. */ }
+                catch (System.ComponentModel.Win32Exception) { /* Protected process. */ }
+            }
+            return 0;
+        });
         var top = rows.OrderByDescending(x => x.Cpu).Take(5)
             .Select(x => $"{x.Name} {x.Cpu:0.0}s/{x.Private/1048576d:0}MB");
         return string.Join(" • ", top);
-    }
-
-    private static long FirefoxPrivateBytes()
-    {
-        long total = 0;
-        foreach (var p in Process.GetProcessesByName("firefox"))
-            try { total += p.PrivateMemorySize64; } catch {}
-        return total;
     }
 
     private static double SafeCpu(Process p)
@@ -988,6 +1067,13 @@ public static class WindowsModernizerService
             && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "TaskbarDa") == 0
             && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "TaskbarMn") == 0
             && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "TaskbarAnimations") == 1
+            && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "TaskbarAl") == 0
+            && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "TaskbarGlomLevel") == 2
+            && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "MMTaskbarGlomLevel") == 2
+            && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "TaskbarSmallIcons") == 0
+            && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme") == 0
+            && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "SystemUsesLightTheme") == 0
+            && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "EnableTransparency") == 1
             && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "ListviewAlphaSelect") == 1
             && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "ListviewShadow") == 1
             && ReadDword(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "DisablePreviewDesktop") == 0
@@ -1081,21 +1167,6 @@ public static class WindowsModernizerService
         catch { return false; }
     }
 
-    private static bool? ReadFirefoxDefaultAgentEnabled()
-    {
-        try
-        {
-            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "Tasks", "Mozilla");
-            if (!Directory.Exists(dir)) return null;
-            string? task = Directory.GetFiles(dir, "Firefox Default Browser Agent*").OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
-            if (task == null) return null;
-            string xml = File.ReadAllText(task);
-            if (xml.Contains("<Enabled>false</Enabled>", StringComparison.OrdinalIgnoreCase)) return false;
-            if (xml.Contains("<Enabled>true</Enabled>", StringComparison.OrdinalIgnoreCase)) return true;
-            return true;
-        }
-        catch { return null; }
-    }
     private static bool HasRssOverrides(){ var nic=NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.OperationalStatus==OperationalStatus.Up && n.NetworkInterfaceType!=NetworkInterfaceType.Loopback).OrderByDescending(n=>n.Speed).FirstOrDefault(); if(nic==null)return false; var p=FindNicClassPath(nic.Id.Trim('{','}').ToLowerInvariant()); if(p==null)return false; using var k=Registry.LocalMachine.OpenSubKey(p); return RssOverrideNames.Any(n=>k?.GetValue(n)!=null);}
     private static int? ReadActiveMtu(){try{var nic=NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.OperationalStatus==OperationalStatus.Up && n.NetworkInterfaceType!=NetworkInterfaceType.Loopback).OrderByDescending(n=>n.Speed).FirstOrDefault();return nic?.GetIPProperties().GetIPv4Properties()?.Mtu;}catch{return null;}}
     private static string? FindNicClassPath(string guid){const string root=@"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";using var k=Registry.LocalMachine.OpenSubKey(root);if(k==null)return null;foreach(var n in k.GetSubKeyNames()){using var s=k.OpenSubKey(n);if(string.Equals((s?.GetValue("NetCfgInstanceId")?.ToString()??"").Trim('{','}'),guid,StringComparison.OrdinalIgnoreCase))return root+"\\"+n;}return null;}
@@ -1112,6 +1183,21 @@ public static class WindowsModernizerService
         catch { return false; }
     }
 
+    private static bool? ReadTaskEnabledState(string name)
+    {
+        try
+        {
+            string rel = name.TrimStart('\\').Replace('/', '\\');
+            string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "Tasks", rel);
+            if (!File.Exists(path)) return null;
+            string xml = File.ReadAllText(path);
+            if (xml.Contains("<Enabled>false</Enabled>", StringComparison.OrdinalIgnoreCase)) return false;
+            if (xml.Contains("<Enabled>true</Enabled>", StringComparison.OrdinalIgnoreCase)) return true;
+            return true;
+        }
+        catch { return null; }
+    }
+
     private static string QueryServiceStartMode(string s)
     {
         try
@@ -1125,9 +1211,61 @@ public static class WindowsModernizerService
         catch { return string.Empty; }
     }
     private static string ScMode(string mode)=>mode switch{"DISABLED"=>"disabled","AUTO_START"=>"auto","DEMAND_START"=>"demand",_=>"demand"};
-    private static bool FirefoxHasDynamicRamBlock(){try{return File.ReadAllText(Path.Combine(ResolveFirefoxProfile(),"user.js")).Contains("// === RAM OPTIMIZATION START ===",StringComparison.Ordinal);}catch{return false;}}
-    private static string ResolveFirefoxProfile(){string root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"Mozilla","Firefox");string ini=Path.Combine(root,"profiles.ini");foreach(var l in File.ReadLines(ini)){if(l.StartsWith("Default=",StringComparison.OrdinalIgnoreCase)){string rel=l[8..].Trim().Replace('/','\\');string p=Path.Combine(root,rel);if(Directory.Exists(p))return p;}}var d=Directory.GetDirectories(Path.Combine(root,"Profiles"),"*.default-release").FirstOrDefault();return d??throw new DirectoryNotFoundException("Firefox default-release profil nenalezen.");}
-    private static string EnsureFirefoxBackup(string userJs){string p=userJs+".spanky-original";if(!File.Exists(p))File.Copy(userJs,p,true);return p;}
+
+    // Native SCM change removes sc.exe process startup and locale-dependent
+    // output parsing. Preserve existing caller backups and restore semantics.
+    private static async Task TryStopVendorServiceNativeAsync(string name, CancellationToken token)
+    {
+        // Previous sc.exe /stop command deliberately ignored failures: preserve
+        // that behavior while avoiding process startup and locale-specific output.
+        await Task.Run(() =>
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                using var service = new System.ServiceProcess.ServiceController(name);
+                service.Refresh();
+                if (service.Status is System.ServiceProcess.ServiceControllerStatus.Stopped or
+                    System.ServiceProcess.ServiceControllerStatus.StopPending) return;
+                if (service.CanStop)
+                {
+                    service.Stop();
+                    service.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped,
+                        TimeSpan.FromSeconds(15));
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                LogService.Info("modernizer", "Vendor service stop skipped: " + name + ": " + ex.Message);
+            }
+        }, token).ConfigureAwait(false);
+    }
+
+    private static async Task SetServiceStartModeNativeAsync(string service, string mode, CancellationToken token)
+    {
+        uint target = mode switch
+        {
+            "auto" => 2u,
+            "demand" => 3u,
+            "disabled" => 4u,
+            _ => throw new ArgumentException("Unsupported service start mode: " + mode)
+        };
+        await Task.Run(() =>
+        {
+            token.ThrowIfCancellationRequested();
+            string before = QueryServiceStartMode(service);
+            if (string.IsNullOrWhiteSpace(before))
+                throw new InvalidOperationException("Service not found: " + service);
+            string expected = target switch { 2u => "AUTO_START", 3u => "DEMAND_START", _ => "DISABLED" };
+            if (string.Equals(before, expected, StringComparison.OrdinalIgnoreCase)) return;
+            if (!NativeCore.ChangeServiceStartType(service, target, out int error))
+                throw new System.ComponentModel.Win32Exception(error, "Service configuration failed: " + service);
+            string actual = QueryServiceStartMode(service);
+            if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Service start-mode read-back mismatch: " + service +
+                    " expected=" + expected + " actual=" + actual);
+        }, token).ConfigureAwait(false);
+    }
     private static int Round256(double v)=>(int)(Math.Round(v/256d)*256);
     private static int? ReadDword(RegistryHive h,string p,string n){try{using var b=RegistryKey.OpenBaseKey(h,RegistryView.Registry64);using var k=b.OpenSubKey(p);object? v=k?.GetValue(n);return v==null?null:Convert.ToInt32(v,CultureInfo.InvariantCulture);}catch{return null;}}
     private static string? ReadString(RegistryHive h,string p,string n){try{using var b=RegistryKey.OpenBaseKey(h,RegistryView.Registry64);using var k=b.OpenSubKey(p);return k?.GetValue(n,null,RegistryValueOptions.DoNotExpandEnvironmentNames)?.ToString();}catch{return null;}}
@@ -1136,9 +1274,36 @@ public static class WindowsModernizerService
     private static void DeleteValue(RegistryHive h,string p,string n){using var b=RegistryKey.OpenBaseKey(h,RegistryView.Registry64);using var k=b.OpenSubKey(p,true);k?.DeleteValue(n,false);}
     private static void BackupReg(string id,RegistryHive h,string p,string n){lock(Gate){var st=LoadBackup();if(st.Values.ContainsKey(id+".exists"))return;using var b=RegistryKey.OpenBaseKey(h,RegistryView.Registry64);using var k=b.OpenSubKey(p);bool ex=k?.GetValueNames().Contains(n,StringComparer.OrdinalIgnoreCase)==true;st.Values[id+".hive"]=h.ToString();st.Values[id+".path"]=p;st.Values[id+".name"]=n;st.Values[id+".exists"]=ex?"1":"0";if(ex){object? value=k!.GetValue(n,null,RegistryValueOptions.DoNotExpandEnvironmentNames);RegistryValueKind kind=k.GetValueKind(n);st.Values[id+".kind"]=kind.ToString();st.Values[id+".value"]=kind==RegistryValueKind.Binary&&value is byte[] bytes?Convert.ToBase64String(bytes):value?.ToString();}SaveBackup(st);}}
     private static void RestoreReg(string id){lock(Gate){var st=LoadBackup();if(!st.Values.TryGetValue(id+".path",out var p)||!st.Values.TryGetValue(id+".name",out var n)||p==null||n==null)return;var h=Enum.Parse<RegistryHive>(st.Values[id+".hive"]!);using var b=RegistryKey.OpenBaseKey(h,RegistryView.Registry64);using var k=b.CreateSubKey(p,true);if(st.Values[id+".exists"]!="1"){k.DeleteValue(n,false);return;}RegistryValueKind kind=Enum.TryParse(st.Values.GetValueOrDefault(id+".kind"),out RegistryValueKind parsed)?parsed:RegistryValueKind.String;string raw=st.Values.GetValueOrDefault(id+".value")??"";object value=kind switch{RegistryValueKind.DWord=>int.TryParse(raw,out var i)?i:0,RegistryValueKind.QWord=>long.TryParse(raw,out var l)?l:0L,RegistryValueKind.Binary=>Convert.FromBase64String(raw),_=>raw};k.SetValue(n,value,kind);}}
+    private static bool RegistryBackupMatches(string id)
+    {
+        var st=LoadBackup();
+        if(!st.Values.TryGetValue(id+".path",out var p)||!st.Values.TryGetValue(id+".name",out var n)||p==null||n==null) return true;
+        if(!Enum.TryParse(st.Values.GetValueOrDefault(id+".hive"),out RegistryHive h)) return false;
+        using var b=RegistryKey.OpenBaseKey(h,RegistryView.Registry64);
+        using var k=b.OpenSubKey(p);
+        bool exists=k?.GetValueNames().Contains(n,StringComparer.OrdinalIgnoreCase)==true;
+        bool expectedExists=st.Values.GetValueOrDefault(id+".exists")=="1";
+        if(exists!=expectedExists) return false;
+        if(!expectedExists) return true;
+        object? value=k!.GetValue(n,null,RegistryValueOptions.DoNotExpandEnvironmentNames);
+        RegistryValueKind kind=k.GetValueKind(n);
+        string actual=kind==RegistryValueKind.Binary&&value is byte[] bytes?Convert.ToBase64String(bytes):value?.ToString()??"";
+        string expected=st.Values.GetValueOrDefault(id+".value")??"";
+        string expectedKind=st.Values.GetValueOrDefault(id+".kind")??kind.ToString();
+        return kind.ToString().Equals(expectedKind,StringComparison.OrdinalIgnoreCase) && actual==expected;
+    }
     private static void BackupSimple(string id,string? value){lock(Gate){var st=LoadBackup();if(!st.Values.ContainsKey(id)){st.Values[id]=value;SaveBackup(st);}}}
     private static WindowsModernizerBackup LoadBackup(){try{if(File.Exists(BackupFile))return JsonSerializer.Deserialize<WindowsModernizerBackup>(File.ReadAllText(BackupFile))??new();}catch{}return new();}
-    private static void SaveBackup(WindowsModernizerBackup b){Directory.CreateDirectory(Path.GetDirectoryName(BackupFile)!);File.WriteAllText(BackupFile,JsonSerializer.Serialize(b,IndentedJson));}
+    private static void SaveBackup(WindowsModernizerBackup b){Directory.CreateDirectory(Path.GetDirectoryName(BackupFile)!);AtomicFileService.WriteText(BackupFile,JsonSerializer.Serialize(b,IndentedJson));}
     private sealed record RunResult(int ExitCode,string Output);
-    private static async Task<RunResult> RunAsync(string file,string args,CancellationToken token,bool ignoreExit=false){using var p=Process.Start(new ProcessStartInfo(file,args){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true})!;Task<string> o=p.StandardOutput.ReadToEndAsync(token),e=p.StandardError.ReadToEndAsync(token);await p.WaitForExitAsync(token);string all=(await o)+(await e);if(p.ExitCode!=0&&!ignoreExit)throw new InvalidOperationException(all);return new(p.ExitCode,all);}
+    private static async Task<RunResult> RunAsync(string file, string args, CancellationToken token, bool ignoreExit = false)
+    {
+        TimeSpan timeout = string.Equals(Path.GetFileName(file), "defrag.exe", StringComparison.OrdinalIgnoreCase)
+            ? TimeSpan.FromMinutes(30) : TimeSpan.FromMinutes(5);
+        var result = await ProcessRunner.RunAsync(file, args, timeout, token,
+            logNonZeroExitAsError: !ignoreExit).ConfigureAwait(false);
+        string all = result.StdOut + result.StdErr;
+        if (!result.Success && !ignoreExit) throw new InvalidOperationException(all);
+        return new RunResult(result.ExitCode, all);
+    }
 }

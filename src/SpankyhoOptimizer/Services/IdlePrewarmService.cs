@@ -52,9 +52,11 @@ public static class IdlePrewarmService
             bool powerHydrated = await PowerPlanStateService.TryPrewarmRegistrySnapshotAsync(token).ConfigureAwait(false);
 
             await Task.Delay(250, token).ConfigureAwait(false);
-            bool appsHydrated = await Task.Run(
-                () => InstalledAppService.TryGetDisplaySnapshot() is not null,
-                token).ConfigureAwait(false);
+            // This continuation already runs off the UI thread
+            // (ConfigureAwait(false) above). Avoid allocating/scheduling
+            // another ThreadPool task just to hydrate the local disk cache.
+            token.ThrowIfCancellationRequested();
+            bool appsHydrated = InstalledAppService.TryGetDisplaySnapshot() is not null;
 
             // Keep heavy inventory providers on-demand, but warm cheap apply infrastructure
             // after the first interactive seconds so the first Apply/Recommended click avoids JIT/file-cache cost.

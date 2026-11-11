@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -18,6 +18,7 @@ public sealed partial class MainWindow
 
     private Task BuildUsbToolsAsync(CancellationToken token = default)
     {
+        int generation = _navigationGeneration;
         token.ThrowIfCancellationRequested();
         var shellPerf = System.Diagnostics.Stopwatch.StartNew();
         _usbHydrationCompleted = false;
@@ -28,7 +29,7 @@ public sealed partial class MainWindow
 
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "usb" || shellHost.Children.Count > 0)
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "usb" || !ContentStack.Children.Contains(shellHost) || shellHost.Children.Count > 0)
                 return;
 
             var deferred = System.Diagnostics.Stopwatch.StartNew();
@@ -53,7 +54,7 @@ public sealed partial class MainWindow
             LogService.Info("performance", $"USB_SHELL_DEFERRED ms={deferred.ElapsedMilliseconds}");
 
             SafeTaskService.Forget(
-                HydrateUsbToolsAsync(shellHost, loadingSurface, loading, token),
+                HydrateUsbToolsAsync(shellHost, loadingSurface, loading, token, generation),
                 "usb",
                 "Hydrate USB/HID dashboard");
         });
@@ -62,7 +63,7 @@ public sealed partial class MainWindow
         return Task.CompletedTask;
     }
 
-    private async Task HydrateUsbToolsAsync(StackPanel shellHost, Border loadingSurface, StackPanel loading, CancellationToken token)
+    private async Task HydrateUsbToolsAsync(StackPanel shellHost, Border loadingSurface, StackPanel loading, CancellationToken token, int generation)
     {
         try
         {
@@ -91,7 +92,7 @@ public sealed partial class MainWindow
 
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (token.IsCancellationRequested || _section != "usb") return;
+                if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "usb") return;
                 if (!ContentStack.Children.Contains(shellHost) || !shellHost.Children.Contains(loadingSurface)) return;
 
                 var uiSw = System.Diagnostics.Stopwatch.StartNew();
@@ -124,7 +125,7 @@ public sealed partial class MainWindow
             LogService.Error("usb", "USB/HID page load failed", ex);
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (token.IsCancellationRequested || _section != "usb") return;
+                if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "usb") return;
                 loading.Children.Clear();
                 loading.Children.Add(new TextBlock
                 {
@@ -295,37 +296,7 @@ public sealed partial class MainWindow
             async token =>
             {
                 await WindowsActions.SetUsbSelectiveSuspendAsync(true, token);
-                return await Task.Run(() =>
-                {
-                    int localChanged = 0;
-                    foreach (string rootPath in new[] { @"SYSTEM\CurrentControlSet\Enum\USB", @"SYSTEM\CurrentControlSet\Enum\USBSTOR", @"SYSTEM\CurrentControlSet\Enum\HID" })
-                    {
-                        token.ThrowIfCancellationRequested();
-                        using var rootKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(rootPath);
-                        if (rootKey == null) continue;
-                        foreach (var a in rootKey.GetSubKeyNames())
-                        {
-                            token.ThrowIfCancellationRequested();
-                            using var aKey = rootKey.OpenSubKey(a);
-                            if (aKey == null) continue;
-                            foreach (var b in aKey.GetSubKeyNames())
-                            {
-                                token.ThrowIfCancellationRequested();
-                                try
-                                {
-                                    using var dp = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(rootPath + "\\" + a + "\\" + b + "\\Device Parameters", true);
-                                    if (dp == null) continue;
-                                    dp.SetValue("EnhancedPowerManagementEnabled", 0, Microsoft.Win32.RegistryValueKind.DWord);
-                                    dp.SetValue("SelectiveSuspendEnabled", 0, Microsoft.Win32.RegistryValueKind.DWord);
-                                    dp.SetValue("DeviceSelectiveSuspended", 0, Microsoft.Win32.RegistryValueKind.DWord);
-                                    localChanged++;
-                                }
-                                catch { }
-                            }
-                        }
-                    }
-                    return localChanged;
-                }, token);
+                return await UsbPowerMutationService.DisableDevicePowerSavingAsync(token);
             });
         if (!progressResult.Completed)
         {
@@ -366,24 +337,37 @@ public sealed partial class MainWindow
     private StackPanel? _networkToolsRow;
     private Border? _networkToolsCard;
     private bool _networkToolsQueued;
+    private int _networkToolsQueuedGeneration = -1;
 
     private void ScheduleNetworkTools(CancellationToken token)
     {
         if (_networkToolsCard != null)
         {
-            AttachCachedElement(_networkToolsCard);
+            if (!ContentStack.Children.Contains(_networkToolsCard))
+                AttachCachedElement(_networkToolsCard);
             return;
         }
-        if (_networkToolsQueued) return;
+        int generation = _navigationGeneration;
+        if (_networkToolsQueued && _networkToolsQueuedGeneration == generation) return;
         _networkToolsQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        _networkToolsQueuedGeneration = generation;
+        bool accepted = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
+            if (generation != _navigationGeneration ||
+                _networkToolsQueuedGeneration != generation) return;
             _networkToolsQueued = false;
-            if (token.IsCancellationRequested || _section != "network" || _networkToolsCard != null) return;
+            _networkToolsQueuedGeneration = -1;
+            if (token.IsCancellationRequested || _section != "network" ||
+                _networkToolsCard != null) return;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             BuildNetworkTools();
             LogService.Info("performance", $"NETWORK_TOOLS_DEFERRED ms={sw.ElapsedMilliseconds}");
         });
+        if (!accepted && _networkToolsQueuedGeneration == generation)
+        {
+            _networkToolsQueued = false;
+            _networkToolsQueuedGeneration = -1;
+        }
     }
 
     private void BuildNetworkTools()
@@ -510,12 +494,14 @@ public sealed partial class MainWindow
             var selectionActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             selectionActions.Children.Add(QuickButton("Vybrat vše", () =>
             {
-                foreach (var check in checks.Where(x => x.IsEnabled)) check.IsChecked = true;
+                foreach (CheckBox check in checks)
+                    if (check.IsEnabled) check.IsChecked = true;
                 return Task.CompletedTask;
             }));
             selectionActions.Children.Add(QuickButton("Zrušit vše", () =>
             {
-                foreach (var check in checks.Where(x => x.IsEnabled)) check.IsChecked = false;
+                foreach (CheckBox check in checks)
+                    if (check.IsEnabled) check.IsChecked = false;
                 return Task.CompletedTask;
             }));
             chooser.Children.Add(selectionActions);
@@ -527,10 +513,11 @@ public sealed partial class MainWindow
                     "Vyčistit vybrané"))
                 return;
 
-            string[] selected = checks
-                .Where(x => x.IsChecked == true && x.Tag is string)
-                .Select(x => (string)x.Tag)
-                .ToArray();
+            var selectedIds = new List<string>(checks.Count);
+            foreach (CheckBox check in checks)
+                if (check.IsChecked == true && check.Tag is string id)
+                    selectedIds.Add(id);
+            string[] selected = selectedIds.ToArray();
             if (selected.Length == 0)
             {
                 ShowActionFeedback("Cleaner", ActionFeedbackKind.Info, "Není vybraná žádná kategorie.");
@@ -565,345 +552,4 @@ public sealed partial class MainWindow
         ContentStack.Children.Add(_storageMaintenanceCard);
     }
 
-    private void BuildBrowserDashboard(string browser, CancellationToken token)
-    {
-        var phase = System.Diagnostics.Stopwatch.StartNew();
-        var heroHost = new StackPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
-        var metricsHost = new StackPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
-        ContentStack.Children.Add(heroHost);
-        ContentStack.Children.Add(metricsHost);
-
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            if (token.IsCancellationRequested || _section != "browsers" ||
-                !string.Equals(_sub ?? "Firefox", browser, StringComparison.OrdinalIgnoreCase) ||
-                heroHost.Children.Count > 0)
-                return;
-
-            var deferred = System.Diagnostics.Stopwatch.StartNew();
-            if (browser.Equals("Firefox", StringComparison.OrdinalIgnoreCase))
-            {
-                heroHost.Children.Add(BuildModernSectionHero(
-                    "browsers",
-                    "Firefox",
-                    "Profily, cache a úpravy prohlížeče s ověřením user.js.",
-                    "FIREFOX",
-                    "Načítám profily…"));
-
-                metricsHost.Children.Add(BuildDashboardMetricGrid(
-                    BuildDashboardMetric("Profily", "…", "Nalezené Firefox profily"),
-                    BuildDashboardMetric("user.js", "…", "Spravovaný blok"),
-                    BuildDashboardMetric("WebRender", "…", "Ověření user.js"),
-                    BuildDashboardMetric("DoH", "…", "Načítám cache cesty")));
-
-                SafeTaskService.Forget(
-                    HydrateFirefoxBrowserDashboardAsync(browser, metricsHost, token),
-                    "browsers",
-                    "Firefox dashboard state");
-            }
-            else
-            {
-                heroHost.Children.Add(BuildModernSectionHero(
-                    "browsers",
-                    browser,
-                    "Cache a úpravy prohlížeče v jednom přehledu.",
-                    browser.ToUpperInvariant(),
-                    $"Načítám cache cesty • {_tweaks.Count} tweaků"));
-
-                metricsHost.Children.Add(BuildDashboardMetricGrid(
-                    BuildDashboardMetric("Cache cesty", "…", "Nalezené profily/cesty"),
-                    BuildDashboardMetric("Tweaky", _tweaks.Count.ToString(), "Nastavení pro browser"),
-                    BuildDashboardMetric("Cleanup", "Bezpečné", "Historie, hesla a cookies zůstávají"),
-                    BuildDashboardMetric("Ověření", "ON", "Tweak engine", "SpankySuccessBrush")));
-
-                SafeTaskService.Forget(
-                    HydrateBrowserDashboardAsync(browser, metricsHost, token),
-                    "browsers",
-                    $"{browser} dashboard state");
-            }
-
-            LogService.Info("performance", $"BROWSER_DASHBOARD_DEFERRED browser={browser} ms={deferred.ElapsedMilliseconds}");
-        });
-
-        LogService.Info("performance", $"BROWSER_DASHBOARD_SHELL browser={browser} ms={phase.ElapsedMilliseconds}");
-    }
-
-    private async Task HydrateFirefoxBrowserDashboardAsync(string browser, StackPanel metricsHost, CancellationToken token)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        try
-        {
-            var result = await Task.Run(() =>
-            {
-                var state = FirefoxAdvancedService.GetState();
-                var paths = BrowserCacheService.Paths(browser);
-                return (State: state, Paths: paths);
-            }, token).ConfigureAwait(false);
-
-            if (token.IsCancellationRequested) return;
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            {
-                if (token.IsCancellationRequested || _section != "browsers" ||
-                    !string.Equals(_sub ?? "Firefox", browser, StringComparison.OrdinalIgnoreCase))
-                    return;
-
-                var ui = System.Diagnostics.Stopwatch.StartNew();
-                metricsHost.Children.Clear();
-                metricsHost.Children.Add(BuildDashboardMetricGrid(
-                    BuildDashboardMetric("Profily", result.State.ProfilesTotal.ToString(), "Nalezené Firefox profily"),
-                    BuildDashboardMetric("user.js", $"{result.State.ProfilesManaged}/{result.State.ProfilesTotal}", "Spravovaný blok",
-                        result.State.ProfilesManaged == result.State.ProfilesTotal && result.State.ProfilesTotal > 0 ? "SpankySuccessBrush" : "SpankyInfoBrush"),
-                    BuildDashboardMetric("WebRender", result.State.WebRender ? "ON" : "Výchozí", "Ověření user.js",
-                        result.State.WebRender ? "SpankySuccessBrush" : "SpankyInfoBrush"),
-                    BuildDashboardMetric("DoH", result.State.DohMode2 ? "Mode 2" : "Výchozí", $"{result.Paths.Count} cache cest",
-                        result.State.DohMode2 ? "SpankySuccessBrush" : "SpankyInfoBrush")));
-                LogService.Info("performance", $"FIREFOX_DASHBOARD_HYDRATE totalMs={sw.ElapsedMilliseconds} uiMs={ui.ElapsedMilliseconds} paths={result.Paths.Count} profiles={result.State.ProfilesTotal}");
-            });
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            LogService.Error("browsers", "Firefox dashboard hydration failed", ex);
-        }
-    }
-
-    private async Task HydrateBrowserDashboardAsync(string browser, StackPanel metricsHost, CancellationToken token)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        try
-        {
-            var paths = await Task.Run(() => BrowserCacheService.Paths(browser), token).ConfigureAwait(false);
-            if (token.IsCancellationRequested) return;
-
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            {
-                if (token.IsCancellationRequested || _section != "browsers" ||
-                    !string.Equals(_sub ?? "Firefox", browser, StringComparison.OrdinalIgnoreCase))
-                    return;
-
-                var ui = System.Diagnostics.Stopwatch.StartNew();
-                metricsHost.Children.Clear();
-                metricsHost.Children.Add(BuildDashboardMetricGrid(
-                    BuildDashboardMetric("Cache cesty", paths.Count.ToString(), "Nalezené profily/cesty"),
-                    BuildDashboardMetric("Tweaky", _tweaks.Count.ToString(), "Nastavení pro browser"),
-                    BuildDashboardMetric("Cleanup", "Bezpečné", "Historie, hesla a cookies zůstávají"),
-                    BuildDashboardMetric("Ověření", "ON", "Tweak engine", "SpankySuccessBrush")));
-                LogService.Info("performance", $"BROWSER_DASHBOARD_HYDRATE browser={browser} totalMs={sw.ElapsedMilliseconds} uiMs={ui.ElapsedMilliseconds} paths={paths.Count}");
-            });
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            LogService.Error("browsers", $"{browser} dashboard hydration failed", ex);
-        }
-    }
-
-    private void BuildFirefoxUpdaterPanel(CancellationToken token)
-    {
-        var phase = System.Diagnostics.Stopwatch.StartNew();
-        var status = new TextBlock
-        {
-            Text = "Kontroluji verzi Firefoxu…",
-            Foreground = TextSecondaryBrush(),
-            TextWrapping = TextWrapping.Wrap
-        };
-        var versions = new TextBlock
-        {
-            Text = "Nainstalováno: …  •  Nejnovější: …  •  Zdroj: …",
-            Foreground = TextSecondaryBrush(),
-            FontSize = 12,
-            TextWrapping = TextWrapping.Wrap
-        };
-
-        long textMs = phase.ElapsedMilliseconds;
-        Button? updateButton = null;
-        async Task RefreshAsync(bool force)
-        {
-            status.Text = force ? "Kontroluji nejnovější verzi…" : "Načítám stav aktualizace…";
-            try
-            {
-                FirefoxUpdateStatus result = await FirefoxUpdateService.GetStatusAsync(force, token).ConfigureAwait(true);
-                if (token.IsCancellationRequested || _section != "browsers" || _sub != "Firefox") return;
-                versions.Text = $"Nainstalováno: {(result.Installed ? result.InstalledVersion : "nenalezen")}  •  Nejnovější: {result.LatestVersion}  •  Zdroj: {result.LatestSource}";
-                status.Text = result.UpdateAvailable ? $"AKTUALIZACE DOSTUPNÁ • {result.Message}" : result.Message;
-                status.Foreground = result.UpdateAvailable ? WarningBrush() : SuccessBrush();
-                if (updateButton != null) updateButton.IsEnabled = result.Installed && result.UpdateAvailable;
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                if (token.IsCancellationRequested || _section != "browsers" || _sub != "Firefox") return;
-                status.Text = "Kontrola verze selhala: " + ex.Message;
-                status.Foreground = WarningBrush();
-                if (updateButton != null) updateButton.IsEnabled = false;
-            }
-        }
-
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        long beforeButtonsMs = phase.ElapsedMilliseconds;
-        long refreshButtonMs = 0;
-        long primaryButtonMs = 0;
-
-        var stack = new StackPanel { Spacing = 8 };
-        stack.Children.Add(status);
-        stack.Children.Add(versions);
-        stack.Children.Add(actions);
-        long beforeExpanderMs = phase.ElapsedMilliseconds;
-        ContentStack.Children.Add(BuildDashboardExpander(
-            "Firefox Updater",
-            "Nainstalovaná verze • nejnovější Mozilla Stable • aktualizace jedním kliknutím",
-            stack));
-        long expanderMs = phase.ElapsedMilliseconds - beforeExpanderMs;
-        LogService.Info("performance",
-            $"FIREFOX_UPDATER_SHELL textMs={textMs} refreshButtonMs={refreshButtonMs} primaryButtonMs={primaryButtonMs} expanderMs={expanderMs} totalMs={phase.ElapsedMilliseconds}");
-
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            if (token.IsCancellationRequested || _section != "browsers" || _sub != "Firefox" || actions.Children.Count > 0) return;
-            var deferred = System.Diagnostics.Stopwatch.StartNew();
-            actions.Children.Add(QuickButton("Zkontrolovat znovu", () => RefreshAsync(true)));
-            updateButton = PrimaryQuickButton("Aktualizovat Firefox", async () =>
-            {
-                updateButton.IsEnabled = false;
-                status.Text = "Aktualizuji Firefox…";
-                status.Foreground = InfoBrush();
-                try
-                {
-                    ProcessResult result = await FirefoxUpdateService.UpdateAsync(token);
-                    if (!result.Success)
-                        throw new InvalidOperationException((result.StdErr + " " + result.StdOut).Trim());
-                    status.Text = "Aktualizace dokončena. Ověřuji verzi…";
-                    await Task.Delay(500, token);
-                    await RefreshAsync(true);
-                    ShowActionFeedback("Firefox", ActionFeedbackKind.Verified, "Firefox byl aktualizován a verze znovu ověřena.");
-                }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    status.Text = "Aktualizace selhala: " + ex.Message;
-                    status.Foreground = WarningBrush();
-                    ShowActionFeedback("Firefox", ActionFeedbackKind.Failed, ex.Message);
-                    await RefreshAsync(false);
-                }
-            });
-            updateButton.IsEnabled = false;
-            actions.Children.Add(updateButton);
-            LogService.Info("performance", $"FIREFOX_UPDATER_ACTIONS_DEFERRED ms={deferred.ElapsedMilliseconds} buttons={actions.Children.Count}");
-        });
-
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            if (token.IsCancellationRequested || _section != "browsers" || _sub != "Firefox") return;
-            SafeTaskService.Forget(RefreshAsync(false), "browsers", "Firefox updater status");
-        });
-    }
-
-    private void BuildFirefoxAdvancedPanel(CancellationToken token)
-    {
-        var stack = new StackPanel { Spacing = 8 };
-        stack.Children.Add(new TextBlock { Text = "Načítám Firefox profily…", Foreground = TextSecondaryBrush() });
-        ContentStack.Children.Add(BuildDashboardExpander(
-            "Firefox pokročilé",
-            "WebRender • disková cache • přednačítání sítě • DoH • ověření user.js",
-            stack));
-        SafeTaskService.Forget(LoadFirefoxAdvancedPanelAsync(stack, token), "browsers", "Firefox profile scan");
-    }
-
-    private async Task LoadFirefoxAdvancedPanelAsync(StackPanel stack, CancellationToken token)
-    {
-        try
-        {
-            var profiles = await Task.Run(() => FirefoxAdvancedService.Profiles(), token).ConfigureAwait(false);
-            if (token.IsCancellationRequested || _section != "browsers" || _sub != "Firefox") return;
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                if (_section != "browsers" || _sub != "Firefox") return;
-                stack.Children.Clear();
-                stack.Children.Add(new TextBlock { Text = $"Nalezené profily: {profiles.Count}", Foreground = TextSecondaryBrush() });
-                stack.Children.Add(ActionCard("Pokročilý user.js profil", "WebRender, disk cache, speculative networking a DNS-over-HTTPS. Před použitím si vybereš jednotlivé položky.", "Vybrat", ShowFirefoxAdvancedDialogAsync));
-                stack.Children.Add(ActionCard("Obnovit user.js", "Odstraní pouze blok vytvořený Spankyho Optimizerem.", "Obnovit", async () =>
-                {
-                    if (!await ShowStyledConfirmAsync("Obnovit Firefox user.js?", "Odstraní se pouze nastavení označené blokem Spankyho Optimizer.", "Obnovit", "Zrušit", "Firefox")) return;
-                    await ShowMessageAsync("Firefox", $"Obnoveno profilů: {await FirefoxAdvancedService.RestoreAsync()}.");
-                }));
-            });
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            LogService.Error("browsers", "Firefox advanced panel load failed", ex);
-            if (token.IsCancellationRequested) return;
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                if (_section != "browsers" || _sub != "Firefox") return;
-                stack.Children.Clear();
-                stack.Children.Add(new TextBlock
-                {
-                    Text = "Firefox profily se nepodařilo načíst: " + ex.Message,
-                    Foreground = WarningBrush(),
-                    TextWrapping = TextWrapping.Wrap
-                });
-                stack.Children.Add(QuickButton("Načíst znovu", () =>
-                    LoadFirefoxAdvancedPanelAsync(stack, token)));
-            });
-        }
-    }
-
-    private void BuildBrowserCachePanel(string browser, CancellationToken token)
-    {
-        var shellHost = new StackPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
-        ContentStack.Children.Add(shellHost);
-
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            if (token.IsCancellationRequested || _section != "browsers" ||
-                !string.Equals(_sub ?? "Firefox", browser, StringComparison.OrdinalIgnoreCase) ||
-                shellHost.Children.Count > 0) return;
-
-            var deferred = System.Diagnostics.Stopwatch.StartNew();
-            var stack = new StackPanel { Spacing = 8 };
-            stack.Children.Add(new TextBlock { Text = "Načítám profily a cache cesty…", Foreground = TextSecondaryBrush() });
-            shellHost.Children.Add(BuildDashboardExpander(
-                $"{browser} — profily a cache",
-                "Bezpečné cache cesty • historie, hesla, cookies a záložky zůstávají",
-                stack));
-            LogService.Info("performance", $"BROWSER_CACHE_PANEL_DEFERRED browser={browser} ms={deferred.ElapsedMilliseconds}");
-            SafeTaskService.Forget(LoadBrowserCachePanelAsync(browser, stack, token), "browsers", "Browser cache paths");
-        });
-    }
-
-    private async Task LoadBrowserCachePanelAsync(string browser, StackPanel stack, CancellationToken token)
-    {
-        var paths = await Task.Run(() => BrowserCacheService.Paths(browser), token).ConfigureAwait(false);
-        if (token.IsCancellationRequested || _section != "browsers" || !string.Equals(_sub ?? "Firefox", browser, StringComparison.OrdinalIgnoreCase)) return;
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            if (_section != "browsers" || !string.Equals(_sub ?? "Firefox", browser, StringComparison.OrdinalIgnoreCase)) return;
-            stack.Children.Clear();
-            stack.Children.Add(new TextBlock { Text = $"Nalezené cesty: {paths.Count}", Foreground = TextSecondaryBrush() });
-            stack.Children.Add(ActionCard($"Cache — {browser}", "Vyčistí pouze cache nalezených profilů. Historie, hesla, cookies a záložky zůstanou.", "Analyzovat a vyčistit", async () =>
-            {
-                var livePaths = BrowserCacheService.Paths(browser);
-                var size = await LauncherCacheService.GetSizeAsync(livePaths);
-                if (!await ShowStyledConfirmAsync($"Vyčistit cache — {browser}?", $"Profily/cesty: {livePaths.Count}\nVelikost přibližně: {size / 1048576d:0.0} MB\n\nNejdřív zavři prohlížeč.", "Vyčistit", "Zrušit", browser)) return;
-                var result = await LauncherCacheService.ClearVerifiedAsync(livePaths);
-                string detail = $"Uvolněno {result.FreedBytes / 1048576d:0.0} MB • zbývá {result.AfterBytes / 1048576d:0.0} MB";
-                if (result.FailedFiles > 0) detail += $" • zamčené/nepřístupné soubory: {result.FailedFiles}";
-                await ShowMessageAsync(browser, detail);
-            }));
-        });
-    }
-
-    private async Task ShowFirefoxAdvancedDialogAsync()
-    {
-        var state = FirefoxAdvancedService.GetState();
-        var web = new CheckBox { Content = "Vynutit WebRender", IsChecked = state.WebRender };
-        var cache = new CheckBox { Content = "Vypnout disk cache", IsChecked = state.DiskCacheOff };
-        var spec = new CheckBox { Content = "Vypnout speculative networking", IsChecked = state.SpeculativeOff };
-        var doh = new CheckBox { Content = "DNS-over-HTTPS režim 2", IsChecked = state.DohMode2 };
-        var stack = new StackPanel { Spacing = 8, Children = { web, cache, spec, doh } };
-        if (!await ShowStyledContentAsync("Firefox Advanced — vyber tweaky", "Vyber nastavení pro všechny nalezené profily.", stack, "Použít")) return;
-        var count = await FirefoxAdvancedService.ApplyAsync(web.IsChecked == true, cache.IsChecked == true, spec.IsChecked == true, doh.IsChecked == true);
-        await ShowMessageAsync("Firefox", $"Nastavení bylo zapsáno a read-back ověřil {count} profilů. Firefox restartuj.");
-    }
 }

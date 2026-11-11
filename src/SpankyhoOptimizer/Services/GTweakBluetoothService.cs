@@ -25,7 +25,27 @@ internal static class GTweakBluetoothService
     public static async Task<bool> IsEnabledAsync(CancellationToken token = default)
     {
         Radio? radio = await GetBluetoothAsync(token).ConfigureAwait(false);
-        if (radio == null) throw new PlatformNotSupportedException("Bluetooth radio nebylo nalezeno nebo aplikace nemá přístup.");
+        if (radio == null)
+        {
+            // A deliberately PnP-disabled Bluetooth adapter disappears
+            // from Windows.Devices.Radios, but is correctly reported OFF,
+            // not missing/broken. This requires native Win32_PnPEntity
+            // Code22 for every physical Bluetooth adapter; any missing,
+            // inaccessible or other state remains Unsupported.
+            var physical = BluetoothAdapterHealthService.Read();
+            if (!physical.Available || physical.Adapters.Count == 0 ||
+                physical.Adapters.Any(x => x.ErrorCode != 22))
+                throw new PlatformNotSupportedException(
+                    "Bluetooth radio nebylo nalezeno nebo aplikace nemá přístup.");
+            lock (CacheLock)
+            {
+                _cachedState = false;
+                _cachedStateAt = DateTime.UtcNow;
+            }
+            PersistentHardwareCacheService.WriteMachineStable(
+                PersistentKey, new BluetoothPersistentState(false));
+            return false;
+        }
         bool enabled = radio.State == RadioState.On;
         lock (CacheLock)
         {
@@ -99,8 +119,19 @@ internal static class GTweakBluetoothService
             try
             {
                 Radio? radio = await GetBluetoothAsync(CancellationToken.None).ConfigureAwait(false);
-                if (radio == null) return;
-                bool enabled = radio.State == RadioState.On;
+                bool enabled;
+                if (radio == null)
+                {
+                    // Cache refresh runs off the UI thread. A user-opted-out
+                    // PnP device must invalidate a formerly cached "On";
+                    // never call synchronous WMI from the UI fast path.
+                    var physical = BluetoothAdapterHealthService.Read();
+                    if (!physical.Available || physical.Adapters.Count == 0 ||
+                        physical.Adapters.Any(x => x.ErrorCode != 22))
+                        return;
+                    enabled = false;
+                }
+                else enabled = radio.State == RadioState.On;
                 lock (CacheLock)
                 {
                     if (generation != _generation) return;

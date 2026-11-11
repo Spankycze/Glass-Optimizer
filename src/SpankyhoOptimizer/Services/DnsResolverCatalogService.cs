@@ -48,10 +48,10 @@ internal static class DnsResolverCatalogService
 
             Directory.CreateDirectory(LogService.Root);
             string json = JsonSerializer.Serialize(parsed, IndentedJson);
-            await File.WriteAllTextAsync(CatalogPath, json, token).ConfigureAwait(false);
+            await AtomicFileService.WriteTextAsync(CatalogPath, json, token).ConfigureAwait(false);
 
             var result = BuildResult(parsed, DateTime.UtcNow, "DNS-Hop upstream");
-            await File.WriteAllTextAsync(MetaPath, JsonSerializer.Serialize(result, IndentedJson), token).ConfigureAwait(false);
+            await AtomicFileService.WriteTextAsync(MetaPath, JsonSerializer.Serialize(result, IndentedJson), token).ConfigureAwait(false);
             _cache = parsed;
             LogService.Info("network", $"DNS_CATALOG_UPDATED count={result.Count} udp={result.UdpTcp} doh={result.Doh} dot={result.Dot} doq={result.Doq}");
             return result;

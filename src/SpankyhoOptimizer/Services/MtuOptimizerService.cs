@@ -82,6 +82,7 @@ public static class MtuOptimizerService
         [MarshalAs(UnmanagedType.U1)] public bool DisableDefaultRoutes;
     }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("iphlpapi.dll")]
     private static extern uint GetIpInterfaceEntry(ref MibIpInterfaceRow row);
 
@@ -417,7 +418,7 @@ public static class MtuOptimizerService
         }
 
         var snapshot = new MtuRollbackSnapshot(DateTime.UtcNow, adapter.Name, adapter.Ipv4Mtu, adapter.Ipv6Mtu);
-        await File.WriteAllTextAsync(
+        await AtomicFileService.WriteTextAsync(
             RollbackPath,
             JsonSerializer.Serialize(snapshot, IndentedJson),
             token).ConfigureAwait(false);
@@ -437,7 +438,7 @@ public static class MtuOptimizerService
 
         if (snapshot.Ipv4Mtu > 0)
         {
-            var v4 = await ProcessRunner.RunAsync(
+            var v4 = await PrivilegedProcessRunner.RunAsync(
                 "netsh.exe",
                 $"interface ipv4 set subinterface \"{snapshot.AdapterName}\" mtu={snapshot.Ipv4Mtu} store=persistent",
                 TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
@@ -448,7 +449,7 @@ public static class MtuOptimizerService
         bool restoreIpv6 = snapshot.Ipv6Mtu >= 1280;
         if (restoreIpv6)
         {
-            var v6 = await ProcessRunner.RunAsync(
+            var v6 = await PrivilegedProcessRunner.RunAsync(
                 "netsh.exe",
                 $"interface ipv6 set subinterface \"{snapshot.AdapterName}\" mtu={snapshot.Ipv6Mtu} store=persistent",
                 TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
@@ -484,11 +485,11 @@ public static class MtuOptimizerService
             try
             {
                 if (before.Ipv4Mtu > 0)
-                    await ProcessRunner.RunAsync("netsh.exe",
+                    await PrivilegedProcessRunner.RunAsync("netsh.exe",
                         $"interface ipv4 set subinterface \"{name}\" mtu={before.Ipv4Mtu} store=persistent",
                         TimeSpan.FromSeconds(15), CancellationToken.None).ConfigureAwait(false);
                 if (applyIpv6 && before.Ipv6Mtu >= 1280)
-                    await ProcessRunner.RunAsync("netsh.exe",
+                    await PrivilegedProcessRunner.RunAsync("netsh.exe",
                         $"interface ipv6 set subinterface \"{name}\" mtu={before.Ipv6Mtu} store=persistent",
                         TimeSpan.FromSeconds(15), CancellationToken.None).ConfigureAwait(false);
                 LogService.Info("network", $"MTU_AUTO_ROLLBACK_OK adapter={name} ipv4={before.Ipv4Mtu} ipv6={before.Ipv6Mtu}");
@@ -498,7 +499,7 @@ public static class MtuOptimizerService
 
         try
         {
-            var ipv4 = await ProcessRunner.RunAsync(
+            var ipv4 = await PrivilegedProcessRunner.RunAsync(
                 "netsh.exe",
                 $"interface ipv4 set subinterface \"{name}\" mtu={mtu} store=persistent",
                 TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
@@ -509,7 +510,7 @@ public static class MtuOptimizerService
             {
                 if (mtu < 1280)
                     throw new ArgumentOutOfRangeException(nameof(mtu), "IPv6 MTU nesmí být nižší než 1280.");
-                var ipv6 = await ProcessRunner.RunAsync(
+                var ipv6 = await PrivilegedProcessRunner.RunAsync(
                     "netsh.exe",
                     $"interface ipv6 set subinterface \"{name}\" mtu={mtu} store=persistent",
                     TimeSpan.FromSeconds(15), token).ConfigureAwait(false);

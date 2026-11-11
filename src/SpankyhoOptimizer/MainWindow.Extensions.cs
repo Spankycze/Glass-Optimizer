@@ -18,13 +18,11 @@ public sealed partial class MainWindow
         ("system", null), ("gpu", null), ("memory", null), ("storage", null),
         ("network", null), ("ui", null), ("update", null), ("privacy", null),
         ("ai", null), ("defender", null),
-        ("browsers", "Firefox"), ("browsers", "Chrome"), ("browsers", "Edge"),
-        ("browsers", "Brave"), ("browsers", "Opera"), ("browsers", "Opera GX"),
-        ("browsers", "Vivaldi"),
         ("components", "Služby"), ("components", "Ovladače"), ("components", "Task Scheduler")
     };
     private Task BuildExtensionsPageAsync(CancellationToken token)
     {
+        int generation = _navigationGeneration;
         token.ThrowIfCancellationRequested();
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var shellHost = new StackPanel { Spacing = 10, HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -33,7 +31,7 @@ public sealed partial class MainWindow
 
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            if (token.IsCancellationRequested || _section != "extensions" || shellHost.Children.Count > 0)
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "extensions" || !ContentStack.Children.Contains(shellHost) || shellHost.Children.Count > 0)
                 return;
 
             var deferred = System.Diagnostics.Stopwatch.StartNew();
@@ -45,12 +43,12 @@ public sealed partial class MainWindow
             var body = new StackPanel { Spacing = 10 };
             shellHost.Children.Add(body);
             LogService.Info("performance", $"EXTENSIONS_SHELL_DEFERRED ms={deferred.ElapsedMilliseconds}");
-            SafeTaskService.Forget(LoadExtensionsBodyAsync(body, token), "extensions", "Deferred extensions body");
+            SafeTaskService.Forget(LoadExtensionsBodyAsync(body, token, generation), "extensions", "Deferred extensions body");
         });
         return Task.CompletedTask;
     }
 
-    private async Task LoadExtensionsBodyAsync(StackPanel body, CancellationToken token)
+    private async Task LoadExtensionsBodyAsync(StackPanel body, CancellationToken token, int generation)
     {
         try
         {
@@ -64,16 +62,16 @@ public sealed partial class MainWindow
             }, token);
             long dataMs = sw.ElapsedMilliseconds;
             token.ThrowIfCancellationRequested();
-            if (_section != "extensions") return;
+            if (generation != _navigationGeneration || _section != "extensions" || body.Parent == null) return;
 
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                if (token.IsCancellationRequested || _section != "extensions") return;
+                if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "extensions" || body.Parent == null) return;
                 var render = System.Diagnostics.Stopwatch.StartNew();
                 body.Children.Clear();
                 body.Children.Add(ActionCard("Aktualizace programů", "Grafická správa aktualizací přes Winget s výběrem jednotlivých aplikací, verzemi a hromadnou aktualizací.", "Otevřít", () => ShowSoftwareManagerAsync(token)));
                 body.Children.Add(ActionCard("Volitelné funkce Windows", "Správa funkcí Windows používaných Optimizerem bez zbytečného kompletního DISM skenu.", "Otevřít", () => ShowOptionalFeaturesAsync(token)));
-                string upstreamSummary = string.Join(" • ", data.upstream.Select(x => $"{x.Name}: {(x.UpdateDownloaded ? x.Commit[..Math.Min(8, x.Commit.Length)] : "nezkontrolováno")}"));
+                string upstreamSummary = string.Join(" • ", data.upstream.Select(x => $"{x.Name}: {(x.UpdateDownloaded ? "archiv " + x.Commit[..Math.Min(8, x.Commit.Length)] : "kopie neověřena")} ({x.IntegrationMode})"));
                 body.Children.Add(ActionCard("Aktualizace zdrojů", upstreamSummary, "Zkontrolovat", () => ShowUpstreamSourcesAsync(token, force: true)));
                 body.Children.Add(ActionCard("Spanky pluginy", $"Bezpečné JSON manifesty mohou skládat existující vestavěné tweaky. Nalezeno: {data.plugins.Count}.", "Spravovat", () => ShowPluginManagerAsync(token)));
                 body.Children.Add(ActionCard("Lokální skripty", "Pokročilá kompatibilita pro lokální .ps1, .bat, .cmd a .reg soubory. Spuštění je vždy ručně potvrzené.", "Otevřít", () => ShowGTweakLocalScriptsAsync(token)));
@@ -104,6 +102,7 @@ public sealed partial class MainWindow
         foreach (var tweak in tweaks)
         {
             var toggle = new ToggleSwitch { Header = tweak.Name, IsOn = tweak.Current, OnContent = "Vypnuto", OffContent = "Zapnuto / default" };
+            NormalizeToggleAppearance(toggle);
             toggles.Add((toggle, tweak)); root.Children.Add(toggle);
         }
         if (!await ShowStyledContentAsync("Optional Features", "Přepínač ON znamená, že daná Windows Feature má být vypnutá. Změny mohou vyžadovat restart.", root, "Použít")) return;
@@ -124,9 +123,12 @@ public sealed partial class MainWindow
         if (!progressResult.Completed)
         {
             LogService.Info("extensions", "Optional Features apply cancelled by user/navigation.");
-            await ReconcileCancelledApplyAsync(dirty, "extensions:optional-features");
+            bool verified = await ReconcileCancelledApplyAsync(dirty, "extensions:optional-features");
             RefreshCards(force: true);
             QueueDirtyStateRefresh();
+            if (!verified && !token.IsCancellationRequested)
+                ShowActionFeedback("Optional Features", ActionFeedbackKind.Failed,
+                    "Operace byla přerušena; skutečný stav Windows Features se nepodařilo ověřit.");
             return;
         }
         var errors = progressResult.Result;
@@ -167,11 +169,13 @@ public sealed partial class MainWindow
         var selected = plugin.Tweaks.Where(all.ContainsKey).Select(id => all[id]).ToArray();
         if (selected.Length == 0) { await ShowStyledInfoAsync("Spanky Plugins", "Manifest neobsahuje žádná známá tweak ID."); return; }
         await _engine.DetectAsync(selected, token);
-        foreach (var tweak in selected) tweak.Pending = true;
-        var dirty = selected.Where(x => x.IsDirty).ToArray();
+        // Stage the desired ON state without changing shared catalog definitions before confirmation.
+        var dirty = selected.Where(x => x.IsLoaded && !x.Current).ToArray();
         if (dirty.Length == 0) { await ShowStyledInfoAsync("Spanky Plugins", "Všechny položky pluginu už jsou aktivní."); return; }
         if (!await ShowStyledConfirmAsync($"Použít plugin {plugin.Name}?", string.Join(Environment.NewLine, dirty.Take(24).Select(x => "• " + x.Name)), "Použít", "Zrušit", $"{dirty.Length} změn")) return;
         await WindowsActions.EnsureRecentRestorePointAsync("Spankyho Optimizer - Before plugin changes");
+        token.ThrowIfCancellationRequested();
+        foreach (var tweak in dirty) tweak.Pending = true;
         var progressResult = await RunCancellableWithProgressAsync(
             plugin.Name,
             $"Aplikuji {dirty.Length} změn…",
@@ -185,9 +189,12 @@ public sealed partial class MainWindow
         if (!progressResult.Completed)
         {
             LogService.Info("extensions", $"Plugin apply cancelled: {plugin.Name}");
-            await ReconcileCancelledApplyAsync(dirty, "extensions:plugin:" + plugin.Name);
+            bool verified = await ReconcileCancelledApplyAsync(dirty, "extensions:plugin:" + plugin.Name);
             RefreshCards(force: true);
             QueueDirtyStateRefresh();
+            if (!verified && !token.IsCancellationRequested)
+                ShowActionFeedback(plugin.Name, ActionFeedbackKind.Failed,
+                    "Operace byla přerušena; stav změněných funkcí nebylo možné ověřit.");
             return;
         }
         var errors = progressResult.Result;

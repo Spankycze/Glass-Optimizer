@@ -12,6 +12,7 @@ public sealed partial class MainWindow
 {
     private async Task FillDetectedAppsPanelAsync(StackPanel body, CancellationToken token)
     {
+        int generation = _navigationGeneration;
         IReadOnlyList<DetectedDesktopApp> apps;
         try
         {
@@ -21,7 +22,10 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             LogService.Error("apps", "Installed app detection failed", ex);
-            if (token.IsCancellationRequested || _section != "apps") return;
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "apps" ||
+                body.Parent == null) return;
             body.Children.Clear();
             body.Children.Add(new TextBlock
             {
@@ -34,11 +38,17 @@ public sealed partial class MainWindow
             return;
         }
 
-        if (token.IsCancellationRequested || _section != "apps") return;
+        if (token.IsCancellationRequested ||
+            generation != _navigationGeneration ||
+            _section != "apps" ||
+            body.Parent == null) return;
         body.Children.Clear();
         foreach (var app in apps)
         {
-            if (token.IsCancellationRequested || _section != "apps") return;
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "apps" ||
+                body.Parent == null) return;
             var row = new Grid { ColumnSpacing = 10 };
             row.ColumnDefinitions.Add(new ColumnDefinition());
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -74,7 +84,7 @@ public sealed partial class MainWindow
                 var progressResult = await RunCancellableWithProgressAsync(
                     "Odinstalace " + app.Name,
                     "Odinstaluji aplikaci a kontroluji známé zbytky…",
-                    token => AppUninstallService.UninstallWithCleanupAsync(app, token),
+                    progressToken => AppUninstallService.UninstallWithCleanupAsync(app, progressToken),
                     x => x.Success,
                     x => x.Message);
                 if (!progressResult.Completed)
@@ -92,7 +102,8 @@ public sealed partial class MainWindow
                 if (result.Success)
                 {
                     AppDetectionService.Invalidate();
-                    await FillDetectedAppsPanelAsync(body, CancellationToken.None);
+                    if (!token.IsCancellationRequested && _section == "apps")
+                        await FillDetectedAppsPanelAsync(body, token);
                 }
             }));
 

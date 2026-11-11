@@ -35,13 +35,16 @@ internal static class GTweakMemoryPurgeService
         public long CurrentSize, PeakSize, PageFaultCount, MinimumWorkingSet, MaximumWorkingSet;
         public long U1, U2, U3, U4;
     }
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool LookupPrivilegeValue(string? host, string name, ref long luid);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TokenPrivilege state,
         int length, IntPtr previous, IntPtr returnLength);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("ntdll.dll")]
     private static extern uint NtSetSystemInformation(int infoClass, IntPtr info, int length);
 

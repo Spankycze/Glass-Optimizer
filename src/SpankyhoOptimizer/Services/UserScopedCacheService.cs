@@ -29,14 +29,21 @@ internal static class UserScopedCacheService
             var envelope = JsonSerializer.Deserialize<CacheEnvelope<T>>(File.ReadAllText(file), JsonOptions);
             if (envelope == null) return false;
             age = DateTime.UtcNow - envelope.SavedUtc;
-            if (age > maxAge) return false;
+            if (age < TimeSpan.Zero || age > maxAge) return false;
             value = envelope.Value;
             return value != null;
         }
-        catch { return false; }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+        catch (JsonException) { return false; }
+        catch (System.Security.SecurityException) { return false; }
     }
 
-    public static void Write<T>(string key, T value)
+    public static void Write<T>(string key, T value) => _ = TryWrite(key, value);
+
+    // Callers with their own persistent write coalescing must be told whether
+    // the atomic commit succeeded. The legacy void API preserves its contract.
+    public static bool TryWrite<T>(string key, T value)
     {
         try
         {
@@ -47,8 +54,13 @@ internal static class UserScopedCacheService
                     PathFor(key),
                     JsonSerializer.Serialize(new CacheEnvelope<T>(DateTime.UtcNow, value), JsonOptions));
             }
+            return true;
         }
-        catch (Exception ex) { LogService.Error("user-cache", "Persistent cache write failed: " + key, ex); }
+        catch (IOException ex) { LogService.Error("user-cache", "Persistent cache write failed: " + key, ex); }
+        catch (UnauthorizedAccessException ex) { LogService.Error("user-cache", "Persistent cache write failed: " + key, ex); }
+        catch (JsonException ex) { LogService.Error("user-cache", "Persistent cache write failed: " + key, ex); }
+        catch (System.Security.SecurityException ex) { LogService.Error("user-cache", "Persistent cache write failed: " + key, ex); }
+        return false;
     }
 
     public static void Remove(string key)
@@ -61,7 +73,9 @@ internal static class UserScopedCacheService
                 if (File.Exists(file)) File.Delete(file);
             }
         }
-        catch (Exception ex) { LogService.Error("user-cache", "Persistent cache remove failed: " + key, ex); }
+        catch (IOException ex) { LogService.Error("user-cache", "Persistent cache remove failed: " + key, ex); }
+        catch (UnauthorizedAccessException ex) { LogService.Error("user-cache", "Persistent cache remove failed: " + key, ex); }
+        catch (System.Security.SecurityException ex) { LogService.Error("user-cache", "Persistent cache remove failed: " + key, ex); }
     }
 
     internal static void BackdateForSmoke(string key, TimeSpan age)

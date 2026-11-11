@@ -24,6 +24,7 @@ public static class InputLatencyService
     private const uint SpifUpdateIniFile = 0x0001;
     private const uint SpifSendChange = 0x0002;
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SystemParametersInfo(
         uint uiAction,

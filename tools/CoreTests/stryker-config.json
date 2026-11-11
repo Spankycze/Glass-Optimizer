@@ -1,6 +1,6 @@
-﻿{
+{
     "stryker-config":  {
-                           "project":  "../../src/SpankyhoOptimizer.Core/SpankyhoOptimizer.Core.csproj",
+                           "project":  "SpankyhoOptimizer.Core.csproj",
                            "test-projects":  [
                                                  "CoreTests.csproj"
                                              ],

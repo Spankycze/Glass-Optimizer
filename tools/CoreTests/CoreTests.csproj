@@ -5,9 +5,12 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <!-- Only safety-critical, high-value release regressions by default.
+         Preserve unselected, uncommitted test sources without compiling 3,372
+         legacy and expanded cases on routine developer and release runs. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="10.1.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
@@ -15,7 +18,23 @@
   <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
+  <!-- Deliberate compact default suite. The full historical test sources
+       remain on disk untouched, but are not part of the everyday build. -->
+  <ItemGroup>
+    <Compile Include="FanStartupIsolationTests.cs" />
+    <Compile Include="FanAgentRegistrationCadence1439Tests.cs" />
+    <Compile Include="FanAgentTaskPolicyTests.cs" />
+    <Compile Include="FanProfileAtomicSave1438Tests.cs" />
+    <Compile Include="RegistryBatchScopeReadOnlyTests.cs" />
+    <Compile Include="RegistryBatchScopeConcurrencyTests.cs" />
+    <Compile Include="PowerPlanInventoryRowSafety207Tests.cs" />
+    <Compile Include="DuplicatePowerPlanCleanupPreflight203Tests.cs" />
+    <Compile Include="PerformanceApplyPowerPreflight204Tests.cs" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\SpankyhoOptimizer.Core\SpankyhoOptimizer.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -12,7 +12,7 @@ public sealed partial class MainWindow
     private async Task<bool> ShowDriverLoadErrorAsync(Exception error, System.Threading.CancellationToken token, int pageGeneration)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var overlay = CreateDialogOverlay(alpha: 176);
+        var overlay = CreateDialogOverlay(alpha: 82);
         var card = CreateDialogCard(540, 500, 620);
 
         var root = new StackPanel { Spacing = 14 };
@@ -60,7 +60,7 @@ public sealed partial class MainWindow
             Child = new TextBlock
             {
                 Text = "NAČTENÍ SELHALO",
-                FontSize = 9,
+                FontSize = 10.5,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = WarningBrush()
             }
@@ -136,23 +136,21 @@ public sealed partial class MainWindow
         Grid.SetColumn(rightActions, 1);
 
         bool closed = false;
-        var lifetimeTimer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(160) };
+        System.Threading.CancellationTokenRegistration lifetimeRegistration = default;
         Task Finish(bool retry)
         {
             if (closed) return Task.CompletedTask;
             closed = true;
-            lifetimeTimer.Stop();
+            lifetimeRegistration.Dispose();
             UnmountDialog(overlay);
             tcs.TrySetResult(retry);
             return Task.CompletedTask;
         }
-        lifetimeTimer.Tick += (_, _) =>
+
+        lifetimeRegistration = token.Register(() =>
         {
-            if (token.IsCancellationRequested ||
-                pageGeneration != _driverPageLoadGeneration ||
-                _section != "components" || _sub != "Ovladače")
-                _ = Finish(false);
-        };
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () => _ = Finish(false));
+        });
 
         rightActions.Children.Add(StyledDialogButton("Zavřít", false, () => Finish(false)));
         rightActions.Children.Add(StyledDialogButton("Zkusit znovu", true, () => Finish(true)));
@@ -161,7 +159,10 @@ public sealed partial class MainWindow
 
         card.Child = root;
         MountDialog(overlay, card, () => _ = Finish(false));
-        lifetimeTimer.Start();
+
+        if (pageGeneration != _driverPageLoadGeneration ||
+            _section != "components" || _sub != "Ovladače")
+            await Finish(false);
 
         return await tcs.Task;
     }

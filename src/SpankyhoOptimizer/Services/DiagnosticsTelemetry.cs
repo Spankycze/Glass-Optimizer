@@ -17,6 +17,19 @@ public static class DiagnosticsTelemetry
     public static bool Enabled { get; } =
         string.Equals(Environment.GetEnvironmentVariable("SPANKY_OTEL"), "1", StringComparison.Ordinal);
 
+    // The hot call sites use two fixed tags. The params-array overload used to
+    // allocate on every run even with tracing disabled.
+    public static Activity? Start(string operation,
+        (string Key, object? Value) first, (string Key, object? Value) second)
+    {
+        if (!Enabled) return null;
+        Activity? activity = ActivitySource.StartActivity(operation, ActivityKind.Internal);
+        if (activity is null) return null;
+        activity.SetTag(first.Key, first.Value);
+        activity.SetTag(second.Key, second.Value);
+        return activity;
+    }
+
     public static Activity? Start(string operation, params (string Key, object? Value)[] tags)
     {
         if (!Enabled) return null;
@@ -25,6 +38,29 @@ public static class DiagnosticsTelemetry
         foreach (var tag in tags)
             activity.SetTag(tag.Key, tag.Value);
         return activity;
+    }
+
+    public static void RecordDuration(string operation, double milliseconds,
+        (string Key, object? Value) first)
+    {
+        if (!Enabled) return;
+        var tags = new TagList { { "operation", operation }, { first.Key, first.Value } };
+        DurationMs.Record(milliseconds, tags);
+        OperationCount.Add(1, tags);
+    }
+
+    public static void RecordDuration(string operation, double milliseconds,
+        (string Key, object? Value) first, (string Key, object? Value) second,
+        (string Key, int Value) third)
+    {
+        if (!Enabled) return;
+        var tags = new TagList
+        {
+            { "operation", operation }, { first.Key, first.Value },
+            { second.Key, second.Value }, { third.Key, third.Value }
+        };
+        DurationMs.Record(milliseconds, tags);
+        OperationCount.Add(1, tags);
     }
 
     public static void RecordDuration(string operation, double milliseconds, params (string Key, object? Value)[] tags)

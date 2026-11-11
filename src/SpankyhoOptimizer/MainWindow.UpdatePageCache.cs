@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -35,16 +35,19 @@ public sealed partial class MainWindow
         RefreshVirtualTweakRows();
 
         _updatePageCacheUsedAt = DateTime.UtcNow;
+        // Reattached controls need a fresh owner for deferred status work.
+        _updateActionsGeneration++;
+        _updateActionsQueued = false;
         if (_updateActionsHost != null && _updateActionsRendered < 3)
             ScheduleWindowsUpdateActions(token, restartQueue: true);
-        if (_updateStatusBody != null && _updatePauseButton != null && !_updateStatusLoadPending && DateTime.UtcNow - _updateStatusUiAt > TimeSpan.FromSeconds(10))
-            SafeTaskService.Forget(LoadWindowsUpdateCenterAsync(_updateStatusBody, _updatePauseButton, CancellationToken.None), "update", "Cached Windows Update status");
+        if (_updateStatusBody != null && _updatePauseButton != null && DateTime.UtcNow - _updateStatusUiAt > TimeSpan.FromSeconds(10))
+            SafeTaskService.Forget(LoadWindowsUpdateCenterAsync(_updateStatusBody, _updatePauseButton, token), "update", "Cached Windows Update status");
         return true;
     }
 
     private void CaptureUpdatePageCache()
     {
-        _updatePageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _updatePageCache = SnapshotChildren(ContentStack);
         _updateVirtualRowsCache = _virtualTweakRows;
         _updateVirtualMapCache = new Dictionary<TweakDefinition, TweakVirtualRowViewModel>(_virtualTweakRowMap);
         _updatePageCacheUsedAt = DateTime.UtcNow;

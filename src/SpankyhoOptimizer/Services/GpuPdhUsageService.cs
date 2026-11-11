@@ -30,23 +30,38 @@ internal static class GpuPdhUsageService
         public PdhFmtCounterValue Value;
     }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
     private static extern uint PdhOpenQueryW(string? dataSource, IntPtr userData, out IntPtr query);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
     private static extern uint PdhAddEnglishCounterW(IntPtr query, string fullCounterPath, IntPtr userData, out IntPtr counter);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll")]
     private static extern uint PdhCollectQueryData(IntPtr query);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
     private static extern uint PdhGetFormattedCounterArrayW(
         IntPtr counter, uint format, ref uint bufferSize, ref uint itemCount, IntPtr itemBuffer);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll")]
     private static extern uint PdhCloseQuery(IntPtr query);
 
     internal static double? TryRead()
+    {
+        // On supported NVIDIA cards, lightweight NVAPI avoids loading
+        // NVML while preserving native GPU-domain utilization. If NVAPI
+        // becomes unavailable, retain the existing NVML and PDH fallbacks.
+        return GpuNvapiUsageService.TryRead() ??
+            GpuNvmlUsageService.TryRead() ?? TryReadPdh();
+    }
+
+    // Kept intact as an independent fallback when NVML is absent or fails.
+    internal static double? TryReadPdh()
     {
         lock (Gate)
         {
@@ -112,6 +127,9 @@ internal static class GpuPdhUsageService
 
     internal static void Dispose()
     {
+        // Consistent lock order with TryRead: NVAPI, NVML, then PDH.
+        GpuNvapiUsageService.Dispose();
+        GpuNvmlUsageService.Dispose();
         lock (Gate)
         {
             if (_query != IntPtr.Zero) _ = PdhCloseQuery(_query);

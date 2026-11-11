@@ -9,61 +9,10 @@ public sealed partial class MainWindow
     private bool _virtualTweakResourcesPrewarmed;
     private bool _powerCardFactoryPrewarmed;
     private bool _actionButtonFactoriesPrewarmed;
-    private bool _commonControlFactoriesPrewarmed;
     private bool _driverUiFactoryPrewarmed;
     private bool _networkUiFactoriesPrewarmed;
     private Microsoft.UI.Xaml.FrameworkElement? _prewarmedDebloatLoadingHero;
     private AppThemePreference? _prewarmedDebloatThemePreference;
-    private Microsoft.UI.Xaml.FrameworkElement? _prewarmedPowerShellHero;
-    private AppThemePreference? _prewarmedPowerShellThemePreference;
-
-    private async Task RunStagedPostRenderPrewarmAsync()
-    {
-        // Give the freshly activated Overview a quiet window. These factories improve later
-        // first-navigation latency, but they must never compete with the first interactive
-        // seconds, live metrics, titlebar completion or a user's immediate navigation.
-        const int initialQuietMs = 2200;
-        const int betweenWaveMs = 120;
-        await Task.Delay(initialQuietMs).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        var total = System.Diagnostics.Stopwatch.StartNew();
-        LogService.Info(
-            "performance",
-            $"POST_RENDER_PREWARM_BEGIN quietMs={initialQuietMs} section={_section}");
-
-        await PrewarmStorageActionsEarlyAfterFirstRenderAsync().ConfigureAwait(false);
-        LogService.Info("performance", $"POST_RENDER_PREWARM_WAVE stage=storage ms={total.ElapsedMilliseconds}");
-
-        await Task.Delay(betweenWaveMs).ConfigureAwait(false);
-        if (_section != "overview") return;
-        await PrewarmVirtualTweakPipelineAsync().ConfigureAwait(false);
-        LogService.Info("performance", $"POST_RENDER_PREWARM_WAVE stage=virtual ms={total.ElapsedMilliseconds}");
-
-        await Task.Delay(betweenWaveMs).ConfigureAwait(false);
-        if (_section != "overview") return;
-        await PrewarmCommonCatalogsAfterFirstRenderAsync().ConfigureAwait(false);
-        LogService.Info("performance", $"POST_RENDER_PREWARM_WAVE stage=catalogs ms={total.ElapsedMilliseconds}");
-
-        await Task.Delay(betweenWaveMs).ConfigureAwait(false);
-        if (_section != "overview") return;
-        await PrewarmEarlySectionUiAfterFirstRenderAsync().ConfigureAwait(false);
-        LogService.Info("performance", $"POST_RENDER_PREWARM_WAVE stage=early-sections ms={total.ElapsedMilliseconds}");
-
-        await Task.Delay(betweenWaveMs).ConfigureAwait(false);
-        if (_section != "overview") return;
-        await PrewarmCommonControlFactoriesAfterFirstRenderAsync().ConfigureAwait(false);
-        LogService.Info("performance", $"POST_RENDER_PREWARM_WAVE stage=common-controls ms={total.ElapsedMilliseconds}");
-
-        await Task.Delay(betweenWaveMs).ConfigureAwait(false);
-        if (_section != "overview") return;
-        await PrewarmGpuTweakCardsEarlyAfterFirstRenderAsync().ConfigureAwait(false);
-        LogService.Info("performance", $"POST_RENDER_PREWARM_WAVE stage=gpu ms={total.ElapsedMilliseconds}");
-
-        LogService.Info(
-            "performance",
-            $"POST_RENDER_PREWARM_COMPLETE totalMs={total.ElapsedMilliseconds} serialized=true quietStart=true");
-    }
 
     private async Task PrewarmVirtualTweakPipelineAsync()
     {
@@ -79,9 +28,36 @@ public sealed partial class MainWindow
         // Keep the latency-critical virtual tweak path together. Power/common controls have
         // their own delayed stages and must not extend this startup scope by ~1 second.
         await PrewarmVirtualTweakResourcesEarlyAsync().ConfigureAwait(false);
+        if (!CanCommitOverviewPrewarm(_virtualTweakResourcesPrewarmed,
+                _section == "overview"))
+        {
+            await profileWarmTask.ConfigureAwait(false);
+            return;
+        }
         await PrewarmActionButtonFactoriesEarlyAsync().ConfigureAwait(false);
+        // An aborted/rejected action-button stage may leave Overview active;
+        // do not queue more expensive UI factory work unless BOTH prerequisite
+        // prewarm sets really finished. Preserve their on-demand fallbacks.
+        if (!CanContinueOverviewPrewarm(_virtualTweakResourcesPrewarmed,
+                _actionButtonFactoriesPrewarmed, _section == "overview"))
+        {
+            await profileWarmTask.ConfigureAwait(false);
+            return;
+        }
         await PrewarmVirtualControlFactoriesAfterFirstRenderAsync().ConfigureAwait(false);
-        await PrewarmDriverUiFactoryAfterFirstRenderAsync().ConfigureAwait(false);
+        if (!CanCommitOverviewPrewarm(_virtualControlFactoriesPrewarmed,
+                _section == "overview"))
+        {
+            await profileWarmTask.ConfigureAwait(false);
+            return;
+        }
+        // Driver row/shell factories are optional and unrelated to System
+        // navigation. Do not charge their 9+6+4ms UI work to the awaited
+        // virtual-tweak pipeline: strict first-System navigation follows it.
+        // Let them warm later only if the user remains on Overview.
+        SafeTaskService.Forget(
+            PrewarmDriverUiFactoryAfterFirstRenderAsync(),
+            "prewarm", "Optional driver UI factory warmup");
         await profileWarmTask.ConfigureAwait(false);
     }
 
@@ -94,15 +70,15 @@ public sealed partial class MainWindow
 
         var total = System.Diagnostics.Stopwatch.StartNew();
 
-        await RunLowPriorityVirtualResourcePrewarmStageAsync("tweak-template", () =>
-            _ = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("TweakVirtualRowTemplate")).ConfigureAwait(false);
-        await RunLowPriorityVirtualResourcePrewarmStageAsync("task-template", () =>
-            _ = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("TaskRowTemplateV136")).ConfigureAwait(false);
-        await RunLowPriorityVirtualResourcePrewarmStageAsync("startup-template", () =>
-            _ = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("StartupRowTemplateV209")).ConfigureAwait(false);
-        await RunLowPriorityVirtualResourcePrewarmStageAsync("items-panel", () =>
-            _ = UiResourceService.Get<Microsoft.UI.Xaml.Controls.ItemsPanelTemplate>("SpankyVirtualizingItemsPanel")).ConfigureAwait(false);
-        await RunLowPriorityVirtualResourcePrewarmStageAsync("icons", () =>
+        if (!await RunLowPriorityVirtualResourcePrewarmStageAsync("tweak-template", () =>
+            _ = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("TweakVirtualRowTemplate")).ConfigureAwait(false)) return;
+        if (!await RunLowPriorityVirtualResourcePrewarmStageAsync("task-template", () =>
+            _ = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("TaskRowTemplateV136")).ConfigureAwait(false)) return;
+        if (!await RunLowPriorityVirtualResourcePrewarmStageAsync("startup-template", () =>
+            _ = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("StartupRowTemplateV209")).ConfigureAwait(false)) return;
+        if (!await RunLowPriorityVirtualResourcePrewarmStageAsync("items-panel", () =>
+            _ = UiResourceService.Get<Microsoft.UI.Xaml.Controls.ItemsPanelTemplate>("SpankyVirtualizingItemsPanel")).ConfigureAwait(false)) return;
+        if (!await RunLowPriorityVirtualResourcePrewarmStageAsync("icons", () =>
         {
             _ = SectionIconSource("system");
             _ = SectionIconSource("privacy");
@@ -110,13 +86,27 @@ public sealed partial class MainWindow
             _ = SectionIconSource("update");
             _ = SectionIconSource("gpu");
             _ = SectionIconSource("drivers");
-        }).ConfigureAwait(false);
+        }).ConfigureAwait(false)) return;
 
+        // Navigation can switch pages between the final await and commit.
+        if (!CanCommitOverviewPrewarm(true, _section == "overview")) return;
         _virtualTweakResourcesPrewarmed = true;
         LogService.Info("performance", $"VIRTUAL_RESOURCE_EARLY_PREWARM staged=true totalWallMs={total.ElapsedMilliseconds}");
     }
 
-    private Task RunLowPriorityVirtualResourcePrewarmStageAsync(string stage, System.Action action)
+    // The dispatcher may accept a stage after navigation has left Overview.
+    // A skipped/rejected stage is NOT a completed prewarm. Callers must
+    // preserve the on-demand System fallback rather than setting ready=true.
+    private static bool CanCommitOverviewPrewarm(bool stageRan, bool stillOnOverview) =>
+        stageRan && stillOnOverview;
+
+    // Two independent prerequisites must be ready before optional virtual
+    // factory construction can consume further UI dispatcher turns.
+    private static bool CanContinueOverviewPrewarm(
+        bool resourcesReady, bool actionsReady, bool stillOnOverview) =>
+        resourcesReady && actionsReady && stillOnOverview;
+
+    private Task<bool> RunLowPriorityVirtualResourcePrewarmStageAsync(string stage, System.Action action)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
@@ -124,10 +114,10 @@ public sealed partial class MainWindow
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                if (_section == "overview")
-                    action();
-                LogService.Info("performance", $"VIRTUAL_RESOURCE_PREWARM_STAGE stage={stage} ms={sw.ElapsedMilliseconds}");
-                tcs.TrySetResult(true);
+                bool ran = _section == "overview";
+                if (ran) action();
+                LogService.Info("performance", $"VIRTUAL_RESOURCE_PREWARM_STAGE stage={stage} ms={sw.ElapsedMilliseconds} applied={ran}");
+                tcs.TrySetResult(ran);
             }
             catch (System.Exception ex)
             {
@@ -143,18 +133,18 @@ public sealed partial class MainWindow
     {
         if (_actionButtonFactoriesPrewarmed) return;
 
-        await RunNormalPriorityFactoryPrewarmStageAsync("quick-action", () =>
-            _ = QuickButton("Prewarm", () => Task.CompletedTask)).ConfigureAwait(false);
+        if (!await RunNormalPriorityFactoryPrewarmStageAsync("quick-action", () =>
+            _ = QuickButton("Prewarm", () => Task.CompletedTask)).ConfigureAwait(false)) return;
 
         await Task.Yield();
 
-        await RunNormalPriorityFactoryPrewarmStageAsync("primary-action", () =>
-            _ = PrimaryQuickButton("Prewarm", () => Task.CompletedTask)).ConfigureAwait(false);
+        if (!await RunNormalPriorityFactoryPrewarmStageAsync("primary-action", () =>
+            _ = PrimaryQuickButton("Prewarm", () => Task.CompletedTask)).ConfigureAwait(false)) return;
 
         // Give the dispatcher another scheduling boundary before selector-specific work.
         await Task.Yield();
 
-        await RunNormalPriorityFactoryPrewarmStageAsync("components-selector", () =>
+        if (!await RunNormalPriorityFactoryPrewarmStageAsync("components-selector", () =>
         {
             // Components navigation now uses direct properties instead of a runtime Style/Setter graph.
             foreach (string label in new[] { "Služby", "Ovladače", "Task Scheduler" })
@@ -162,12 +152,13 @@ public sealed partial class MainWindow
                 var button = new Microsoft.UI.Xaml.Controls.Button { Content = label, Tag = label };
                 ApplyPillButtonAppearance(button);
             }
-        }).ConfigureAwait(false);
+        }).ConfigureAwait(false)) return;
 
+        if (!CanCommitOverviewPrewarm(true, _section == "overview")) return;
         _actionButtonFactoriesPrewarmed = true;
     }
 
-    private Task RunNormalPriorityFactoryPrewarmStageAsync(string stage, System.Action action)
+    private Task<bool> RunNormalPriorityFactoryPrewarmStageAsync(string stage, System.Action action)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
@@ -175,10 +166,11 @@ public sealed partial class MainWindow
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                action();
+                bool ran = _section == "overview" && !_windowLifetimeCts.IsCancellationRequested;
+                if (ran) action();
                 LogService.Info("performance",
-                    $"ACTION_BUTTON_FACTORY_PREWARM stage={stage} ms={sw.ElapsedMilliseconds} priority=Normal");
-                tcs.TrySetResult(true);
+                    $"ACTION_BUTTON_FACTORY_PREWARM stage={stage} ms={sw.ElapsedMilliseconds} priority=Normal applied={ran}");
+                tcs.TrySetResult(ran);
             }
             catch (System.Exception ex)
             {
@@ -190,159 +182,33 @@ public sealed partial class MainWindow
         return tcs.Task;
     }
 
-    private async Task PrewarmEarlySectionUiAfterFirstRenderAsync()
+    // Smoke entry points are dispatched right after the window is created.
+    // RootGrid.Loaded may still have its startup navigation pending; without
+    // waiting, the smoke changes _section first and the startup navigation
+    // then navigates a second time behind it, cancelling the first deferred
+    // build. Wait for the real initial navigation so the measurement below
+    // covers exactly one cold System navigation.
+    private async Task WaitForInitialNavigationSmokeAsync()
     {
-        await Task.Delay(160).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        bool tamper = await Task.Run(WindowsActions.IsTamperProtectionOn).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("defender-shell-early", () =>
-            PrewarmDefenderStaticShell(tamper)).ConfigureAwait(false);
-
-        if (_section == "overview")
-            await PrewarmNetworkUiStagedAsync().ConfigureAwait(false);
-    }
-
-    private async Task PrewarmCommonCatalogsAfterFirstRenderAsync()
-    {
-        await Task.Delay(240).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        await Task.Run(() =>
-        {
-            _tweakCache.TryAdd("system|", CatalogService.GetTweaks("system"));
-            _tweakCache.TryAdd("network|", CatalogService.GetTweaks("network"));
-            _tweakCache.TryAdd("gpu|", CatalogService.GetTweaks("gpu"));
-            _tweakCache.TryAdd("defender|", CatalogService.GetTweaks("defender"));
-            _tweakCache.TryAdd("components|Služby", CatalogService.GetTweaks("components", "Služby"));
-        }).ConfigureAwait(false);
-        LogService.Info("performance", $"COMMON_CATALOG_PREWARM ms={sw.ElapsedMilliseconds}");
-    }
-
-    private async Task PrewarmServiceUiAfterFirstRenderAsync()
-    {
-        // Keep first paint untouched, then warm cheap component data in the background.
-        // Leave a quiet gap after live metrics/Fixer/GPU cache warmups.
-        await Task.Delay(2800);
-        if (_section != "overview") return;
-        var perf = System.Diagnostics.Stopwatch.StartNew();
-        PrewarmServiceUi();
-        long serviceUiMs = perf.ElapsedMilliseconds;
-        // Network factories were staged earlier, directly after common-control prewarm.
-        long networkUiMs = 0;
-        // Service inventory remains on-demand; static tweak catalog is already warmed by CommonCatalogs.
-        long catalogMs = 0;
-        LogService.Info("performance", $"SERVICE_PREWARM_PHASE serviceUiMs={serviceUiMs} networkUiMs={networkUiMs} catalogMs={catalogMs} workMs={perf.ElapsedMilliseconds} stagedNetwork=early serviceInventory=on-demand");
-
-        // Task Scheduler COM inventory is intentionally NOT prewarmed. It is a heavy
-        // COM enumeration and should only run when the user opens Task Scheduler or a feature needs it.
-    }
-
-    private async Task PrewarmFixerStaticAfterFirstRenderAsync()
-    {
-        // Live metrics starts at ~1.2 s; avoid competing for the same post-startup UI turn.
-        await Task.Delay(1700).ConfigureAwait(false);
-        if (_section != "overview") return;
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            if (_section == "overview") RunWithNeutralPrewarmPalette(PrewarmFixerStaticUi);
-            tcs.TrySetResult(true);
-        }))
-            return;
-        await tcs.Task.ConfigureAwait(false);
-    }
-
-    private async Task PrewarmBcdStateAfterFirstRenderAsync()
-    {
-        await Task.Delay(2300).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        int loadsBefore = BcdEditStateService.LoadCountForDiagnostics;
-        try
-        {
-            _ = await BcdEditStateService.GetCurrentAsync().ConfigureAwait(false);
-            int loadsAfter = BcdEditStateService.LoadCountForDiagnostics;
-            LogService.Info("performance",
-                $"BCD_STATE_PREWARM ms={sw.ElapsedMilliseconds} newLoads={loadsAfter - loadsBefore} totalLoads={loadsAfter}");
-        }
-        catch (System.OperationCanceledException) { }
-        catch (System.Exception ex)
-        {
-            LogService.Error("performance", "BCD state prewarm failed", ex);
-        }
-    }
-
-    private async Task PrewarmMemoryCompressionAfterFirstRenderAsync()
-    {
-        await Task.Delay(2800).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        try
-        {
-            _ = await WindowsActions.GetMemoryCompressionForUiAsync().ConfigureAwait(false);
-            LogService.Info("performance", $"MEMORY_COMPRESSION_PREWARM_OK ms={sw.ElapsedMilliseconds}");
-        }
-        catch (System.OperationCanceledException) { }
-        catch (System.Exception ex)
-        {
-            LogService.Info("performance",
-                $"MEMORY_COMPRESSION_PREWARM_SKIP ms={sw.ElapsedMilliseconds} type={ex.GetType().Name}");
-        }
-    }
-
-    private async Task PrewarmWindowsFeaturesAfterFirstRenderAsync()
-    {
-        // First hydrate only the persisted feature snapshot. This is disk/JSON work on a
-        // worker thread and avoids making an immediate System navigation pay the cold WMI probe.
-        try
-        {
-            if (await WindowsFeatureStateService.TryWarmPersistentClientSnapshotAsync().ConfigureAwait(false))
-                return;
-        }
-        catch (System.OperationCanceledException) { return; }
-        catch (System.Exception ex)
-        {
-            LogService.Error("performance", "Windows Features persistent prewarm failed", ex);
-        }
-
-        // Persistent miss: keep the comparatively heavy live probe clear of the first seconds
-        // after startup and only run it while Overview remains idle.
-        await Task.Delay(3800).ConfigureAwait(false);
-        if (_section != "overview") return;
-        try
-        {
-            await WindowsFeatureStateService.PrewarmClientSnapshotAsync().ConfigureAwait(false);
-        }
-        catch (System.OperationCanceledException) { }
-        catch (System.Exception ex)
-        {
-            LogService.Error("performance", "Windows Features prewarm failed", ex);
-        }
-    }
-
-    private void PrewarmFixerStaticUi()
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        try
-        {
-            _ = GetFixerStaticElements();
-            LogService.Info("performance", $"FIXER_STATIC_PREWARM ms={sw.ElapsedMilliseconds}");
-        }
-        catch (System.Exception ex) { LogService.Error("performance", "Fixer static UI prewarm failed", ex); }
+        for (int i = 0; i < 300 && !_initialSectionNavigationCompleted; i++)
+            await Task.Delay(10);
+        if (!_initialSectionNavigationCompleted)
+            throw new System.InvalidOperationException(
+                "Initial section navigation did not complete before the smoke started.");
     }
 
     internal async Task RunSystemColdRenderSmokeAsync()
     {
+        await WaitForInitialNavigationSmokeAsync();
         if (_section != "overview")
             throw new System.InvalidOperationException("System cold render smoke expected Overview before navigation.");
 
+        bool resourcesWereCold = !_virtualTweakResourcesPrewarmed;
         InvalidateSystemPageCache();
+        // A fresh process starts with no warmed virtual resources. Track that
+        // so the regression proves the intentional two-stage cold path:
+        // one deferred turn for templates, one for catalog + virtual cards.
+        long navigationStartTs = System.Diagnostics.Stopwatch.GetTimestamp();
         var sw = System.Diagnostics.Stopwatch.StartNew();
         await ShowSectionAsync("system");
         sw.Stop();
@@ -354,6 +220,14 @@ public sealed partial class MainWindow
             await Task.Delay(25);
         if (_systemPageCache == null || _systemVirtualRowsCache == null)
             throw new System.InvalidOperationException("System cold render deferred root did not materialize.");
+        int deferredTurns = _systemDeferredDispatchTurns;
+        int expectedTurns = resourcesWereCold ? 2 : 1;
+        if (deferredTurns != expectedTurns)
+            throw new System.InvalidOperationException(
+                $"System cold deferred materialization used {deferredTurns} dispatcher turns; expected {expectedTurns} (resourcesWereCold={resourcesWereCold}).");
+        long deferredReadyMs = _systemDeferredReadyTimestamp == 0
+            ? -1
+            : (long)System.Diagnostics.Stopwatch.GetElapsedTime(navigationStartTs, _systemDeferredReadyTimestamp).TotalMilliseconds;
         int deferredAtRoot = _systemDeferredAtRootBuild;
         if (deferredAtRoot < 20)
             throw new System.InvalidOperationException($"System cold render deferred too little work: {deferredAtRoot} groups.");
@@ -363,15 +237,46 @@ public sealed partial class MainWindow
         int remaining = GetDeferredVirtualGroupCount("system");
         if (remaining != 0)
             throw new System.InvalidOperationException($"System cold deferred groups incomplete: {remaining} remaining.");
+        long groupsReadyMs = (long)System.Diagnostics.Stopwatch.GetElapsedTime(navigationStartTs).TotalMilliseconds;
 
         LogService.Info("performance",
-            $"SYSTEM_COLD_RENDER_SMOKE_OK renderMs={renderMs} deferredAtRoot={deferredAtRoot} deferredRemaining={remaining}");
+            $"SYSTEM_COLD_RENDER_SMOKE_OK renderMs={renderMs} deferredAtRoot={deferredAtRoot} deferredRemaining={remaining} deferredReadyMs={deferredReadyMs} groupsReadyMs={groupsReadyMs} deferredTurns={deferredTurns}");
     }
 
     internal async Task RunVirtualResourcePrewarmSmokeAsync()
     {
+        await WaitForInitialNavigationSmokeAsync();
+        // Regression: a dispatcher callback may be skipped when navigation
+        // leaves Overview between scheduling and running a prewarm stage.
+        // Neither skipped stage nor departed page may assert cache readiness.
+        if (CanCommitOverviewPrewarm(false, true) ||
+            CanCommitOverviewPrewarm(true, false) ||
+            CanCommitOverviewPrewarm(false, false) ||
+            !CanCommitOverviewPrewarm(true, true))
+            throw new System.InvalidOperationException(
+                "Overview resource prewarm incorrectly commits a skipped stage.");
+        if (!CanContinueOverviewPrewarm(true, true, true) ||
+            CanContinueOverviewPrewarm(false, true, true) ||
+            CanContinueOverviewPrewarm(true, false, true) ||
+            CanContinueOverviewPrewarm(true, true, false) ||
+            CanContinueOverviewPrewarm(false, false, true))
+            throw new System.InvalidOperationException(
+                "Overview prewarm continued without both prerequisite stages.");
         if (_section != "overview")
             throw new System.InvalidOperationException("Virtual resource smoke expected Overview before navigation.");
+        // Synthetic stage actions exercise all three production gates without
+        // creating controls or touching persisted/user system state.
+        bool actionStageRan = false;
+        bool driverStageRan = false;
+        bool networkStageRan = false;
+        if (!await RunNormalPriorityFactoryPrewarmStageAsync("smoke-action",
+                () => actionStageRan = true) || !actionStageRan ||
+            !await RunLowPriorityCommonControlPrewarmStageAsync("smoke-driver",
+                () => driverStageRan = true) || !driverStageRan ||
+            !await RunLowPriorityNetworkPrewarmStageAsync("smoke-network",
+                () => networkStageRan = true) || !networkStageRan)
+            throw new System.InvalidOperationException(
+                "Overview prewarm stage did not confirm actual UI execution.");
         if (_virtualTweakResourcesPrewarmed || _virtualControlFactoriesPrewarmed)
             throw new System.InvalidOperationException("Virtual resources/factories were eagerly prewarmed during startup.");
 
@@ -382,6 +287,8 @@ public sealed partial class MainWindow
             throw new System.InvalidOperationException("On-demand virtual resource warmup did not complete.");
         if (!_virtualControlFactoriesPrewarmed)
             throw new System.InvalidOperationException("On-demand virtual control factory warmup did not complete.");
+        if (!_actionButtonFactoriesPrewarmed)
+            throw new System.InvalidOperationException("On-demand action button factory warmup did not complete.");
         if (!ReferenceEquals(SectionIconSource("gpu"), SectionIconSource("gpu")) ||
             !ReferenceEquals(SectionIconSource("drivers"), SectionIconSource("drivers")))
             throw new System.InvalidOperationException("Hardware icon source cache did not reuse warmed SVG sources.");
@@ -398,6 +305,9 @@ public sealed partial class MainWindow
             await Task.Delay(25);
         if (_systemPageCache == null || _systemVirtualRowsCache == null)
             throw new System.InvalidOperationException("Prewarmed System deferred root did not materialize.");
+        if (_systemDeferredDispatchTurns != 1)
+            throw new System.InvalidOperationException(
+                $"Prewarmed System deferred materialization used {_systemDeferredDispatchTurns} dispatcher turns; expected one.");
         if (_systemDeferredAtRootBuild < 20)
             throw new System.InvalidOperationException($"Prewarmed System deferred too little work: {_systemDeferredAtRootBuild} groups.");
 
@@ -408,7 +318,7 @@ public sealed partial class MainWindow
             throw new System.InvalidOperationException($"Prewarmed System deferred groups incomplete: {remaining} remaining.");
 
         LogService.Info("performance",
-            $"VIRTUAL_RESOURCE_PREWARM_SMOKE_OK prewarmReadyMs={prewarmReadyMs} systemRenderMs={renderMs} deferredAtRoot={_systemDeferredAtRootBuild} deferredRemaining={remaining}");
+            $"VIRTUAL_RESOURCE_PREWARM_SMOKE_OK prewarmReadyMs={prewarmReadyMs} systemRenderMs={renderMs} deferredAtRoot={_systemDeferredAtRootBuild} deferredRemaining={remaining} deferredTurns={_systemDeferredDispatchTurns}");
     }
 
     private void PrewarmVirtualTweakResources()
@@ -457,33 +367,38 @@ public sealed partial class MainWindow
             Microsoft.UI.Xaml.DataTemplate? rowTemplate = null;
             Microsoft.UI.Xaml.Controls.ItemsRepeater? repeater = null;
 
-            await RunVirtualControlPrewarmStageAsync("header", () =>
-                header = CreateVirtualGroupHeader("PREWARM   •   0 TWEAKŮ")).ConfigureAwait(false);
+            if (!await RunVirtualControlPrewarmStageAsync("header", () =>
+                header = CreateVirtualGroupHeader("PREWARM   •   0 TWEAKŮ")).ConfigureAwait(false)) return;
 
-            await RunVirtualControlPrewarmStageAsync("template", () =>
-                rowTemplate = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("TweakVirtualRowTemplate")).ConfigureAwait(false);
+            if (!await RunVirtualControlPrewarmStageAsync("template", () =>
+                rowTemplate = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("TweakVirtualRowTemplate")).ConfigureAwait(false)) return;
 
-            await RunVirtualControlPrewarmStageAsync("repeater-ctor", () =>
-                repeater = new Microsoft.UI.Xaml.Controls.ItemsRepeater()).ConfigureAwait(false);
+            if (!await RunVirtualControlPrewarmStageAsync("repeater-ctor", () =>
+                repeater = new Microsoft.UI.Xaml.Controls.ItemsRepeater()).ConfigureAwait(false)) return;
 
-            await RunVirtualControlPrewarmStageAsync("repeater-template", () =>
-                repeater!.ItemTemplate = rowTemplate).ConfigureAwait(false);
-
-            await RunLowPriorityVirtualResourcePrewarmStageAsync("repeater-source", () =>
-                repeater!.ItemsSource = new System.Collections.Generic.List<TweakVirtualRowViewModel>()).ConfigureAwait(false);
-
-            await RunVirtualControlPrewarmStageAsync("repeater-layout", () =>
+            // Match the production ItemsRepeater initialization order:
+            // layout -> template -> source. The previous factory prewarm used
+            // template -> source -> layout, exercising a different cold WinUI
+            // dependency-property path than the first real System groups.
+            if (!await RunVirtualControlPrewarmStageAsync("repeater-layout", () =>
             {
                 repeater!.Layout = new Microsoft.UI.Xaml.Controls.StackLayout { Spacing = 6 };
                 repeater.HorizontalAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Stretch;
-            }).ConfigureAwait(false);
+            }).ConfigureAwait(false)) return;
 
-            await RunVirtualControlPrewarmStageAsync("expander", () =>
+            if (!await RunVirtualControlPrewarmStageAsync("repeater-template", () =>
+                repeater!.ItemTemplate = rowTemplate).ConfigureAwait(false)) return;
+
+            if (!await RunLowPriorityVirtualResourcePrewarmStageAsync("repeater-source", () =>
+                repeater!.ItemsSource = new System.Collections.Generic.List<TweakVirtualRowViewModel>()).ConfigureAwait(false)) return;
+
+            if (!await RunVirtualControlPrewarmStageAsync("expander", () =>
             {
                 var expander = CreateVirtualGroupExpander(header!, repeater!);
                 _ = expander is Microsoft.UI.Xaml.Controls.Expander control ? control.Content : (expander as Microsoft.UI.Xaml.Controls.Border)?.Child;
-            }).ConfigureAwait(false);
+            }).ConfigureAwait(false)) return;
 
+            if (!CanCommitOverviewPrewarm(true, _section == "overview")) return;
             _virtualControlFactoriesPrewarmed = true;
             LogService.Info("performance",
                 $"VIRTUAL_CONTROL_PREWARM_SPLIT totalWallMs={total.ElapsedMilliseconds} priority=Normal stages=7");
@@ -494,7 +409,7 @@ public sealed partial class MainWindow
         }
     }
 
-    private Task RunVirtualControlPrewarmStageAsync(string stage, System.Action action)
+    private Task<bool> RunVirtualControlPrewarmStageAsync(string stage, System.Action action)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
@@ -502,10 +417,11 @@ public sealed partial class MainWindow
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                action();
+                bool ran = _section == "overview";
+                if (ran) action();
                 LogService.Info("performance",
-                    $"VIRTUAL_CONTROL_PREWARM_STAGE stage={stage} ms={sw.ElapsedMilliseconds} priority=Normal");
-                tcs.TrySetResult(true);
+                    $"VIRTUAL_CONTROL_PREWARM_STAGE stage={stage} ms={sw.ElapsedMilliseconds} priority=Normal applied={ran}");
+                tcs.TrySetResult(ran);
             }
             catch (System.Exception ex)
             {
@@ -515,15 +431,6 @@ public sealed partial class MainWindow
             tcs.TrySetResult(false);
 
         return tcs.Task;
-    }
-
-    private async Task PrewarmPowerSnapshotEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(120).ConfigureAwait(false);
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        bool warmed = await PowerPlanStateService.TryPrewarmRegistrySnapshotAsync().ConfigureAwait(false);
-        LogService.Info("performance",
-            $"POWER_SNAPSHOT_EARLY_PREWARM warmed={warmed} ms={sw.ElapsedMilliseconds}");
     }
 
     private async Task PrewarmPowerCardFactoryAfterFirstRenderAsync()
@@ -576,14 +483,22 @@ public sealed partial class MainWindow
     {
         if (_driverUiFactoryPrewarmed) return;
 
-        await RunLowPriorityCommonControlPrewarmStageAsync("drivers-rows", () =>
+        // Give navigation its first second without unrelated WinUI factory
+        // work. If the user already moved off Overview, do not warm drivers
+        // behind the active page or block its first render.
+        try { await Task.Delay(1000, _windowLifetimeCts.Token).ConfigureAwait(false); }
+        catch (System.OperationCanceledException) { return; }
+        if (_driverUiFactoryPrewarmed || _section != "overview") return;
+
+        if (!await RunLowPriorityCommonControlPrewarmStageAsync("drivers-rows", () =>
         {
             PrewarmDriverRowsCache();
-        }).ConfigureAwait(false);
+        }).ConfigureAwait(false)) return;
+        if (_section != "overview" || _windowLifetimeCts.IsCancellationRequested) return;
 
         await Task.Yield();
 
-        await RunLowPriorityCommonControlPrewarmStageAsync("drivers-shell", () =>
+        if (!await RunLowPriorityCommonControlPrewarmStageAsync("drivers-shell", () =>
         {
             var actions = new Microsoft.UI.Xaml.Controls.StackPanel
             {
@@ -644,11 +559,12 @@ public sealed partial class MainWindow
                 "Volitelné legacy drivery",
                 "Všechny možnosti jsou dostupné hned; vizuální řádky se vytváří jen podle potřeby.",
                 legacy);
-        }).ConfigureAwait(false);
+        }).ConfigureAwait(false)) return;
+        if (_section != "overview" || _windowLifetimeCts.IsCancellationRequested) return;
 
         await Task.Yield();
 
-        await RunLowPriorityCommonControlPrewarmStageAsync("drivers-list", () =>
+        if (!await RunLowPriorityCommonControlPrewarmStageAsync("drivers-list", () =>
         {
             var rows = _driverRows ?? System.Array.Empty<TweakVirtualRowViewModel>();
             _ = new Microsoft.UI.Xaml.Controls.ListView
@@ -659,422 +575,15 @@ public sealed partial class MainWindow
                 ItemTemplate = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("TweakVirtualRowTemplate"),
                 ItemsPanel = UiResourceService.Get<Microsoft.UI.Xaml.Controls.ItemsPanelTemplate>("SpankyVirtualizingItemsPanel")
             };
-        }).ConfigureAwait(false);
+        }).ConfigureAwait(false)) return;
+        if (!CanCommitOverviewPrewarm(true,
+                _section == "overview" && !_windowLifetimeCts.IsCancellationRequested)) return;
 
         _driverUiFactoryPrewarmed = true;
         LogService.Info("performance", "DRIVER_UI_FACTORY_PREWARM staged=true");
     }
 
-    private async Task PrewarmStartupManagerUiEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(45).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        var deltaBaselinePrewarm = StartupManagerService.TryWarmDeltaBaselineAsync();
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("startup-manager-list", () =>
-        {
-            var rowTemplate = UiResourceService.Get<Microsoft.UI.Xaml.DataTemplate>("StartupRowTemplateV209");
-            var itemsPanel = UiResourceService.Get<Microsoft.UI.Xaml.Controls.ItemsPanelTemplate>("SpankyVirtualizingItemsPanel");
-            _ = new Microsoft.UI.Xaml.Controls.ListView
-            {
-                MaxHeight = 650,
-                SelectionMode = Microsoft.UI.Xaml.Controls.ListViewSelectionMode.None,
-                ItemTemplate = rowTemplate,
-                ItemsPanel = itemsPanel
-            };
-        }).ConfigureAwait(false);
-
-        await Task.Yield();
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("startup-manager-hero", () =>
-        {
-            var actions = new Microsoft.UI.Xaml.Controls.StackPanel
-            {
-                Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal,
-                Spacing = 8
-            };
-            actions.Children.Add(QuickButton("Prewarm", () => Task.CompletedTask));
-            _ = BuildModernSectionHero("startup", "Prewarm", "Factory prewarm", "STARTUP", "Ready", actions);
-        }).ConfigureAwait(false);
-
-        await Task.Yield();
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("startup-manager-metrics", () =>
-        {
-            _ = BuildDashboardMetricGrid(
-                BuildDashboardMetric("A", "1", "Prewarm"),
-                BuildDashboardMetric("B", "2", "Prewarm"),
-                BuildDashboardMetric("C", "3", "Prewarm"),
-                BuildDashboardMetric("D", "4", "Prewarm"));
-        }).ConfigureAwait(false);
-
-        bool baselineReady = await deltaBaselinePrewarm.ConfigureAwait(false);
-        LogService.Info("performance", $"STARTUP_DELTA_BASELINE_PREWARM hit={baselineReady}");
-    }
-
-    private async Task PrewarmPowerShellHeroAfterFirstRenderAsync()
-    {
-        await Task.Delay(500).ConfigureAwait(false);
-        if (_section != "overview" || _prewarmedPowerShellHero != null) return;
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("powershell-hero", () =>
-        {
-            var actions = new Microsoft.UI.Xaml.Controls.StackPanel
-            {
-                Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal,
-                Spacing = 8
-            };
-            actions.Children.Add(QuickButton("PowerShell 7", OpenPowerShell7Async));
-
-            var hero = BuildModernSectionHero(
-                "powershell",
-                "PowerShell / CMD",
-                "Full-black shell themes + PowerShell 7, CMD a Windows Terminal v jednom.",
-                "TERMINAL",
-                "Black Red • Black Green • Pure Black",
-                actions);
-            hero.Measure(new Windows.Foundation.Size(1100, 190));
-            _prewarmedPowerShellHero = hero;
-            _prewarmedPowerShellThemePreference = _themePreference;
-        }).ConfigureAwait(false);
-    }
-
-    private async Task PrewarmDebloatHeroEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(55).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("debloat-hero-early", () =>
-        {
-            var hero = BuildModernSectionHero(
-                "debloat",
-                "Debloater",
-                "Bezpečný app manager s Recommended výběrem, Keep listem a Protected balíky.",
-                "APP CLEANUP",
-                "Načítám nainstalované aplikace…");
-            hero.Measure(new Windows.Foundation.Size(1100, 190));
-            _prewarmedDebloatLoadingHero = hero;
-            _prewarmedDebloatThemePreference = _themePreference;
-        }).ConfigureAwait(false);
-    }
-
-    private async Task PrewarmUpdateShellEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(220).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("update-shell-early", () =>
-        {
-            var actions = new Microsoft.UI.Xaml.Controls.StackPanel
-            {
-                Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal,
-                Spacing = 8
-            };
-            var hero = BuildSectionHero(
-                "update",
-                "Windows servicing",
-                "Windows Update Center",
-                "Načítám stav Windows Update…",
-                actions);
-            var surface = BuildSectionSurface(
-                "update",
-                "Stav Windows Update",
-                "Read-back + pending restart + poslední chyby",
-                new Microsoft.UI.Xaml.Controls.StackPanel { Spacing = 7 });
-            hero.Measure(new Windows.Foundation.Size(1100, 190));
-            surface.Measure(new Windows.Foundation.Size(1100, 220));
-        }).ConfigureAwait(false);
-    }
-
-    private async Task PrewarmUiShellEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(180).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("ui-shell-early", () =>
-        {
-            _ = new Microsoft.UI.Xaml.Controls.ToggleSwitch
-            {
-                IsOn = false,
-                OnContent = "",
-                OffContent = "",
-                VerticalAlignment = Microsoft.UI.Xaml.VerticalAlignment.Center
-            };
-
-            var intro = new Microsoft.UI.Xaml.Controls.StackPanel { Spacing = 5 };
-            intro.Children.Add(new Microsoft.UI.Xaml.Controls.TextBlock
-            {
-                Text = "Prewarm UI",
-                FontSize = 17,
-                Foreground = TextPrimaryBrush()
-            });
-            var hero = BuildSectionHero("ui", "Explorer control", "Context Menu Tweaker", "Factory prewarm", null);
-            var surface = BuildSectionSurface("ui", "Kontextové menu", "Factory prewarm", intro);
-            hero.Measure(new Windows.Foundation.Size(1100, 190));
-            surface.Measure(new Windows.Foundation.Size(1100, 220));
-        }).ConfigureAwait(false);
-    }
-
-    private async Task PrewarmContextMenuRowEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(210).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("context-menu-row-early", () =>
-        {
-            var toggle = new Microsoft.UI.Xaml.Controls.ToggleSwitch
-            {
-                IsOn = false,
-                OnContent = "",
-                OffContent = "",
-                VerticalAlignment = Microsoft.UI.Xaml.VerticalAlignment.Center
-            };
-            var row = ContextMenuToggleRow("Prewarm", "Context Menu row factory prewarm.", toggle, "ADMIN");
-            row.Measure(new Windows.Foundation.Size(1100, 90));
-        }).ConfigureAwait(false);
-    }
-
-    private async Task PrewarmGenericTweakCardEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(235).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        var defenderTweaks = CatalogService.GetTweaks("defender");
-        if (defenderTweaks.Count == 0) return;
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("generic-tweak-card-early", () =>
-        {
-            var card = CreateTweakCard(defenderTweaks[0]);
-            card.Measure(new Windows.Foundation.Size(1100, 140));
-        }).ConfigureAwait(false);
-    }
-
-    private async Task PrewarmOverviewHudCardEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(10).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("overview-hud-card-early", () =>
-        {
-            var card = BuildHudTelemetryCard("CPU", "Prewarm", CpuMetricBrush(), out _);
-            card.Measure(new Windows.Foundation.Size(260, 210));
-        }).ConfigureAwait(false);
-    }
-
-    private async Task PrewarmGpuTweakCardsEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(120).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        var gpuTweaks = CatalogService.GetTweaks("gpu");
-        int count = System.Math.Min(gpuTweaks.Count, 4);
-        for (int i = 0; i < count; i++)
-        {
-            int index = i;
-            await RunLowPriorityCommonControlPrewarmStageAsync($"gpu-tweak-card-{index}", () =>
-            {
-                var card = CreateTweakCard(gpuTweaks[index]);
-                card.Measure(new Windows.Foundation.Size(1100, 140));
-            }).ConfigureAwait(false);
-
-            if (_section != "overview") return;
-        }
-    }
-
-    private async Task PrewarmStorageSnapshotAfterFirstRenderAsync()
-    {
-        await Task.Delay(1200).ConfigureAwait(false);
-        if (_section != "overview") return;
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        try
-        {
-            var disks = await Task.Run(NativeSystemProbeService.ReadStorage).ConfigureAwait(false);
-            LogService.Info("performance",
-                $"STORAGE_SNAPSHOT_PREWARM count={disks.Count} ms={sw.ElapsedMilliseconds}");
-        }
-        catch (System.Exception ex)
-        {
-            LogService.Info("performance",
-                $"STORAGE_SNAPSHOT_PREWARM_SKIP ms={sw.ElapsedMilliseconds} type={ex.GetType().Name}");
-        }
-    }
-
-    private async Task PrewarmStorageActionsEarlyAfterFirstRenderAsync()
-    {
-        await Task.Delay(35).ConfigureAwait(false);
-        if (_storageToolsCard != null && _storageStaticHero != null && _storageStaticMetrics != null) return;
-
-        // Keep this inside the first idle window so Storage never pays the one-time
-        // WinUI/button factory cost on its first real navigation.
-        for (int i = 0; i < 8 && !_actionButtonFactoriesPrewarmed; i++)
-            await Task.Delay(15).ConfigureAwait(false);
-
-        if (_storageToolsCard != null && _storageStaticHero != null && _storageStaticMetrics != null) return;
-        await RunLowPriorityCommonControlPrewarmStageAsync("storage-shell-actions-early", () =>
-        {
-            PrewarmStorageStaticShell();
-            PrewarmStorageActionsCard();
-        }).ConfigureAwait(false);
-    }
-
-    private async Task PrewarmCommonControlFactoriesAfterFirstRenderAsync()
-    {
-        if (_commonControlFactoriesPrewarmed) return;
-        await Task.Delay(120).ConfigureAwait(false);
-        if (_commonControlFactoriesPrewarmed) return;
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("action", () =>
-            _ = ActionCard("Prewarm", "Factory prewarm", "OK", () => Task.CompletedTask)).ConfigureAwait(false);
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("shell-core", () =>
-        {
-            var heroActions = new Microsoft.UI.Xaml.Controls.StackPanel
-            {
-                Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal,
-                Spacing = 8
-            };
-            heroActions.Children.Add(PrimaryQuickButton("Prewarm", () => Task.CompletedTask));
-            heroActions.Children.Add(QuickButton("Prewarm", () => Task.CompletedTask));
-            _ = BuildSectionHero("settings", "Prewarm", "Prewarm", "Factory prewarm", heroActions);
-            _ = BuildSectionSurface("settings", "Prewarm", "Factory prewarm", new Microsoft.UI.Xaml.Controls.StackPanel());
-            _ = BuildPageSummaryStrip(("Prewarm", "Ready", "SpankySuccessBrush"));
-        }).ConfigureAwait(false);
-
-        await Task.Yield();
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("shell-gpu", () =>
-        {
-            // GPU's first detected render uses the modern hero + feature tile factories.
-            var gpuActions = new Microsoft.UI.Xaml.Controls.StackPanel
-            {
-                Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal,
-                Spacing = 8
-            };
-            gpuActions.Children.Add(PrimaryQuickButton("Prewarm", () => Task.CompletedTask));
-            gpuActions.Children.Add(QuickButton("Prewarm", () => Task.CompletedTask));
-            _ = BuildModernSectionHero("gpu", "Prewarm GPU", "Factory prewarm", "GPU", "Detected GPU • driver 000.00", gpuActions);
-            _ = BuildFeatureTile("gpu", "GPU", "Prewarm GPU", "NVIDIA");
-
-            var gpuStatusRoot = new Microsoft.UI.Xaml.Controls.StackPanel { Spacing = 8 };
-            gpuStatusRoot.Children.Add(new Microsoft.UI.Xaml.Controls.TextBlock
-            {
-                Text = "Detected GPU",
-                FontSize = 14,
-                Foreground = TextPrimaryBrush()
-            });
-            gpuStatusRoot.Children.Add(new Microsoft.UI.Xaml.Controls.TextBlock
-            {
-                Text = "Ready",
-                FontSize = 12.5,
-                Foreground = TextSecondaryBrush(),
-                TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap
-            });
-            var gpuStatusSurface = BuildSectionSurface("gpu", "Driver status", "Factory prewarm", gpuStatusRoot);
-            gpuStatusSurface.Measure(new Windows.Foundation.Size(1100, 220));
-        }).ConfigureAwait(false);
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("storage-shell", () =>
-            PrewarmStorageStaticShell()).ConfigureAwait(false);
-
-        if (_defenderStaticHero == null)
-        {
-            bool defenderTamper = await Task.Run(WindowsActions.IsTamperProtectionOn).ConfigureAwait(false);
-            await RunLowPriorityCommonControlPrewarmStageAsync("defender-shell", () =>
-                PrewarmDefenderStaticShell(defenderTamper)).ConfigureAwait(false);
-        }
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("dashboard-expander", () =>
-        {
-            var content = new Microsoft.UI.Xaml.Controls.StackPanel { Spacing = 8 };
-            content.Children.Add(new Microsoft.UI.Xaml.Controls.TextBlock { Text = "Prewarm" });
-            var card = BuildDashboardExpander("Prewarm", "Dashboard expander factory", content);
-            card.Measure(new Windows.Foundation.Size(900, 220));
-
-            var taskList = new Microsoft.UI.Xaml.Controls.ListView
-            {
-                MaxHeight = 650,
-                SelectionMode = Microsoft.UI.Xaml.Controls.ListViewSelectionMode.None,
-                ItemTemplate = TaskRowTemplate(),
-                ItemsPanel = UiResourceService.Get<Microsoft.UI.Xaml.Controls.ItemsPanelTemplate>("SpankyVirtualizingItemsPanel")
-            };
-            var taskShell = BuildDashboardExpander(
-                "Naplánované úlohy",
-                "Task Scheduler factory prewarm",
-                new Microsoft.UI.Xaml.Controls.StackPanel
-                {
-                    Spacing = 8,
-                    Children =
-                    {
-                        new Microsoft.UI.Xaml.Controls.TextBlock { Text = "Prewarm" },
-                        taskList
-                    }
-                });
-            taskShell.Measure(new Windows.Foundation.Size(1100, 700));
-        }).ConfigureAwait(false);
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("metrics", () =>
-        {
-            var grid = BuildDashboardMetricGrid(
-                BuildDashboardMetric("Prewarm A", "1", "Dashboard metric"),
-                BuildDashboardMetric("Prewarm B", "2", "Dashboard metric", "SpankySuccessBrush"),
-                BuildDashboardMetric("Prewarm C", "3", "Dashboard metric", "SpankyWarningBrush"),
-                BuildDashboardMetric("Prewarm D", "4", "Dashboard metric"));
-            grid.Measure(new Windows.Foundation.Size(1100, 180));
-        }).ConfigureAwait(false);
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("input-controls", () =>
-        {
-            _ = new Microsoft.UI.Xaml.Controls.ToggleSwitch { IsOn = false, OnContent = "On", OffContent = "Off" };
-            _ = new Microsoft.UI.Xaml.Controls.Slider
-            {
-                Header = "Prewarm",
-                Minimum = 0,
-                Maximum = 100,
-                StepFrequency = 1,
-                Value = 50,
-                Width = 250
-            };
-            var combo = new Microsoft.UI.Xaml.Controls.ComboBox
-            {
-                Header = "Prewarm",
-                Width = 155,
-                HorizontalAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Left
-            };
-            combo.Items.Add("A");
-            combo.Items.Add("B");
-            combo.SelectedIndex = 0;
-
-            var head = new Microsoft.UI.Xaml.Controls.Grid();
-            head.ColumnDefinitions.Add(new Microsoft.UI.Xaml.Controls.ColumnDefinition { Width = Microsoft.UI.Xaml.GridLength.Auto });
-            head.ColumnDefinitions.Add(new Microsoft.UI.Xaml.Controls.ColumnDefinition { Width = new Microsoft.UI.Xaml.GridLength(1, Microsoft.UI.Xaml.GridUnitType.Star) });
-            head.Children.Add(new Microsoft.UI.Xaml.Controls.FontIcon
-            {
-                Glyph = "\uE756",
-                FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons")
-            });
-        }).ConfigureAwait(false);
-
-        await Task.Yield();
-
-        await RunLowPriorityCommonControlPrewarmStageAsync("input-tweak-card", () =>
-        {
-            var defenderTweaks = CatalogService.GetTweaks("defender");
-            if (defenderTweaks.Count > 0) _ = CreateTweakCard(defenderTweaks[0]);
-        }).ConfigureAwait(false);
-
-        _commonControlFactoriesPrewarmed = true;
-        LogService.Info("performance", "COMMON_CONTROL_FACTORY_PREWARM staged=true");
-
-        // Network uses the same base controls but has a few dashboard-specific factories.
-        // Warm those immediately after common controls (~600 ms after first render), before
-        // a quick user navigation can pay the one-time 20-32 ms cold Network composition cost.
-        if (_section == "overview")
-            await PrewarmNetworkUiStagedAsync().ConfigureAwait(false);
-    }
-
-    private Task RunLowPriorityCommonControlPrewarmStageAsync(string stage, System.Action action)
+    private Task<bool> RunLowPriorityCommonControlPrewarmStageAsync(string stage, System.Action action)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
@@ -1082,6 +591,11 @@ public sealed partial class MainWindow
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
+                if (_section != "overview" || _windowLifetimeCts.IsCancellationRequested)
+                {
+                    tcs.TrySetResult(false);
+                    return;
+                }
                 RunWithNeutralPrewarmPalette(action);
                 LogService.Info("performance", $"COMMON_CONTROL_FACTORY_PREWARM_STAGE stage={stage} ms={sw.ElapsedMilliseconds}");
                 tcs.TrySetResult(true);
@@ -1097,47 +611,10 @@ public sealed partial class MainWindow
         return tcs.Task;
     }
 
-    private async Task PrewarmNicProviderAfterFirstRenderAsync()
-    {
-        await Task.Delay(900).ConfigureAwait(false);
-        if (_section != "overview") return;
-        try
-        {
-            bool cacheReady = await Task.Run(PerformanceProfilesService.TryWarmNicCapabilityPersistentSnapshot).ConfigureAwait(false);
-            if (cacheReady)
-            {
-                LogService.Info("performance", "NIC_PROVIDER_PREWARM_SKIP persistent=true");
-                return;
-            }
-
-            await Task.Run(NativeNicTuningService.PrewarmReadScope).ConfigureAwait(false);
-        }
-        catch (System.Exception ex)
-        {
-            LogService.Info("performance", "NIC_PROVIDER_PREWARM_SKIP type=" + ex.GetType().Name);
-        }
-    }
-
-    private async Task PrewarmTcpGlobalStateAfterFirstRenderAsync()
-    {
-        await Task.Delay(300).ConfigureAwait(false);
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        try
-        {
-            await TcpGlobalStateService.GetSnapshotAsync().ConfigureAwait(false);
-            LogService.Info("performance", $"TCP_GLOBAL_PREWARM_OK ms={sw.ElapsedMilliseconds}");
-        }
-        catch (System.Exception ex)
-        {
-            LogService.Info("performance",
-                $"TCP_GLOBAL_PREWARM_SKIP ms={sw.ElapsedMilliseconds} type={ex.GetType().Name}");
-        }
-    }
-
     private async Task PrewarmNetworkUiStagedAsync()
     {
         if (_networkUiFactoriesPrewarmed) return;
-        await RunLowPriorityNetworkPrewarmStageAsync("hero", () =>
+        if (!await RunLowPriorityNetworkPrewarmStageAsync("hero", () =>
         {
             // Match the real Network dashboard hero factories, not the older section hero.
             // A one-time Measure materializes the WinUI templates off the interactive path.
@@ -1176,21 +653,22 @@ public sealed partial class MainWindow
 
             var card = BuildDashboardCard(root, new Microsoft.UI.Xaml.Thickness(20, 17, 20, 17));
             card.Measure(new Windows.Foundation.Size(1100, 220));
-        }).ConfigureAwait(false);
+        }).ConfigureAwait(false)) return;
 
-        await RunLowPriorityNetworkPrewarmStageAsync("surface", () =>
-            _ = BuildSectionSurface("network", "Network", "Prewarm", new Microsoft.UI.Xaml.Controls.StackPanel())).ConfigureAwait(false);
+        if (!await RunLowPriorityNetworkPrewarmStageAsync("surface", () =>
+            _ = BuildSectionSurface("network", "Network", "Prewarm", new Microsoft.UI.Xaml.Controls.StackPanel())).ConfigureAwait(false)) return;
 
-        await RunLowPriorityNetworkPrewarmStageAsync("summary", () =>
-            _ = BuildPageSummaryStrip(("Network", "Ready", "SpankySuccessBrush"))).ConfigureAwait(false);
+        if (!await RunLowPriorityNetworkPrewarmStageAsync("summary", () =>
+            _ = BuildPageSummaryStrip(("Network", "Ready", "SpankySuccessBrush"))).ConfigureAwait(false)) return;
 
-        await RunLowPriorityNetworkPrewarmStageAsync("action", () =>
-            _ = ActionCard("Network", "Prewarm", "OK", () => Task.CompletedTask)).ConfigureAwait(false);
+        if (!await RunLowPriorityNetworkPrewarmStageAsync("action", () =>
+            _ = ActionCard("Network", "Prewarm", "OK", () => Task.CompletedTask)).ConfigureAwait(false)) return;
 
+        if (!CanCommitOverviewPrewarm(true, _section == "overview")) return;
         _networkUiFactoriesPrewarmed = true;
     }
 
-    private Task RunLowPriorityNetworkPrewarmStageAsync(string stage, System.Action action)
+    private Task<bool> RunLowPriorityNetworkPrewarmStageAsync(string stage, System.Action action)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
@@ -1198,9 +676,10 @@ public sealed partial class MainWindow
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                if (_section == "overview") RunWithNeutralPrewarmPalette(action);
-                LogService.Info("performance", $"NETWORK_UI_PREWARM_STAGE stage={stage} ms={sw.ElapsedMilliseconds}");
-                tcs.TrySetResult(true);
+                bool ran = _section == "overview" && !_windowLifetimeCts.IsCancellationRequested;
+                if (ran) RunWithNeutralPrewarmPalette(action);
+                LogService.Info("performance", $"NETWORK_UI_PREWARM_STAGE stage={stage} ms={sw.ElapsedMilliseconds} applied={ran}");
+                tcs.TrySetResult(ran);
             }
             catch (System.Exception ex)
             {

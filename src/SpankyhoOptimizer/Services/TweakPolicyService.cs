@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using SpankyhoOptimizer.Models;
 
 namespace SpankyhoOptimizer.Services;
@@ -18,15 +18,19 @@ public static class TweakPolicyService
 {
     public static TweakPolicyInfo Evaluate(TweakDefinition tweak, TweakViewMode mode)
     {
-        bool supported = tweak.IsLoaded;
+        bool supported = tweak.IsLoaded && tweak.ExecutionState != TweakExecutionState.Unsupported;
         bool safeRecommended = tweak.Recommended && tweak.Risk != TweakRisk.Advanced;
-        bool pendingLazyCheck = tweak.LazyDetect && !supported;
+        bool pendingLazyCheck = tweak.LazyDetect && !tweak.IsLoaded &&
+            tweak.ExecutionState != TweakExecutionState.Failed &&
+            tweak.ExecutionState != TweakExecutionState.RequiresElevation;
         bool revalidate = supported && WindowsBuildRevalidationService.NeedsRevalidation(tweak);
         bool canEdit = supported && mode != TweakViewMode.Diagnostics;
         string verdict = revalidate ? "Needs revalidation"
             : pendingLazyCheck ? "Checking"
+            : tweak.ExecutionState == TweakExecutionState.RequiresElevation ? "Requires elevation"
             : !supported ? "Unsupported"
-            : tweak.LastError != null ? "Needs attention"
+            : tweak.ExecutionState == TweakExecutionState.RequiresRestart ? "Requires restart"
+            : tweak.LastError != null || tweak.ExecutionState == TweakExecutionState.Failed ? "Needs attention"
             : safeRecommended ? "Recommended"
             : tweak.Risk == TweakRisk.Advanced ? "Advanced"
             : "Manual";
@@ -39,7 +43,7 @@ public static class TweakPolicyService
             : pendingLazyCheck
             ? "Stav se kontroluje na pozadí…"
             : !supported ? tweak.Status
-            : $"Stav: {tweak.Status} • Ověřeno: {verified}";
+            : $"Stav: {tweak.Status} ({tweak.ExecutionState}) • Ověřeno: {verified}";
         if (!string.IsNullOrWhiteSpace(tweak.LastError))
             detail += " • Chyba: " + tweak.LastError;
         if (!string.IsNullOrWhiteSpace(tweak.Warning))

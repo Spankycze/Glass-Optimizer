@@ -7,6 +7,7 @@ public enum AppThemePreference
     System,
     Light,
     Dark,
+    SolidDark,
     MidnightBlue,
     PurpleAccent,
     CyanTech,
@@ -17,13 +18,16 @@ public static class AppThemeService
 {
     private const string SettingsKey = @"Software\SpankyhoOptimizer\UI";
 
+    public static AppThemePreference Normalize(AppThemePreference mode) =>
+        System.Enum.IsDefined(mode) ? mode : AppThemePreference.Dark;
+
     public static AppThemePreference LoadPreference()
     {
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(SettingsKey);
             var raw = key?.GetValue("Theme")?.ToString();
-            if (System.Enum.TryParse<AppThemePreference>(raw, true, out var mode)) return mode;
+            if (System.Enum.TryParse<AppThemePreference>(raw, true, out var mode)) return Normalize(mode);
         }
         catch (System.Exception ex)
         {
@@ -36,6 +40,7 @@ public static class AppThemeService
     {
         try
         {
+            mode = Normalize(mode);
             using var key = Registry.CurrentUser.CreateSubKey(SettingsKey, true);
             key?.SetValue("Theme", mode.ToString(), RegistryValueKind.String);
         }
@@ -47,9 +52,12 @@ public static class AppThemeService
 
     public static bool ResolveDark(AppThemePreference mode)
     {
-        if (mode == AppThemePreference.Light) return false;
-        if (mode == AppThemePreference.System) return IsWindowsDarkMode();
-        return true;
+        return mode switch
+        {
+            AppThemePreference.Light => false,
+            AppThemePreference.System => IsWindowsDarkMode(),
+            _ => true
+        };
     }
 
     public static bool IsWindowsDarkMode()
@@ -61,5 +69,16 @@ public static class AppThemeService
             return value is int i && i == 0;
         }
         catch { return false; }
+    }
+
+    public static bool IsWindowsTransparencyEnabled()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            var value = key?.GetValue("EnableTransparency");
+            return value is not int i || i != 0;
+        }
+        catch { return true; }
     }
 }

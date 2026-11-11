@@ -76,11 +76,13 @@ public static class WingetUpdateService
 
             var upgrades = await GetUpgradesAsync(token).ConfigureAwait(false);
             string version = (versionResult.StdOut ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(version)) version = "neznámá";
+            bool versionKnown = !string.IsNullOrWhiteSpace(version);
+            if (!versionKnown) version = "neznámá";
             _cachedStatus = new WingetStatus(version, upgrades.Count, true,
                 upgrades.Count == 0 ? "Všechny Winget aplikace jsou aktuální." : $"Dostupné aktualizace: {upgrades.Count}");
             _cachedStatusAtUtc = DateTime.UtcNow;
-            WritePersistentStatus(_cachedStatus);
+            // A transient empty --version output must not pin "neznámá" in the persistent cache.
+            if (versionKnown) WritePersistentStatus(_cachedStatus);
             return _cachedStatus;
         }
         catch (OperationCanceledException) { throw; }
@@ -174,9 +176,13 @@ public static class WingetUpdateService
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         int scan = Interlocked.Increment(ref _upgradeScanCount);
-        var result = await ProcessRunner.RunAsync("winget.exe",
-            "upgrade --accept-source-agreements --disable-interactivity",
-            TimeSpan.FromMinutes(3), CancellationToken.None).ConfigureAwait(false);
+        ProcessResult result;
+        using (TryAcquireTemporarySourceUpdateGuard())
+        {
+            result = await ProcessRunner.RunAsync("winget.exe",
+                "upgrade --accept-source-agreements --disable-interactivity",
+                TimeSpan.FromMinutes(3), CancellationToken.None).ConfigureAwait(false);
+        }
         if (!result.Success)
             throw new InvalidOperationException(
                 $"Winget upgrade scan selhal (exit {result.ExitCode}): " +
@@ -200,16 +206,85 @@ public static class WingetUpdateService
         return items;
     }
 
+    private static IDisposable? TryAcquireTemporarySourceUpdateGuard()
+    {
+        try
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(localAppData))
+                return null;
+
+            string installedIndexPath = System.IO.Path.Combine(
+                localAppData,
+                "Packages",
+                "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe",
+                "LocalState",
+                "Microsoft.Winget.Source_8wekyb3d8bbwe",
+                "installed.db");
+            if (!System.IO.File.Exists(installedIndexPath))
+                return null;
+
+            string wingetTempDir = System.IO.Path.Combine(localAppData, "Temp", "WinGet");
+            System.IO.Directory.CreateDirectory(wingetTempDir);
+            string msixTempPath = System.IO.Path.Combine(wingetTempDir, "Microsoft.Winget.Source_8wekyb3d8bbwe.msix");
+            return new System.IO.FileStream(
+                msixTempPath,
+                System.IO.FileMode.OpenOrCreate,
+                System.IO.FileAccess.ReadWrite,
+                System.IO.FileShare.None);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     internal static (int ScanCount, int CachedCount, bool InFlight) GetUpgradeCacheDiagnostics()
     {
         lock (UpgradesGate)
             return (_upgradeScanCount, _cachedUpgrades?.Count ?? -1, _upgradesFlight?.IsCompleted == false);
     }
 
+    private static string ValidatePackageId(string? id)
+    {
+        // Package IDs are single ASCII identifiers, never command fragments.
+        // Quotes, backslashes, whitespace and shell metacharacters can change
+        // the command line or create misleading structured WinGet requests.
+        if (string.IsNullOrEmpty(id) || id.Length > 160 ||
+            !IsAsciiLetterOrDigit(id[0]) ||
+            id.Any(ch => !IsAsciiLetterOrDigit(ch) && ch is not ('.' or '-' or '_' or '+')))
+            throw new ArgumentException("Neplatné WinGet ID balíčku.", nameof(id));
+        return id;
+    }
+
+    private static bool IsAsciiLetterOrDigit(char value) =>
+        value is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9';
+
+    internal static string RunPackageIdSafetySmoke()
+    {
+        string[] good = { "Microsoft.VisualStudioCode", "Git.Git", "7zip.7zip", "Mozilla.Firefox.en-US", "9NBLGGH4R315", "Vendor_App.Component+Plus" };
+        string[] bad = { "", " ", "App Name", "Vendor.App --source other", "Vendor.App\" --all",
+            "Vendor.App\\\" --all", "Vendor.App\n--all", "Vendor.App;drop", "Vendor.App&other",
+            "../escape", "Vendor.App/other", "Vendor.App%TEST%", "Vendor.App|more", "Vendor.App*",
+            ".leading", "-switch", "Vendor.App:stream", "Vendor.App\targ",
+            "Véndor.App", new string('A', 161) };
+        foreach (string value in good)
+            if (!string.Equals(ValidatePackageId(value), value, StringComparison.Ordinal))
+                throw new InvalidOperationException("Valid WinGet identifier was changed: " + value);
+        foreach (string value in bad)
+        {
+            bool rejected = false;
+            try { _ = ValidatePackageId(value); }
+            catch (ArgumentException) { rejected = true; }
+            if (!rejected)
+                throw new InvalidOperationException("Unsafe WinGet ID accepted: " + value);
+        }
+        return $"WINGET_PACKAGE_ID_SAFETY_SMOKE_OK valid={good.Length} invalidRejected={bad.Length} childProcesses=0";
+    }
+
     public static async Task<ProcessResult> UpgradeAsync(string id, CancellationToken token = default)
     {
-        string safe = (id ?? string.Empty).Replace("\"", string.Empty).Trim();
-        if (safe.Length == 0) throw new ArgumentException("Winget package ID nesmí být prázdné.", nameof(id));
+        string safe = ValidatePackageId(id);
 
         try
         {
@@ -269,8 +344,7 @@ public static class WingetUpdateService
 
     public static async Task<ProcessResult> PinAsync(string id, CancellationToken token = default)
     {
-        string safe = (id ?? string.Empty).Replace("\"", string.Empty).Trim();
-        if (safe.Length == 0) throw new ArgumentException("Winget package ID nesmí být prázdné.", nameof(id));
+        string safe = ValidatePackageId(id);
         var result = await UnelevatedProcessRunner.RunAsync("winget.exe", $"pin add --id \"{safe}\" --exact --accept-source-agreements --disable-interactivity", TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
         InvalidateStatus();
         return result;
@@ -278,8 +352,7 @@ public static class WingetUpdateService
 
     public static async Task<ProcessResult> UnpinAsync(string id, CancellationToken token = default)
     {
-        string safe = (id ?? string.Empty).Replace("\"", string.Empty).Trim();
-        if (safe.Length == 0) throw new ArgumentException("Winget package ID nesmí být prázdné.", nameof(id));
+        string safe = ValidatePackageId(id);
         var result = await UnelevatedProcessRunner.RunAsync("winget.exe", $"pin remove --id \"{safe}\" --exact --disable-interactivity", TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
         InvalidateStatus();
         return result;

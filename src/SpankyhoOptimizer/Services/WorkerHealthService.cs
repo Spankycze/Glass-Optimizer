@@ -53,31 +53,65 @@ public static class WorkerHealthService
         catch (Exception ex) { LogService.Error("worker-health", "Load failed", ex); }
     }
 
-    public static void Success(string action)
+    private static bool MayResolve(DateTimeOffset startedUtc, DateTimeOffset? latestFailureUtc) =>
+        latestFailureUtc == null || startedUtc >= latestFailureUtc.Value;
+
+    // A late result from a request started before a NEWER failure must never
+    // clear that failure's unresolved alert.
+    internal static void RunResolutionOrderingSmoke()
     {
-        // Success telemetry is useful in-memory for the current session, but persisting
-        // the entire JSON after every worker invocation created unnecessary disk I/O.
+        DateTimeOffset t = new(2026, 10, 17, 20, 0, 0, TimeSpan.Zero);
+        if (MayResolve(t, t.AddSeconds(1)) ||
+            !MayResolve(t.AddSeconds(2), t.AddSeconds(1)) ||
+            !MayResolve(t, null))
+            throw new InvalidOperationException("Worker failure recovery ordering regressed.");
+    }
+
+    public static void Success(string action, DateTimeOffset requestStartedUtc)
+    {
         var s = Stats.GetOrAdd(action, _ => new());
-        Interlocked.Increment(ref s.Runs);
+        // Successful IPC completion is proof that the LAST failure has been
+        // resolved. Keep the run counter, but clear stale error state once.
+        // The common healthy path performs no disk I/O.
+        lock (PersistSync)
+        {
+            Interlocked.Increment(ref s.Runs);
+            if ((s.Failures == 0 && s.LastFailureUtc == null && s.LastError == null) ||
+                !MayResolve(requestStartedUtc, s.LastFailureUtc))
+                return;
+            s.Failures = 0;
+            s.Timeouts = 0;
+            s.LastFailureUtc = null;
+            s.LastError = null;
+            PersistFailures();
+        }
     }
 
     public static void Failure(string action, Exception ex)
     {
         var s = Stats.GetOrAdd(action, _ => new());
-        Interlocked.Increment(ref s.Runs);
-        Interlocked.Increment(ref s.Failures);
-        if (ex is TimeoutException or OperationCanceledException)
-            Interlocked.Increment(ref s.Timeouts);
-        s.LastFailureUtc = DateTimeOffset.UtcNow;
-        s.LastError = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
-        PersistFailures();
+        // Serialize error transitions with successful recovery so a late
+        // completion cannot erase a newer failure or its durable record.
+        lock (PersistSync)
+        {
+            Interlocked.Increment(ref s.Runs);
+            Interlocked.Increment(ref s.Failures);
+            if (ex is TimeoutException or OperationCanceledException)
+                Interlocked.Increment(ref s.Timeouts);
+            s.LastFailureUtc = DateTimeOffset.UtcNow;
+            s.LastError = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
+            PersistFailures();
+        }
     }
 
     public static void Reset()
     {
-        Stats.Clear();
-        try { if (File.Exists(FileName)) File.Delete(FileName); }
-        catch (Exception ex) { LogService.Error("worker-health", "Reset file cleanup failed", ex); }
+        lock (PersistSync)
+        {
+            Stats.Clear();
+            try { if (File.Exists(FileName)) File.Delete(FileName); }
+            catch (Exception ex) { LogService.Error("worker-health", "Reset file cleanup failed", ex); }
+        }
     }
 
     public static WorkerHealthEntry[] Snapshot() =>

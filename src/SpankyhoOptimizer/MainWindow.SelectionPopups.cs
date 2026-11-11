@@ -14,6 +14,7 @@ public sealed partial class MainWindow
 {
     private async Task ShowComponentDisableSelectorAsync(string sub)
     {
+        int operationGeneration = _navigationGeneration;
         var tweaks = CatalogService.GetTweaks("components", sub);
         if (tweaks.Count == 0) return;
         await _engine.DetectAsync(tweaks);
@@ -36,12 +37,13 @@ public sealed partial class MainWindow
         if (selected.Length == 0) return;
         if (selected.Any(x => x.Risk == TweakRisk.Advanced) &&
             !await ShowStyledConfirmAsync("Advanced změny", "Výběr obsahuje Advanced položky. Mohou ovlivnit kompatibilitu zařízení nebo funkcí Windows.", "Pokračovat", "Zrušit", sub)) return;
-        foreach (var tweak in selected) tweak.Pending = true;
-        var dirty = selected.Where(x => x.IsDirty).ToArray();
+        // Stage the desired ON state without changing shared catalog definitions before confirmation.
+        var dirty = selected.Where(x => x.IsLoaded && !x.Current).ToArray();
         if (dirty.Length == 0) { await ShowStyledInfoAsync(sub, "Vybrané položky už jsou v požadovaném stavu."); return; }
         string preview = string.Join(Environment.NewLine, dirty.Take(24).Select(x => "• " + x.Name));
         if (!await ShowStyledConfirmAsync($"Použít {dirty.Length} změn?", preview, "Použít", "Zrušit", "Před změnou se vytvoří Restore Point")) return;
         await WindowsActions.EnsureRecentRestorePointAsync("Spankyho Optimizer - Before component selection");
+        foreach (var tweak in dirty) tweak.Pending = true;
         var progressResult = await RunCancellableWithProgressAsync(
             sub,
             $"Aplikuji {dirty.Length} vybraných změn…",
@@ -51,16 +53,20 @@ public sealed partial class MainWindow
         if (!progressResult.Completed)
         {
             LogService.Info("components", $"Component selection apply cancelled: {sub}");
-            await ReconcileCancelledApplyAsync(dirty, "components:" + sub);
+            bool verified = await ReconcileCancelledApplyAsync(dirty, "components:" + sub);
             _tweakCacheTime.TryRemove("components|" + sub, out _);
             RefreshCards(force: true);
             QueueDirtyStateRefresh();
+            if (!verified && operationGeneration == _navigationGeneration &&
+                _section == "components")
+                ShowActionFeedback(sub, ActionFeedbackKind.Failed,
+                    "Operace byla přerušena a skutečný stav vybraných položek není ověřen.");
             return;
         }
         var errors = progressResult.Result;
         if (errors.Count > 0) await ShowMessageAsync(sub, string.Join(Environment.NewLine, errors.Take(10)));
         _tweakCacheTime.TryRemove("components|" + sub, out _);
-        await ShowSectionAsync("components");
+        if (operationGeneration == _navigationGeneration && _section == "components") await ShowSectionAsync("components");
     }
     private FrameworkElement BuildComponentChoiceRow(CheckBox box, TweakDefinition tweak)
     {

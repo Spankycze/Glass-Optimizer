@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -17,7 +17,7 @@ internal partial class RegistryBackupJsonContext : JsonSerializerContext
 {
 }
 
-public sealed class RegistryBackupStore
+public sealed partial class RegistryBackupStore
 {
     private sealed class SerializableRegistryValue
     {
@@ -31,7 +31,9 @@ public sealed class RegistryBackupStore
         }
     }
 
-    private readonly string _file = Path.Combine(LogService.Root, "registry-backups.json");
+    private readonly string _file;
+    public RegistryBackupStore() : this(null) { }
+    public RegistryBackupStore(string? file = null) => _file = file ?? Path.Combine(LogService.Root, "registry-backups.json");
 
     private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
 
@@ -39,29 +41,23 @@ public sealed class RegistryBackupStore
 
     private async Task<Dictionary<string, RegistryBackupValue>> LoadAsync()
     {
-        if (_cache != null)
-        {
-            return _cache;
-        }
-        Directory.CreateDirectory(LogService.Root);
+        if (_cache != null) return _cache;
+        Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
+        if (!File.Exists(_file)) return _cache = new(StringComparer.OrdinalIgnoreCase);
         try
         {
-            if (File.Exists(_file))
-            {
-                string json = await File.ReadAllTextAsync(_file);
-                RegistryBackupStore registryBackupStore = this;
-                Dictionary<string, RegistryBackupValue>? obj = JsonSerializer.Deserialize(json, typeof(Dictionary<string, RegistryBackupValue>), RegistryBackupJsonContext.Default) as Dictionary<string, RegistryBackupValue> ?? new Dictionary<string, RegistryBackupValue>();
-                Dictionary<string, RegistryBackupValue> result = obj;
-                registryBackupStore._cache = obj;
-                return result;
-            }
+            string json = await File.ReadAllTextAsync(_file).ConfigureAwait(false);
+            var loaded = JsonSerializer.Deserialize(json, typeof(Dictionary<string, RegistryBackupValue>), RegistryBackupJsonContext.Default)
+                as Dictionary<string, RegistryBackupValue>
+                ?? throw new InvalidDataException("Soubor původních hodnot obsahuje prázdnou zálohu.");
+            return _cache = new(loaded, StringComparer.OrdinalIgnoreCase);
         }
-        catch
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
         {
+            LogService.Error("rollback", "Original registry backup cannot be read: " + _file, ex);
+            throw new InvalidDataException("Původní registry zálohu nelze načíst; soubor nebyl nahrazen.", ex);
         }
-        return _cache = new Dictionary<string, RegistryBackupValue>();
     }
-
     public async Task WarmAsync(CancellationToken token = default)
     {
         await _gate.WaitAsync(token);
@@ -79,6 +75,7 @@ public sealed class RegistryBackupStore
             var perf = System.Diagnostics.Stopwatch.StartNew();
             Dictionary<string, RegistryBackupValue> dictionary = await LoadAsync();
             long loadMs = perf.ElapsedMilliseconds;
+            ValidateBackupBatchIdentities(items, dictionary);
             var missing = items.Where(x => !dictionary.ContainsKey(x.Id)).ToArray();
             if (missing.Length == 0)
             {
@@ -107,7 +104,7 @@ public sealed class RegistryBackupStore
                         kind = valueKind.ToString();
                         valueBase = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new SerializableRegistryValue(valueKind, Normalize(value))));
                     }
-                    pending[tweak.Id] = new RegistryBackupValue(tweak.Id, group.Key.Hive.ToString(), group.Key.Path, valueName, existed, kind, valueBase);
+                    pending[tweak.Id] = new RegistryBackupValue(tweak.Id, group.Key.Hive.ToString(), group.Key.Path, valueName, existed, kind, valueBase, key is not null);
                 }
             }
             long captureMs = perf.ElapsedMilliseconds - loadMs;
@@ -126,14 +123,20 @@ public sealed class RegistryBackupStore
         }
         finally { _gate.Release(); }
     }
-    public async Task SaveOriginalAsync(string id, RegistryHive hive, string path, string name)
+    public Task SaveOriginalAsync(string id, RegistryHive hive, string path, string name) =>
+        SaveOriginalAsync(id, hive, path, name, CancellationToken.None);
+
+    public async Task SaveOriginalAsync(string id, RegistryHive hive, string path, string name, CancellationToken token = default)
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
             Dictionary<string, RegistryBackupValue> dictionary = await LoadAsync();
-            if (dictionary.ContainsKey(id))
+            if (dictionary.TryGetValue(id, out RegistryBackupValue? existing))
             {
+                // A previously used ID must never silently adopt a different
+                // HKCU/HKLM hive, registry key or value name.
+                ValidateBackupTargetIdentity(id, hive, path, name, existing);
                 return;
             }
             using RegistryKey baseKey = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64);
@@ -148,14 +151,15 @@ public sealed class RegistryBackupStore
                 kind = valueKind.ToString();
                 valueBase = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new SerializableRegistryValue(valueKind, Normalize(value))));
             }
-            var pending = new RegistryBackupValue(id, hive.ToString(), path, name, flag, kind, valueBase);
+            var pending = new RegistryBackupValue(id, hive.ToString(), path, name, flag, kind, valueBase, key is not null);
             var persisted = new Dictionary<string, RegistryBackupValue>(dictionary, StringComparer.OrdinalIgnoreCase)
             {
                 [id] = pending
             };
             await AtomicFileService.WriteTextAsync(
                 _file,
-                await SerializeBackupsAsync(persisted).ConfigureAwait(false));
+                await SerializeBackupsAsync(persisted, token).ConfigureAwait(false),
+                token).ConfigureAwait(false);
             dictionary[id] = pending;
         }
         finally
@@ -178,46 +182,200 @@ public sealed class RegistryBackupStore
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    public async Task<bool> RestoreAsync(string id)
+    public Task<bool> RestoreAsync(string id) => RestoreAsync(id, CancellationToken.None);
+
+    // Recovery must compare the COMPLETE original value and registry key
+    // existence, not merely DetectAsync's ON/OFF Boolean projection.
+    // This read-only API never creates or mutates a Windows registry key.
+    public async Task<bool> IsOriginalStateRestoredAsync(
+        string id, RegistryHive expectedHive, string expectedPath,
+        string expectedValueName, CancellationToken token = default)
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            if (!(await LoadAsync()).TryGetValue(id, out var value))
-            {
+            if (!(await LoadAsync().ConfigureAwait(false)).TryGetValue(id, out var saved))
                 return false;
-            }
-            using RegistryKey registryKey = RegistryKey.OpenBaseKey(Enum.Parse<RegistryHive>(value.Hive), RegistryView.Registry64);
-            using RegistryKey registryKey2 = registryKey.CreateSubKey(value.Path, writable: true);
-            if (!value.Existed)
-            {
-                registryKey2.DeleteValue(value.Name, throwOnMissingValue: false);
-            }
-            else if (!string.IsNullOrEmpty(value.ValueBase64))
-            {
-                SerializableRegistryValue serializableRegistryValue = JsonSerializer.Deserialize<SerializableRegistryValue>(Convert.FromBase64String(value.ValueBase64));
-                if ((object)serializableRegistryValue != null)
-                {
-                    RegistryValueKind registryValueKind = Enum.Parse<RegistryValueKind>(serializableRegistryValue.Kind);
-                    registryKey2.SetValue(value.Name, Denormalize(registryValueKind, serializableRegistryValue.Value), registryValueKind);
-                }
-            }
-            return true;
+            ValidateBackupTargetIdentity(id, expectedHive, expectedPath,
+                expectedValueName, saved);
+            token.ThrowIfCancellationRequested();
+            var (kind, original) = DecodeOriginalSnapshot(saved);
+            using RegistryKey root = RegistryKey.OpenBaseKey(expectedHive, RegistryView.Registry64);
+            using RegistryKey? key = root.OpenSubKey(expectedPath, writable: false);
+            bool present = key is not null && key.GetValueNames().Contains(
+                expectedValueName, StringComparer.OrdinalIgnoreCase);
+            RegistryValueKind actualKind = present
+                ? key!.GetValueKind(expectedValueName) : RegistryValueKind.None;
+            object? current = present
+                ? key!.GetValue(expectedValueName, null,
+                    RegistryValueOptions.DoNotExpandEnvironmentNames)
+                : null;
+            return MatchesCompleteOriginalSnapshot(
+                saved, key is not null, present, actualKind, current,
+                kind, original);
         }
-        finally
-        {
-            _gate.Release();
-        }
+        finally { _gate.Release(); }
     }
 
+    // Isolated tests exercise this EXACT production predicate without
+    // touching the user's live registry or backup files.
+    internal static bool MatchesCompleteOriginalSnapshot(
+        RegistryBackupValue saved, bool currentKeyExists,
+        bool currentValueExists, RegistryValueKind currentKind, object? currentValue,
+        RegistryValueKind originalKind, object? originalValue)
+    {
+        // Unknown key history is insufficient to certify an interrupted
+        // transaction recovered (legacy backups remain usable manually).
+        if (saved.KeyExisted != currentKeyExists ||
+            !saved.KeyExisted.HasValue) return false;
+        return saved.Existed
+            ? IsExactOriginalValue(currentValueExists, currentKind, currentValue,
+                originalKind, originalValue)
+            : !currentValueExists && originalKind == RegistryValueKind.None;
+    }
+
+    private static (RegistryValueKind Kind, object? Original) DecodeOriginalSnapshot(
+        RegistryBackupValue value)
+    {
+        if (!value.Existed)
+        {
+            if (value.Kind != nameof(RegistryValueKind.None) ||
+                !string.IsNullOrEmpty(value.ValueBase64))
+                throw new InvalidDataException(
+                    "Záloha původně neexistující registry hodnoty je neplatná.");
+            return (RegistryValueKind.None, null);
+        }
+        if (value.KeyExisted == false || string.IsNullOrWhiteSpace(value.ValueBase64))
+            throw new InvalidDataException(
+                "Záloha původní registry hodnoty je neúplná.");
+        var snapshot = JsonSerializer.Deserialize<SerializableRegistryValue>(
+            Convert.FromBase64String(value.ValueBase64))
+            ?? throw new InvalidDataException("Registry záloha obsahuje neplatná data.");
+        if (!Enum.TryParse(snapshot.Kind, out RegistryValueKind kind) ||
+            !Enum.IsDefined(kind) ||
+            kind is RegistryValueKind.None or RegistryValueKind.Unknown ||
+            snapshot.Kind != value.Kind)
+            throw new InvalidDataException("Záloha má neplatný registry datový typ.");
+        return (kind, Denormalize(kind, snapshot.Value));
+    }
+
+    public async Task<bool> RestoreAsync(string id, CancellationToken token = default,
+        int? expectedAppliedDword = null, RegistryHive? expectedHive = null,
+        string? expectedPath = null, string? expectedValueName = null)
+    {
+        await _gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (!(await LoadAsync().ConfigureAwait(false)).TryGetValue(id, out var value))
+                return false;
+            // Never restore an old backup by ID alone when the current DWORD
+            // provider supplies its exact target. Reject mismatched metadata
+            // before opening a writable registry key.
+            if (expectedHive.HasValue || expectedPath is not null ||
+                expectedValueName is not null)
+            {
+                if (!expectedHive.HasValue || string.IsNullOrWhiteSpace(expectedPath) ||
+                    string.IsNullOrWhiteSpace(expectedValueName))
+                    throw new InvalidOperationException(
+                        "Cílová registry identita pro obnovu není úplná.");
+                ValidateBackupTargetIdentity(id, expectedHive.Value,
+                    expectedPath, expectedValueName, value);
+            }
+            token.ThrowIfCancellationRequested();
+
+            // Use the same strict decoder as read-only crash recovery;
+            // corrupted original-value metadata must fail before writes.
+            var (kind, original) = DecodeOriginalSnapshot(value);
+
+            using RegistryKey root = RegistryKey.OpenBaseKey(
+                Enum.Parse<RegistryHive>(value.Hive), RegistryView.Registry64);
+            if (!value.Existed)
+                return RestoreOriginallyMissingValue(root, value, expectedAppliedDword);
+
+            // Never fabricate an originally existing key that was removed
+            // externally; the backup stores a value, not a whole subtree.
+            using RegistryKey? key = root.OpenSubKey(value.Path, writable: true);
+            if (key is null)
+                throw new InvalidOperationException(
+                    "Původní registry klíč byl odstraněn; nebudu jej vytvářet znovu.");
+
+            // A previously existing original value can have been edited by
+            // another program since our tweak was activated. For DWORD
+            // tweaks, only our verified applied value may be replaced.
+            bool currentExists = key.GetValueNames().Contains(
+                value.Name, StringComparer.OrdinalIgnoreCase);
+            RegistryValueKind currentKind = currentExists
+                ? key.GetValueKind(value.Name) : RegistryValueKind.None;
+            object? currentValue = currentExists
+                ? key.GetValue(value.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames)
+                : null;
+            bool originalAlreadyRestored = IsExactOriginalValue(
+                currentExists, currentKind, currentValue, kind, original);
+            bool? appliedValueMatches = expectedAppliedDword is null
+                ? null
+                : currentExists && MatchesExpectedAppliedDword(
+                    currentKind, currentValue, expectedAppliedDword) == true;
+            switch (PlanExistingValueRestore(originalAlreadyRestored, appliedValueMatches))
+            {
+                case ExistingValueRestoreDecision.AlreadyOriginal:
+                    return true;
+                case ExistingValueRestoreDecision.RefuseExternalChange:
+                    throw new InvalidOperationException(
+                        "Registry hodnota byla změněna mimo Optimizer; " +
+                        "původní nastavení nebude přepsáno.");
+                case ExistingValueRestoreDecision.RestoreOriginal:
+                    break;
+                default:
+                    throw new InvalidOperationException("Neznámá strategie obnovy registru.");
+            }
+
+            // Minimize time between ownership check and restoration. As with
+            // all registry writes, this cannot eliminate a concurrent external
+            // writer completely without cooperation from that writer.
+            if (expectedAppliedDword is not null &&
+                CheckCurrentAppliedDword(key, value.Name, expectedAppliedDword) != true)
+                throw new InvalidOperationException(
+                    "Registry hodnota se změnila během obnovy; cizí zápis zůstal zachován.");
+
+            key.SetValue(value.Name, original!, kind);
+            bool exists = key.GetValueNames().Contains(
+                value.Name, StringComparer.OrdinalIgnoreCase);
+            object? actual = exists
+                ? key.GetValue(value.Name, null,
+                    RegistryValueOptions.DoNotExpandEnvironmentNames)
+                : null;
+            if (!exists || key.GetValueKind(value.Name) != kind ||
+                !RegistryValuesEqual(actual, original))
+                throw new IOException(
+                    "Windows nepotvrdil obnovení původní registry hodnoty a typu.");
+            return true;
+        }
+        finally { _gate.Release(); }
+    }
+
+    private static bool RegistryValuesEqual(object? actual, object? expected) => (actual, expected) switch
+    {
+        (byte[] a, byte[] b) => a.SequenceEqual(b),
+        (string[] a, string[] b) => a.SequenceEqual(b, StringComparer.Ordinal),
+        _ => Equals(actual, expected)
+    };
     public async Task RestoreAllAsync()
     {
-        string[] array = (await LoadAsync()).Keys.ToArray();
-        string[] array2 = array;
-        foreach (string id in array2)
+        // Take a stable snapshot of IDs under the original backup lock,
+        // then release it BEFORE per-ID RestoreAsync acquires the same lock.
+        string[] ids;
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            await RestoreAsync(id);
+            ids = (await LoadAsync().ConfigureAwait(false)).Keys.ToArray();
         }
+        finally { _gate.Release(); }
+
+        // Never treat partial success as a successful "Restore registry".
+        // Independent entries are attempted and failed IDs are aggregated.
+        await ExecuteRestoreAllTransactionAsync(
+            ids, (id, token) => RestoreAsync(id, token),
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     private static object? Normalize(object? value)
@@ -236,12 +394,10 @@ public sealed class RegistryBackupStore
     private static object Denormalize(RegistryValueKind kind, object? value)
     {
         string text = value?.ToString() ?? string.Empty;
-        int result;
-        long result2;
         return kind switch
         {
-            RegistryValueKind.DWord => int.TryParse(text, out result) ? result : 0,
-            RegistryValueKind.QWord => long.TryParse(text, out result2) ? result2 : 0,
+            RegistryValueKind.DWord => int.Parse(text, System.Globalization.CultureInfo.InvariantCulture),
+            RegistryValueKind.QWord => long.Parse(text, System.Globalization.CultureInfo.InvariantCulture),
             RegistryValueKind.Binary => Convert.FromBase64String(text),
             RegistryValueKind.MultiString => (value is JsonElement { ValueKind: JsonValueKind.Array } jsonElement) ? ((object)(from x in jsonElement.EnumerateArray()
                                                                                                                                select x.GetString() ?? string.Empty).ToArray()) : ((object)Array.Empty<string>()),

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -19,15 +19,20 @@ public static class AppDetectionService
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
     private static readonly (string Name, string Category, string[] Paths)[] Known =
     {
-        ("Firefox","Browser",new[]{@"%ProgramFiles%\Mozilla Firefox\firefox.exe",@"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe"}),
-        ("Google Chrome","Browser",new[]{@"%ProgramFiles%\Google\Chrome\Application\chrome.exe",@"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"}),
-        ("Microsoft Edge","Browser",new[]{@"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",@"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"}),
         ("Discord","Communication",new[]{@"%LOCALAPPDATA%\Discord\Update.exe"}),
         ("Steam","Launcher",new[]{@"%ProgramFiles(x86)%\Steam\steam.exe",@"%ProgramFiles%\Steam\steam.exe"}),
         ("Battle.net","Launcher",new[]{@"%ProgramFiles(x86)%\Battle.net\Battle.net Launcher.exe",@"%ProgramFiles%\Battle.net\Battle.net Launcher.exe"}),
         ("Epic Games Launcher","Launcher",new[]{@"%ProgramFiles(x86)%\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe"}),
         ("Ubisoft Connect","Launcher",new[]{@"%ProgramFiles(x86)%\Ubisoft\Ubisoft Game Launcher\UbisoftConnect.exe"})
     };
+
+    // The uninstall/cleanup UI is intentionally limited to the five curated
+    // canonical products. Substring matches could confuse SteamVR with Steam
+    // or Discord Canary with Discord and erase another app's user data.
+    internal static bool IsSupportedAppName(string? displayName) =>
+        !string.IsNullOrWhiteSpace(displayName) &&
+        Known.Any(k => string.Equals(k.Name, displayName.Trim(),
+            StringComparison.OrdinalIgnoreCase));
 
     public static void Invalidate()
     {
@@ -47,6 +52,8 @@ public static class AppDetectionService
             if (_flight != null && !_flight.IsCompleted) work = _flight;
             else
             {
+                // Scan is pure registry/IO; the extra Task.Run hop only added a
+                // scheduler dispatch. The caller already awaits on its own thread.
                 _flight = work = Task.Run(() => Scan(CancellationToken.None));
                 _ = work.ContinueWith(t =>
                 {
@@ -88,7 +95,7 @@ public static class AppDetectionService
                 token.ThrowIfCancellationRequested();
                 using var key = root.OpenSubKey(sub);
                 string name = key?.GetValue("DisplayName")?.ToString() ?? string.Empty;
-                if (name.Length == 0 || !Known.Any(k => name.Contains(k.Name.Split(' ')[0], StringComparison.OrdinalIgnoreCase))) continue;
+                if (!IsSupportedAppName(name)) continue;
                 string? icon = key?.GetValue("DisplayIcon")?.ToString()?.Trim('"').Split(',')[0];
                 found.Add(new DetectedDesktopApp(name, "Installed", File.Exists(icon) ? icon : null, "Uninstall registry"));
             }

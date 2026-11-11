@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -154,45 +154,163 @@ internal static class NativeNicTuningService
     public static string SetProperty(string[] names, string value, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        using var adapter = FindPrimaryAdapter() ?? throw new InvalidOperationException("Nebyl nalezen primární aktivní adaptér.");
+        using var adapter = FindPrimaryAdapter() ?? throw new InvalidOperationException("Nebyl nalezen adaptér aktivní trasy.");
         string adapterName = adapter["Name"]?.ToString() ?? string.Empty;
         InvalidateAdvancedPropertyCache();
-        var prop = FindProperty(ReadAdvancedProperties(adapterName), names);
-        if (prop == null)
-            throw new PlatformNotSupportedException($"Aktivní NIC driver vlastnost '{string.Join(" / ", names)}' nepodporuje.");
+        var prop = FindProperty(ReadAdvancedProperties(adapterName), names)
+            ?? throw new PlatformNotSupportedException("Driver nepodporuje: " + string.Join(" / ", names));
         if (prop.DisplayValue.Equals(value, StringComparison.OrdinalIgnoreCase))
             return adapterName + " • " + prop.DisplayName + " = " + prop.DisplayValue;
-
-        string oldDisplayValue = prop.DisplayValue;
+        if (prop.RegistryValues.Length == 0 || string.IsNullOrWhiteSpace(prop.Path))
+            throw new InvalidOperationException("NIC snapshot missing: " + prop.DisplayName);
         bool hadConnectivity = CanReachInternet();
-        try
+        bool attempted = false;
+        return RunNicTransaction(() =>
         {
-            ApplyAdvancedPropertyWithCmdlet(adapterName, prop.DisplayName, value);
-            InvalidateAdvancedPropertyCache();
-            RestartAdapterWithCmdlet(adapterName);
+            token.ThrowIfCancellationRequested();
+            attempted = true;
+            ApplyAdvancedPropertyWithCmdlet(adapterName, prop.DisplayName, value, token);
+            RestartAdapterWithCmdlet(adapterName, token);
             WaitForLink(adapterName, token);
-            var verify = ReadAdvancedProperties(adapterName)
-                .FirstOrDefault(x => x.DisplayName.Equals(prop.DisplayName, StringComparison.OrdinalIgnoreCase));
+            InvalidateAdvancedPropertyCache();
+            var verify = ReadAdvancedProperties(adapterName).FirstOrDefault(x =>
+                x.RegistryKeyword.Equals(prop.RegistryKeyword, StringComparison.OrdinalIgnoreCase));
             if (verify == null || !verify.DisplayValue.Equals(value, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Read-back nepotvrdil změnu NIC vlastnosti.");
             if (hadConnectivity && !CanReachInternet())
-                throw new InvalidOperationException("Po změně NIC vlastnosti se ztratila konektivita; změna bude automaticky vrácena.");
+                throw new InvalidOperationException("Po změně NIC vlastnosti se ztratila konektivita.");
+            token.ThrowIfCancellationRequested();
             return adapterName + " • " + prop.DisplayName + " = " + verify.DisplayValue;
-        }
-        catch
+        }, () =>
         {
-            try
-            {
-                ApplyAdvancedPropertyWithCmdlet(adapterName, prop.DisplayName, oldDisplayValue);
-                InvalidateAdvancedPropertyCache();
-                RestartAdapterWithCmdlet(adapterName);
-            }
-            catch (Exception rollbackEx)
-            {
-                LogService.Error("nic", "NIC property rollback failed: " + prop.DisplayName, rollbackEx);
-            }
-            throw;
+            if (!attempted) return;
+            var errors = new List<Exception>();
+            try { ApplyRegistryValues(prop.Path, prop.RegistryValues); } catch (Exception ex) { errors.Add(ex); }
+            try { RestartAdapterWithCmdlet(adapterName); } catch (Exception ex) { errors.Add(ex); }
+            try { VerifyRecoveredConnectivity(adapterName, hadConnectivity); } catch (Exception ex) { errors.Add(ex); }
+            try { VerifyRegistrySnapshot(adapterName, prop); } catch (Exception ex) { errors.Add(ex); }
+            if (errors.Count > 0) throw new AggregateException("NIC property rollback failed.", errors);
+        });
+    }
+
+
+    /// <summary>
+    /// Read-only, exact Realtek driver check. A different primary adapter or
+    /// unexpected driver values must not be reported as a confirmed drift.
+    /// </summary>
+    public static string? ReadRealtekGreenEthernetStatus(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        using var adapter = FindPrimaryAdapter();
+        token.ThrowIfCancellationRequested();
+        if (adapter == null ||
+            !string.Equals(adapter["InterfaceDescription"]?.ToString(),
+                "Realtek Gaming 2.5GbE Family Controller", StringComparison.OrdinalIgnoreCase))
+            return null;
+        string name = adapter["Name"]?.ToString() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        var advancedProperties = ReadAdvancedProperties(name);
+        token.ThrowIfCancellationRequested();
+        var matches = advancedProperties.Where(x =>
+            string.Equals(x.RegistryKeyword, "EnableGreenEthernet", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (matches.Length != 1 || matches[0].RegistryValues.Length != 1)
+            return null;
+        return DecodeGreenEthernetRegistryValue(matches[0].RegistryValues[0]);
+    }
+
+    internal static string? DecodeGreenEthernetRegistryValue(string? raw) => raw switch
+    {
+        "0" => "Disabled",
+        "1" => "Enabled",
+        _ => null
+    };
+
+    /// <summary>
+    /// Explicit user action only. Writes the Realtek Green Ethernet driver setting
+    /// without restarting/disabling the adapter. Never called by periodic monitoring.
+    /// A driver may still require its next ordinary initialization to apply the change.
+    /// </summary>
+    public static string DisableRealtekGreenEthernetNoRestart(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        using var adapter = FindPrimaryAdapter()
+            ?? throw new InvalidOperationException("Primární aktivní síťový adaptér není dostupný.");
+        string name = adapter["Name"]?.ToString() ?? string.Empty;
+        string description = adapter["InterfaceDescription"]?.ToString() ?? string.Empty;
+        if (!string.Equals(description, "Realtek Gaming 2.5GbE Family Controller",
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Green Ethernet lze tímto tlačítkem změnit pouze na ověřené Realtek Gaming 2.5GbE.");
+
+        var prop = ReadAdvancedProperties(name).SingleOrDefault(x =>
+            string.Equals(x.RegistryKeyword, "EnableGreenEthernet", StringComparison.OrdinalIgnoreCase));
+        if (prop == null)
+            throw new PlatformNotSupportedException("Driver neposkytuje jednoznačnou vlastnost EnableGreenEthernet.");
+        if (prop.RegistryValues.SequenceEqual(["0"], StringComparer.Ordinal))
+            return "Green Ethernet už je vypnutý. Nebyl proveden žádný zápis.";
+        if (!prop.RegistryValues.SequenceEqual(["1"], StringComparer.Ordinal))
+            throw new InvalidOperationException("Neznámá původní hodnota driveru. Nic nebylo změněno.");
+        string targetDisplay = SelectGreenEthernetDisabledDisplayValue(
+            prop.ValidDisplayValues, prop.ValidRegistryValues);
+        string operationId = Guid.NewGuid().ToString("N");
+        // A failed Prepared record blocks the driver mutation.
+        WriteGreenEthernetJournalEntry(operationId, "Prepared", name, description,
+            prop.RegistryKeyword, prop.RegistryValues[0]);
+        token.ThrowIfCancellationRequested();
+        // Resolve the actual driver's localized display value for RegistryValue=0.
+        // This operation uses -NoRestart; no adapter reset is requested.
+        ApplyAdvancedPropertyWithCmdlet(name, prop.DisplayName, targetDisplay, token);
+        InvalidateAdvancedPropertyCache();
+        var after = ReadAdvancedProperties(name).SingleOrDefault(x =>
+            string.Equals(x.RegistryKeyword, "EnableGreenEthernet", StringComparison.OrdinalIgnoreCase));
+        if (after == null || !after.RegistryValues.SequenceEqual(["0"], StringComparer.Ordinal))
+            throw new InvalidOperationException("Ovladač nepotvrdil Green Ethernet=0. Restart adaptéru nebyl proveden.");
+        try
+        {
+            WriteGreenEthernetJournalEntry(operationId, "Applied", name, description,
+                prop.RegistryKeyword, prop.RegistryValues[0]);
         }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            LogService.Error("default-guard",
+                "Green Ethernet=0 was verified but journal Applied receipt could not be saved", ex);
+        }
+        return name + ": Green Ethernet = Disabled (0); adaptér nebyl restartován.";
+    }
+
+    // ValidDisplayValues and ValidRegistryValues are parallel arrays provided
+    // by MSFT_NetAdapterAdvancedPropertySettingData. Never assume English text.
+    internal static string SelectGreenEthernetDisabledDisplayValue(
+        string[] displayValues, string[] registryValues)
+    {
+        if (displayValues == null || registryValues == null ||
+            displayValues.Length == 0 || displayValues.Length != registryValues.Length)
+            throw new InvalidOperationException("Driver neposkytl jednoznačný seznam hodnot Green Ethernet.");
+        int match = -1;
+        for (int i = 0; i < registryValues.Length; i++)
+        {
+            if (!string.Equals(registryValues[i], "0", StringComparison.Ordinal)) continue;
+            if (match != -1)
+                throw new InvalidOperationException("Driver poskytl více nejednoznačných vypnutých hodnot.");
+            match = i;
+        }
+        if (match < 0 || string.IsNullOrWhiteSpace(displayValues[match]))
+            throw new InvalidOperationException("Driver neposkytuje vypnutou hodnotu Green Ethernet=0.");
+        return displayValues[match];
+    }
+
+    private static void WriteGreenEthernetJournalEntry(string operationId, string phase,
+        string adapter, string description, string keyword, string originalRawValue)
+    {
+        string snapshot = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            AtUtc = DateTime.UtcNow, OperationId = operationId, Phase = phase,
+            GroupId = "green-ethernet", Adapter = adapter,
+            Device = description, Keyword = keyword,
+            OldRegistryValues = new[] { originalRawValue }, Action = "Set 0 -NoRestart"
+        });
+        // Share the bounded, crash-conscious append implementation with all
+        // other Windows Default Guard writers (periodic + manual UAC).
+        WindowsDefaultGuardService.AppendExternalJournalLine(snapshot);
     }
 
     public static NicPropertyOptionState? ReadPropertyOptions(string[] names, CancellationToken token)
@@ -211,282 +329,266 @@ internal static class NativeNicTuningService
     public static string SetRscEnabled(bool enabled, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        using var adapter = FindPrimaryAdapter() ?? throw new InvalidOperationException("Nebyl nalezen primární aktivní adaptér.");
+        using var adapter = FindPrimaryAdapter() ?? throw new InvalidOperationException("Nebyl nalezen adaptér aktivní trasy.");
         string adapterName = adapter["Name"]?.ToString() ?? string.Empty;
         var before = ReadRscState(adapterName);
         if (before.State != ProviderReadState.Supported)
-            throw new PlatformNotSupportedException("RSC není tímto NIC driverem/providerem podporováno.");
-
-        bool beforeEnabled = before.Ipv4Enabled || before.Ipv6Enabled;
-        if (beforeEnabled == enabled)
+            throw new PlatformNotSupportedException("RSC není tímto driverem/providerem podporováno: " + FormatRscState(before));
+        if (before.Ipv4Enabled == enabled && before.Ipv6Enabled == enabled)
             return $"{adapterName} • RSC = {FormatRscState(before)}";
-
         bool hadConnectivity = CanReachInternet();
-        try
+        bool attempted = false;
+        return RunNicTransaction(() =>
         {
-            SetRscEnabledCore(adapterName, enabled);
+            token.ThrowIfCancellationRequested();
+            attempted = true;
+            SetRscEnabledCore(adapterName, enabled, token);
             WaitForLink(adapterName, token);
             var verify = ReadRscState(adapterName);
-            if (verify.State != ProviderReadState.Supported ||
-                (verify.Ipv4Enabled || verify.Ipv6Enabled) != enabled)
+            if (verify.State != ProviderReadState.Supported || verify.Ipv4Enabled != enabled || verify.Ipv6Enabled != enabled)
                 throw new InvalidOperationException("RSC read-back nepotvrdil požadovaný stav.");
             if (hadConnectivity && !CanReachInternet())
                 throw new InvalidOperationException("Po změně RSC se ztratila konektivita.");
+            token.ThrowIfCancellationRequested();
             return $"{adapterName} • RSC = {FormatRscState(verify)}";
-        }
-        catch
+        }, () =>
         {
-            try { SetRscEnabledCore(adapterName, beforeEnabled); }
-            catch (Exception rollbackEx) { LogService.Error("nic", "RSC rollback failed", rollbackEx); }
+            if (!attempted) return;
+            var errors = new List<Exception>();
+            try { SetRscStateCore(adapterName, before.Ipv4Enabled, before.Ipv6Enabled); }
+            catch (Exception ex) { errors.Add(ex); }
+            try { VerifyRecoveredConnectivity(adapterName, hadConnectivity); }
+            catch (Exception ex) { errors.Add(ex); }
+            try
+            {
+                var restored = ReadRscState(adapterName);
+                if (restored.State != ProviderReadState.Supported ||
+                    restored.Ipv4Enabled != before.Ipv4Enabled || restored.Ipv6Enabled != before.Ipv6Enabled)
+                    throw new InvalidOperationException("RSC rollback read-back mismatch.");
+            }
+            catch (Exception ex) { errors.Add(ex); }
+            if (errors.Count > 0) throw new AggregateException("RSC rollback failed.", errors);
+        });
+    }
+
+
+    private static void SetRscEnabledCore(string name, bool enabled, CancellationToken token = default) => SetRscStateCore(name, enabled, enabled, token);
+
+    private static void SetRscStateCore(string name, bool ipv4, bool ipv6, CancellationToken token = default)
+    {
+        RunNicMutationCommand("$ErrorActionPreference='Stop'; Set-NetAdapterRsc -Name " + PsQuote(name) +
+            " -IPv4Enabled $" + ipv4.ToString().ToLowerInvariant() +
+            " -IPv6Enabled $" + ipv6.ToString().ToLowerInvariant() + " -ErrorAction Stop", 20000, token);
+        InvalidateAdvancedPropertyCache();
+    }
+
+
+    private static string RunNicTransaction(Func<string> apply, Action restore)
+    {
+        try { return apply(); }
+        catch (Exception original)
+        {
+            try { restore(); }
+            catch (Exception recovery)
+            {
+                LogService.Error("nic", "NIC rollback incomplete", recovery);
+                throw new AggregateException("NIC změna selhala a obnovení původního stavu nebylo potvrzeno.",
+                    original, recovery);
+            }
             throw;
         }
     }
 
-    private static void SetRscEnabledCore(string name, bool enabled)
+    private static void VerifyRegistrySnapshot(string name, NicProperty before)
     {
-        string escaped = name.Replace("'", "''");
-        using var searcher = new ManagementObjectSearcher(@"\\.\root\StandardCimv2",
-            $"SELECT * FROM MSFT_NetAdapterRscSettingData WHERE Name='{escaped}'");
-        foreach (ManagementObject x in searcher.Get())
-        {
-            string method = enabled ? "Enable" : "Disable";
-            using var output = x.InvokeMethod(method, null, null);
-            uint code = output?["ReturnValue"] == null ? 0 : Convert.ToUInt32(output["ReturnValue"]);
-            x.Dispose();
-            if (code != 0) throw new InvalidOperationException("RSC změna selhala: " + code);
-            InvalidateAdvancedPropertyCache();
-            return;
-        }
-        throw new PlatformNotSupportedException("RSC provider není dostupný.");
+        InvalidateAdvancedPropertyCache();
+        var actual = ReadAdvancedProperties(name).FirstOrDefault(x =>
+            x.RegistryKeyword.Equals(before.RegistryKeyword, StringComparison.OrdinalIgnoreCase));
+        if (actual == null || !actual.RegistryValues.SequenceEqual(before.RegistryValues, StringComparer.Ordinal))
+            throw new InvalidOperationException("NIC rollback read-back mismatch: " + before.DisplayName);
+    }
+
+    private static void VerifyRecoveredConnectivity(string name, bool hadConnectivity)
+    {
+        WaitForLink(name, CancellationToken.None);
+        if (hadConnectivity && !CanReachInternet())
+            throw new InvalidOperationException("NIC rollback neobnovil původní konektivitu.");
     }
 
     public static string ApplyPerformanceProfile(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        var perf = System.Diagnostics.Stopwatch.StartNew();
-
         string adapterName = FindPrimaryAdapterNameFast();
         if (string.IsNullOrWhiteSpace(adapterName))
-        {
-            using var adapter = FindPrimaryAdapter() ?? throw new InvalidOperationException("Nebyl nalezen primární aktivní adaptér.");
-            adapterName = adapter["Name"]?.ToString() ?? string.Empty;
-        }
-        if (string.IsNullOrWhiteSpace(adapterName))
-            throw new InvalidOperationException("Primární aktivní adaptér nemá platný název.");
-        long adapterMs = perf.ElapsedMilliseconds;
-
+            throw new InvalidOperationException("Nebyl nalezen adaptér aktivní internetové trasy.");
         InvalidateAdvancedPropertyCache();
-        var propertiesSw = System.Diagnostics.Stopwatch.StartNew();
-        List<NicProperty> properties = ReadAdvancedProperties(adapterName);
-        long propertiesMs = propertiesSw.ElapsedMilliseconds;
+        var properties = ReadAdvancedProperties(adapterName);
+        var rssBefore = ReadRssState(adapterName);
+        var selectiveBefore = ReadSelectiveSuspend(adapterName);
         var log = new List<string> { "Adapter: " + adapterName };
-        var changed = new List<(NicProperty Prop, string[] OldValues, string TargetDisplay)>();
-        bool? hadConnectivity = null;
-        bool ConnectivityBeforeMutation()
+        var planned = new List<(NicProperty Prop, string Value)>();
+        var attempted = new List<NicProperty>();
+        var targets = new (string Label, string[] Names)[]
         {
-            if (!hadConnectivity.HasValue)
-                hadConnectivity = CanReachInternet();
-            return hadConnectivity.Value;
-        }
-
-        long advancedStartMs = perf.ElapsedMilliseconds;
-        var targets = new (string Label, string[] Names, string Value)[]
-        {
-            ("Energy-Efficient Ethernet", new[]{"Energy-Efficient Ethernet","Energy Efficient Ethernet","EEE","Advanced EEE"}, "Disabled"),
-            ("Green Ethernet", new[]{"Green Ethernet","Green Ethernet Lite","EnableGreenEthernet"}, "Disabled"),
-            ("Power Saving Mode", new[]{"Power Saving Mode","System Idle Power Saver","Ultra Low Power Mode","PowerSavingMode"}, "Disabled"),
-            ("Gigabit Lite", new[]{"Gigabit Lite","Auto Disable Gigabit","GigaLite"}, "Disabled"),
-            ("Reduce Speed On Power Down", new[]{"Reduce Speed On Power Down","ReduceSpeedOnPowerDown"}, "Disabled")
+            ("Energy-Efficient Ethernet", EeeNames),
+            ("Green Ethernet", GreenEthernetNames),
+            ("Power Saving Mode", PowerSavingNames),
+            ("Gigabit Lite", new[]{"Gigabit Lite","Auto Disable Gigabit","GigaLite"}),
+            ("Reduce Speed On Power Down", new[]{"Reduce Speed On Power Down","ReduceSpeedOnPowerDown"})
         };
-
-        try
+        foreach (var target in targets)
         {
-            foreach (var target in targets)
+            var matches = FindProperties(properties, target.Names);
+            if (matches.Count == 0) log.Add(target.Label + " = Unsupported by driver");
+            foreach (var prop in matches)
             {
-                token.ThrowIfCancellationRequested();
-                var matches = FindProperties(properties, target.Names);
-                if (matches.Count == 0)
+                if (prop.DisplayValue.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
                 {
-                    log.Add(target.Label + " = Unsupported by driver");
+                    log.Add(prop.DisplayName + " = Disabled (already)");
                     continue;
                 }
-
-                foreach (var prop in matches)
-                {
-                    if (prop.DisplayValue.Equals(target.Value, StringComparison.OrdinalIgnoreCase))
-                    {
-                        log.Add(prop.DisplayName + " = " + prop.DisplayValue + " (already)");
-                        continue;
-                    }
-
-                    string registryValue = ResolveRegistryValue(prop, target.Value);
-                    string[] oldValues = prop.RegistryValues.ToArray();
-                    _ = ConnectivityBeforeMutation();
-                    ApplyRegistryValue(prop.Path, registryValue);
-                    InvalidateAdvancedPropertyCache();
-                    changed.Add((prop, oldValues, target.Value));
-                    log.Add(prop.DisplayName + " -> " + target.Value);
-                }
+                // Preflight every value before any write. No mutation without an exact recoverable snapshot.
+                if (prop.RegistryValues.Length == 0 || string.IsNullOrWhiteSpace(prop.Path))
+                    throw new InvalidOperationException("NIC snapshot missing: " + prop.DisplayName);
+                planned.Add((prop, ResolveRegistryValue(prop, "Disabled")));
             }
-
-            if (changed.Count > 0)
+        }
+        bool changeRss = rssBefore.State == ProviderReadState.Supported && !rssBefore.Enabled;
+        bool changeSelective = selectiveBefore.State == ProviderReadState.Supported &&
+            selectiveBefore.Value.Equals("Enabled", StringComparison.OrdinalIgnoreCase);
+        if (!changeRss) log.Add("RSS = " + FormatRssState(rssBefore));
+        if (!changeSelective) log.Add("Selective Suspend = " + FormatSelectiveSuspendState(selectiveBefore));
+        bool rssAttempted = false, selectiveAttempted = false;
+        bool hadConnectivity = planned.Count > 0 || changeRss || changeSelective ? CanReachInternet() : false;
+        return RunNicTransaction(() =>
+        {
+            foreach (var change in planned)
             {
-                RestartAdapter(adapterName);
+                token.ThrowIfCancellationRequested();
+                attempted.Add(change.Prop); // Also restore a provider that writes and then throws.
+                ApplyRegistryValue(change.Prop.Path, change.Value, token);
+                log.Add(change.Prop.DisplayName + " -> Disabled");
+            }
+            if (changeRss)
+            {
+                token.ThrowIfCancellationRequested();
+                rssAttempted = true;
+                SetRssEnabled(adapterName, true, token);
+            }
+            if (changeSelective)
+            {
+                token.ThrowIfCancellationRequested();
+                selectiveAttempted = true;
+                SetSelectiveSuspend(adapterName, false, token);
+            }
+            token.ThrowIfCancellationRequested();
+            bool changed = attempted.Count > 0 || rssAttempted || selectiveAttempted;
+            if (changed)
+            {
+                RestartAdapterWithCmdlet(adapterName, token);
                 WaitForLink(adapterName, token);
-                var verifyProperties = ReadAdvancedProperties(adapterName);
-                foreach (var change in changed)
+                InvalidateAdvancedPropertyCache();
+                var actual = ReadAdvancedProperties(adapterName);
+                foreach (var change in planned)
                 {
-                    var verify = FindProperty(verifyProperties, new[] { change.Prop.DisplayName, change.Prop.RegistryKeyword });
-                    if (verify == null || !verify.DisplayValue.Equals(change.TargetDisplay, StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidOperationException("Read-back nepotvrdil NIC změnu: " + change.Prop.DisplayName);
+                    var value = actual.FirstOrDefault(x => x.RegistryKeyword.Equals(change.Prop.RegistryKeyword,
+                        StringComparison.OrdinalIgnoreCase));
+                    if (value == null || !value.RegistryValues.SequenceEqual(new[] { change.Value }, StringComparer.Ordinal))
+                        throw new InvalidOperationException("NIC read-back mismatch: " + change.Prop.DisplayName);
                 }
-                if (hadConnectivity == true && !CanReachInternet())
-                    throw new InvalidOperationException("Po NIC Recommended se ztratila konektivita; driver změny budou automaticky vráceny.");
-                log.Add($"Adapter restart = OK ({changed.Count} změn jedním restartem)");
+                if (rssAttempted)
+                {
+                    var rss = ReadRssState(adapterName);
+                    if (rss.State != ProviderReadState.Supported || !rss.Enabled)
+                        throw new InvalidOperationException("RSS read-back nepotvrdil Enabled.");
+                    log.Add("RSS = Enabled");
+                }
+                if (selectiveAttempted)
+                {
+                    var selective = ReadSelectiveSuspend(adapterName);
+                    if (selective.State != ProviderReadState.Supported || selective.Value != "Disabled")
+                        throw new InvalidOperationException("Selective Suspend read-back nepotvrdil Disabled.");
+                    log.Add("Selective Suspend = Disabled");
+                }
+                if (hadConnectivity && !CanReachInternet())
+                    throw new InvalidOperationException("Po NIC Recommended se ztratila konektivita.");
+                log.Add("Adapter restart = OK");
             }
-            else
-            {
-                log.Add("Adapter restart = nebyl potřeba");
-            }
-        }
-        catch
+            else log.Add("Adapter restart = nebyl potřeba");
+            token.ThrowIfCancellationRequested();
+            return string.Join(Environment.NewLine, log);
+        }, () =>
         {
-            foreach (var change in changed)
+            var errors = new List<Exception>();
+            void Recover(Action action) { try { action(); } catch (Exception ex) { errors.Add(ex); } }
+            // Recovery ignores the caller's cancellation and attempts every restoration.
+            if (selectiveAttempted) Recover(() => SetSelectiveSuspend(adapterName,
+                selectiveBefore.Value == "Enabled", CancellationToken.None));
+            if (rssAttempted) Recover(() => SetRssEnabled(adapterName, rssBefore.Enabled));
+            for (int i = attempted.Count - 1; i >= 0; i--)
             {
-                try
+                var snapshot = attempted[i];
+                Recover(() => ApplyRegistryValues(snapshot.Path, snapshot.RegistryValues));
+            }
+            if (attempted.Count > 0 || rssAttempted || selectiveAttempted)
+            {
+                Recover(() => RestartAdapterWithCmdlet(adapterName));
+                Recover(() => VerifyRecoveredConnectivity(adapterName, hadConnectivity));
+                foreach (var snapshot in attempted) Recover(() => VerifyRegistrySnapshot(adapterName, snapshot));
+                if (rssAttempted) Recover(() =>
                 {
-                    ApplyRegistryValues(change.Prop.Path, change.OldValues);
-                    InvalidateAdvancedPropertyCache();
-                }
-                catch (Exception rollbackEx) { LogService.Error("nic", "NIC batch rollback write failed: " + change.Prop.DisplayName, rollbackEx); }
+                    var rss = ReadRssState(adapterName);
+                    if (rss.State != ProviderReadState.Supported || rss.Enabled != rssBefore.Enabled)
+                        throw new InvalidOperationException("RSS rollback read-back mismatch.");
+                });
+                if (selectiveAttempted) Recover(() =>
+                {
+                    var selective = ReadSelectiveSuspend(adapterName);
+                    if (selective.State != ProviderReadState.Supported || selective.Value != selectiveBefore.Value)
+                        throw new InvalidOperationException("Selective Suspend rollback read-back mismatch.");
+                });
             }
-            if (changed.Count > 0)
-            {
-                try { RestartAdapter(adapterName); }
-                catch (Exception rollbackEx) { LogService.Error("nic", "NIC batch rollback restart failed", rollbackEx); }
-            }
-            throw;
-        }
+            InvalidateAdvancedPropertyCache();
+            if (errors.Count > 0) throw new AggregateException("NIC profile rollback failed.", errors);
+        });
+    }
 
-        long advancedMs = perf.ElapsedMilliseconds - advancedStartMs;
-        var rssSw = System.Diagnostics.Stopwatch.StartNew();
-        var rss = ReadRssState(adapterName);
-        long rssMs = rssSw.ElapsedMilliseconds;
-        if (rss.State == ProviderReadState.Error)
+
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("iphlpapi.dll", ExactSpelling = true)]
+    private static extern uint GetBestInterface(uint destination, out uint interfaceIndex);
+
+    internal static string FindPrimaryAdapterNameFast()
+    {
+        // The same destination as the connectivity check; this only reads Windows' routing table.
+        if (GetBestInterface(0x01010101, out uint index) != 0) return string.Empty;
+        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
         {
-            log.Add("RSS = Detection failed: " + rss.ErrorMessage);
-        }
-        else if (rss.State == ProviderReadState.Unsupported)
-        {
-            log.Add("RSS = Unsupported by driver/provider");
-        }
-        else if (rss.Enabled)
-        {
-            log.Add("RSS = Enabled (already)");
-        }
-        else
-        {
-            bool rssChanged = false;
+            if (nic.OperationalStatus != OperationalStatus.Up ||
+                nic.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
             try
             {
-                _ = ConnectivityBeforeMutation();
-                SetRssEnabled(adapterName, true);
-                rssChanged = true;
-                var verify = ReadRssState(adapterName);
-                if (verify.State == ProviderReadState.Error)
-                    throw new InvalidOperationException("RSS read-back selhal: " + verify.ErrorMessage);
-                if (verify.State != ProviderReadState.Supported || !verify.Enabled)
-                    throw new InvalidOperationException("RSS read-back nepotvrdil Enabled.");
-                if (hadConnectivity == true && !CanReachInternet())
-                    throw new InvalidOperationException("Po zapnutí RSS se ztratila konektivita.");
-                log.Add("RSS = Enabled");
+                if (nic.GetIPProperties().GetIPv4Properties()?.Index == index) return nic.Name;
             }
-            catch (Exception ex)
-            {
-                if (rssChanged)
-                {
-                    try { SetRssEnabled(adapterName, rss.Enabled); }
-                    catch (Exception rollbackEx) { LogService.Error("nic", "RSS rollback failed", rollbackEx); }
-                }
-                log.Add("RSS = Failed: " + ex.Message);
-                LogService.Error("nic", "RSS enable failed", ex);
-            }
+            catch (NetworkInformationException) { }
         }
-
-
-        var selectiveSw = System.Diagnostics.Stopwatch.StartNew();
-        var selective = ReadSelectiveSuspend(adapterName);
-        long selectiveReadMs = selectiveSw.ElapsedMilliseconds;
-        if (selective.State == ProviderReadState.Error)
-        {
-            log.Add("Selective Suspend = Detection failed: " + selective.ErrorMessage);
-        }
-        else if (selective.State == ProviderReadState.Unsupported)
-        {
-            log.Add("Selective Suspend = Unsupported by driver/provider");
-        }
-        else if (selective.Value.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
-        {
-            log.Add("Selective Suspend = Disabled (already)");
-        }
-        else
-        {
-            bool selectiveChanged = false;
-            bool selectiveWasEnabled = selective.Value.Equals("Enabled", StringComparison.OrdinalIgnoreCase);
-            try
-            {
-                _ = ConnectivityBeforeMutation();
-                SetSelectiveSuspend(false, token);
-                selectiveChanged = true;
-                var verify = ReadSelectiveSuspend(adapterName);
-                if (verify.State != ProviderReadState.Supported ||
-                    !verify.Value.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Selective Suspend read-back nepotvrdil Disabled.");
-                if (hadConnectivity == true && !CanReachInternet())
-                    throw new InvalidOperationException("Po vypnutí Selective Suspend se ztratila konektivita.");
-                log.Add("Selective Suspend = " + FormatSelectiveSuspendState(verify));
-            }
-            catch (Exception ex)
-            {
-                if (selectiveChanged)
-                {
-                    try { SetSelectiveSuspend(selectiveWasEnabled, CancellationToken.None); }
-                    catch (Exception rollbackEx) { LogService.Error("nic", "Selective Suspend rollback failed", rollbackEx); }
-                }
-                log.Add("Selective Suspend = Failed: " + ex.Message);
-                LogService.Error("nic", "Selective Suspend disable failed", ex);
-            }
-        }
-
-        LogService.Info("performance",
-            $"NIC_PROFILE_PHASE adapterMs={adapterMs} propertiesMs={propertiesMs} advancedMs={advancedMs} rssMs={rssMs} selectiveMs={selectiveReadMs} connectivityProbed={hadConnectivity.HasValue} totalMs={perf.ElapsedMilliseconds}");
-        return string.Join(Environment.NewLine, log);
+        return string.Empty;
     }
 
     private static ManagementObject? FindPrimaryAdapter()
     {
-        using var searcher = new ManagementObjectSearcher(@"\\.\root\StandardCimv2",
-            "SELECT Name,HardwareInterface,InterfaceDescription,ReceiveLinkSpeed,TransmitLinkSpeed,DriverVersionString FROM MSFT_NetAdapter WHERE MediaConnectState=1");
-        foreach (ManagementObject x in searcher.Get())
-            if (Convert.ToBoolean(x["HardwareInterface"] ?? true)) return x;
-        return null;
+        string name = FindPrimaryAdapterNameFast();
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        string escaped = name.Replace("'", "''");
+        using var searcher = new ManagementObjectSearcher(GetReadScope(),
+            new ObjectQuery($"SELECT * FROM MSFT_NetAdapter WHERE Name='{escaped}' AND MediaConnectState=1"));
+        // The returned adapter is owned by the caller; the query result set
+        // itself must not retain its native WMI enumeration handle.
+        var results = searcher.Get();
+        return WmiFirstRowScope.TakeFirst<ManagementObject>(results, results);
     }
 
-    private static string FindPrimaryAdapterNameFast()
-    {
-        NetworkInterface? best = null;
-        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
-        {
-            if (nic.OperationalStatus != OperationalStatus.Up ||
-                nic.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
-                nic.NetworkInterfaceType == NetworkInterfaceType.Tunnel)
-                continue;
 
-            if (best == null || nic.Speed > best.Speed)
-                best = nic;
-        }
-        return best?.Name ?? string.Empty;
-    }
     private enum ProviderReadState
     {
         Supported,
@@ -512,7 +614,7 @@ internal static class NativeNicTuningService
     private static DateTime _capabilityCacheAt;
     private static IReadOnlyDictionary<string, string>? _capabilityCache;
 
-    private static void InvalidateAdvancedPropertyCache()
+    internal static void InvalidateAdvancedPropertyCache()
     {
         lock (AdvancedPropertyCacheLock)
         {
@@ -542,18 +644,21 @@ internal static class NativeNicTuningService
         string escaped = name.Replace("'", "''");
         using var searcher = new ManagementObjectSearcher(
             GetReadScope(),
-            new ObjectQuery($"SELECT DisplayName,DisplayValue,RegistryKeyword,RegistryValue,ValidDisplayValues,ValidRegistryValues FROM MSFT_NetAdapterAdvancedPropertySettingData WHERE Name='{escaped}'"));
-        foreach (ManagementObject x in searcher.Get())
+            new ObjectQuery($"SELECT __PATH,DisplayName,DisplayValue,RegistryKeyword,RegistryValue,ValidDisplayValues,ValidRegistryValues FROM MSFT_NetAdapterAdvancedPropertySettingData WHERE Name='{escaped}'"));
+        using var results = searcher.Get();
+        foreach (ManagementObject x in results)
         {
-            list.Add(new NicProperty(
-                x["DisplayName"]?.ToString() ?? string.Empty,
-                x["DisplayValue"]?.ToString() ?? string.Empty,
-                x["RegistryKeyword"]?.ToString() ?? string.Empty,
-                x.Path.Path,
-                ToStrings(x["RegistryValue"]),
-                ToStrings(x["ValidDisplayValues"]),
-                ToStrings(x["ValidRegistryValues"])));
-            x.Dispose();
+            using (x)
+            {
+                list.Add(new NicProperty(
+                    x["DisplayName"]?.ToString() ?? string.Empty,
+                    x["DisplayValue"]?.ToString() ?? string.Empty,
+                    x["RegistryKeyword"]?.ToString() ?? string.Empty,
+                    x.Path.Path,
+                    ToStrings(x["RegistryValue"]),
+                    ToStrings(x["ValidDisplayValues"]),
+                    ToStrings(x["ValidRegistryValues"])));
+            }
         }
 
         lock (AdvancedPropertyCacheLock)
@@ -633,120 +738,93 @@ internal static class NativeNicTuningService
         if (prop.ValidRegistryValues.Contains(displayValue, StringComparer.OrdinalIgnoreCase)) return displayValue;
         throw new InvalidOperationException($"Driver nenabízí hodnotu {displayValue} pro {prop.DisplayName}.");
     }
-    private static void ApplyAdvancedPropertyWithCmdlet(string adapterName, string displayName, string displayValue)
+    private static string PsQuote(string value) => "'" + value.Replace("'", "''") + "'";
+
+    private static string RunNicCommand(string script, int timeoutMs, CancellationToken token = default) => RunNicCommandCore(script, timeoutMs, token, false);
+
+    private static string RunNicMutationCommand(string script, int timeoutMs, CancellationToken token = default) => RunNicCommandCore(script, timeoutMs, token, true);
+
+    private static string RunNicCommandCore(string script, int timeoutMs, CancellationToken token, bool waitForMutationSettlement)
     {
-        if (string.IsNullOrWhiteSpace(adapterName))
-            throw new InvalidOperationException("Chybí název síťového adaptéru.");
-        if (string.IsNullOrWhiteSpace(displayName))
-            throw new InvalidOperationException("Driver neposkytl název NIC vlastnosti.");
-
-        static string PsQuote(string value) => "'" + value.Replace("'", "''") + "'";
-
-        string script =
-            "$ErrorActionPreference='Stop'; " +
-            "Set-NetAdapterAdvancedProperty -Name " + PsQuote(adapterName) +
-            " -DisplayName " + PsQuote(displayName) +
-            " -DisplayValue " + PsQuote(displayValue) +
-            " -NoRestart -ErrorAction Stop";
-
+        token.ThrowIfCancellationRequested();
         var psi = new ProcessStartInfo
         {
-            FileName = "powershell.exe",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
+            FileName = "powershell.exe", UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
         };
         psi.ArgumentList.Add("-NoProfile");
         psi.ArgumentList.Add("-NonInteractive");
-        psi.ArgumentList.Add("-ExecutionPolicy");
-        psi.ArgumentList.Add("Bypass");
         psi.ArgumentList.Add("-Command");
         psi.ArgumentList.Add(script);
-
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException("Nepodařilo se spustit PowerShell pro NIC vlastnost.");
-
-        string stdout = process.StandardOutput.ReadToEnd();
-        string stderr = process.StandardError.ReadToEnd();
-        if (!process.WaitForExit(15000))
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("NIC command could not start.");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(timeoutMs);
+        try
         {
-            try { process.Kill(true); } catch { }
-            throw new TimeoutException("Set-NetAdapterAdvancedProperty timeout.");
+            process.WaitForExitAsync(deadline.Token).GetAwaiter().GetResult();
+            Task.WhenAll(stdout, stderr).WaitAsync(deadline.Token).GetAwaiter().GetResult();
         }
+        catch (OperationCanceledException)
+        {
+            if (waitForMutationSettlement)
+            {
+                // A dispatched CIM write is not cancelled by terminating its client. Keep the mutation gate
+                // until the provider call settles, then let the transaction restore and verify its snapshot.
+                LogService.Info("nic", "NIC mutation deadline/cancellation reached; waiting for provider settlement before rollback.");
+                process.WaitForExitAsync(CancellationToken.None).GetAwaiter().GetResult();
+                Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
+            }
+            else { try { process.Kill(entireProcessTree: true); } catch { } }
+            token.ThrowIfCancellationRequested();
+            throw new TimeoutException("NIC command timeout.");
+        }
+        string stderrText = stderr.GetAwaiter().GetResult();
+        string stdoutText = stdout.GetAwaiter().GetResult();
         if (process.ExitCode != 0)
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "Set-NetAdapterAdvancedProperty selhal." : stderr.Trim());
-
-        LogService.Info("nic", $"NIC_CMDLET_SET adapter={adapterName} display={displayName} value={displayValue} output={stdout.Trim()}");
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderrText) ? "NIC command failed." : stderrText.Trim());
+        return stdoutText;
     }
 
-    private static void RestartAdapterWithCmdlet(string adapterName)
+    private static void ApplyAdvancedPropertyWithCmdlet(string adapterName, string displayName, string displayValue, CancellationToken token = default)
+    {
+        if (string.IsNullOrWhiteSpace(adapterName) || string.IsNullOrWhiteSpace(displayName))
+            throw new InvalidOperationException("Missing adapter or property name.");
+        RunNicMutationCommand("$ErrorActionPreference='Stop'; Set-NetAdapterAdvancedProperty -Name " + PsQuote(adapterName) +
+            " -DisplayName " + PsQuote(displayName) + " -DisplayValue " + PsQuote(displayValue) +
+            " -NoRestart -ErrorAction Stop", 15000, token);
+    }
+
+    private static void RestartAdapterWithCmdlet(string adapterName, CancellationToken token = default)
     {
         FaultInjectionService.ThrowIfInjected("network.adapter-restart");
-        static string PsQuote(string value) => "'" + value.Replace("'", "''") + "'";
-        string script =
-            "$ErrorActionPreference='Stop'; " +
-            "Restart-NetAdapter -Name " + PsQuote(adapterName) +
-            " -Confirm:$false -ErrorAction Stop";
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        psi.ArgumentList.Add("-NoProfile");
-        psi.ArgumentList.Add("-NonInteractive");
-        psi.ArgumentList.Add("-ExecutionPolicy");
-        psi.ArgumentList.Add("Bypass");
-        psi.ArgumentList.Add("-Command");
-        psi.ArgumentList.Add(script);
-
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException("Nepodařilo se spustit PowerShell pro restart NIC.");
-        string stdout = process.StandardOutput.ReadToEnd();
-        string stderr = process.StandardError.ReadToEnd();
-        if (!process.WaitForExit(20000))
-        {
-            try { process.Kill(true); } catch { }
-            throw new TimeoutException("Restart-NetAdapter timeout.");
-        }
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "Restart-NetAdapter selhal." : stderr.Trim());
-
-        LogService.Info("nic", $"NIC_CMDLET_RESTART adapter={adapterName} output={stdout.Trim()}");
+        RunNicMutationCommand("$ErrorActionPreference='Stop'; Restart-NetAdapter -Name " + PsQuote(adapterName) +
+            " -Confirm:$false -ErrorAction Stop", 20000, token);
     }
 
-    private static void ApplyRegistryValue(string path, string value) => ApplyRegistryValues(path, new[] { value });
+    private static void ApplyRegistryValue(string path, string value, CancellationToken token = default) => ApplyRegistryValues(path, new[] { value }, token);
 
-    private static void ApplyRegistryValues(string path, IReadOnlyList<string> values)
+    private static void ApplyRegistryValues(string path, IReadOnlyList<string> values, CancellationToken token = default)
     {
-        var scope = new ManagementScope(@"\\.\root\StandardCimv2");
-        scope.Connect();
-        using var prop = new ManagementObject(scope, new ManagementPath(path), null);
+        // NetAdapter CDXML requires CIM ModifyInstance operation options, unavailable through legacy WMI Put.
+        using var prop = new ManagementObject(GetReadScope(), new ManagementPath(path), null);
         prop.Get();
-        prop["RegistryValue"] = values.ToArray();
-        prop.Put();
+        string adapterName = prop["Name"]?.ToString() ?? string.Empty;
+        string keyword = prop["RegistryKeyword"]?.ToString() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(adapterName) || string.IsNullOrWhiteSpace(keyword) || values.Count == 0)
+            throw new InvalidOperationException("NIC snapshot is missing adapter, keyword or registry values.");
+        // Match exact identity: driver keywords often contain literal wildcard characters.
+        string script = "$ErrorActionPreference='Stop'; $p=Get-NetAdapterAdvancedProperty -Name " + PsQuote(adapterName) +
+            " -AllProperties -ErrorAction Stop | Where-Object { $_.RegistryKeyword -eq " + PsQuote(keyword) +
+            " }; if (@($p).Count -ne 1) { throw 'NIC property identity is ambiguous or missing' }; " +
+            "Set-NetAdapterAdvancedProperty -InputObject $p -RegistryValue @(" + string.Join(",", values.Select(PsQuote)) +
+            ") -NoRestart -ErrorAction Stop";
+        RunNicMutationCommand(script, 15000, token);
     }
 
-    private static void RestartAdapter(string name)
-    {
-        FaultInjectionService.ThrowIfInjected("network.adapter-restart");
-        string escaped = name.Replace("'", "''");
-        using var searcher = new ManagementObjectSearcher(@"\\.\root\StandardCimv2",
-            $"SELECT * FROM MSFT_NetAdapter WHERE Name='{escaped}'");
-        foreach (ManagementObject adapter in searcher.Get())
-        {
-            using var output = adapter.InvokeMethod("Restart", null, null);
-            uint code = output?["ReturnValue"] == null ? 0 : Convert.ToUInt32(output["ReturnValue"]);
-            adapter.Dispose();
-            if (code != 0) throw new InvalidOperationException("Restart síťového adaptéru selhal: " + code);
-            return;
-        }
-        throw new InvalidOperationException("Síťový adaptér nebyl nalezen pro restart.");
-    }
+
+    private static void RestartAdapter(string name) => RestartAdapterWithCmdlet(name);
 
     private static void WaitForLink(string name, CancellationToken token)
     {
@@ -757,7 +835,8 @@ internal static class NativeNicTuningService
             token.ThrowIfCancellationRequested();
             using var searcher = new ManagementObjectSearcher(@"\\.\root\StandardCimv2",
                 $"SELECT MediaConnectState FROM MSFT_NetAdapter WHERE Name='{escaped}'");
-            foreach (ManagementObject adapter in searcher.Get())
+            using var resultSet = searcher.Get();
+            foreach (ManagementObject adapter in resultSet)
             {
                 try
                 {
@@ -850,7 +929,8 @@ internal static class NativeNicTuningService
             using var searcher = new ManagementObjectSearcher(
                 GetReadScope(),
                 new ObjectQuery($"SELECT Enabled FROM MSFT_NetAdapterRssSettingData WHERE Name='{escaped}'"));
-            foreach (ManagementObject x in searcher.Get())
+            using var results = searcher.Get();
+            foreach (ManagementObject x in results)
             {
                 try
                 {
@@ -877,7 +957,8 @@ internal static class NativeNicTuningService
             using var searcher = new ManagementObjectSearcher(
                 GetReadScope(),
                 new ObjectQuery($"SELECT IPv4Enabled,IPv6Enabled FROM MSFT_NetAdapterRscSettingData WHERE Name='{escaped}'"));
-            foreach (ManagementObject x in searcher.Get())
+            using var results = searcher.Get();
+            foreach (ManagementObject x in results)
             {
                 try
                 {
@@ -897,23 +978,21 @@ internal static class NativeNicTuningService
         }
     }
 
-    private static void SetRssEnabled(string name, bool enabled)
+    private static void SetRssEnabled(string name, bool enabled, CancellationToken token = default)
     {
-        string escaped = name.Replace("'", "''");
-        using var searcher = new ManagementObjectSearcher(@"\\.\root\StandardCimv2",
-            $"SELECT * FROM MSFT_NetAdapterRssSettingData WHERE Name='{escaped}'");
-        foreach (ManagementObject x in searcher.Get())
-        {
-            string method = enabled ? "Enable" : "Disable";
-            using var output = x.InvokeMethod(method, null, null);
-            uint code = output?["ReturnValue"] == null ? 0 : Convert.ToUInt32(output["ReturnValue"]);
-            x.Dispose();
-            if (code != 0) throw new InvalidOperationException("RSS změna selhala: " + code);
-            InvalidateAdvancedPropertyCache();
-            return;
-        }
-        throw new PlatformNotSupportedException("RSS není tímto NIC driverem/providerem podporováno.");
+        RunNicMutationCommand("$ErrorActionPreference='Stop'; " +
+            (enabled ? "Enable-NetAdapterRss" : "Disable-NetAdapterRss") +
+            " -Name " + PsQuote(name) + " -NoRestart -ErrorAction Stop", 20000, token);
+        InvalidateAdvancedPropertyCache();
     }
+
+    private static void SetSelectiveSuspend(string name, bool enabled, CancellationToken token)
+    {
+        RunNicMutationCommand("$ErrorActionPreference='Stop'; Set-NetAdapterPowerManagement -Name " + PsQuote(name) +
+            " -SelectiveSuspend " + (enabled ? "Enabled" : "Disabled") + " -NoRestart -ErrorAction Stop", 20000, token);
+        InvalidateAdvancedPropertyCache();
+    }
+
 
     private static SelectiveSuspendReadResult ReadSelectiveSuspend(string name)
     {
@@ -923,7 +1002,8 @@ internal static class NativeNicTuningService
             using var searcher = new ManagementObjectSearcher(
                 GetReadScope(),
                 new ObjectQuery($"SELECT SelectiveSuspend FROM MSFT_NetAdapterPowerManagementSettingData WHERE Name='{escaped}'"));
-            foreach (ManagementObject x in searcher.Get())
+            using var results = searcher.Get();
+            foreach (ManagementObject x in results)
             {
                 try
                 {
@@ -990,28 +1070,6 @@ internal static class NativeNicTuningService
             throw new InvalidOperationException("NIC provider classification smoke: provider errors are being mislabeled as Unsupported.");
     }
 
-    private static void SetSelectiveSuspend(bool enabled, CancellationToken token)
-    {
-        token.ThrowIfCancellationRequested();
-        using var adapter = FindPrimaryAdapter() ?? throw new InvalidOperationException("Nebyl nalezen aktivní síťový adaptér.");
-        string name = adapter["Name"]?.ToString() ?? string.Empty;
-        string escaped = name.Replace("'", "''");
-        using var searcher = new ManagementObjectSearcher(@"\\.\root\StandardCimv2",
-            $"SELECT * FROM MSFT_NetAdapterPowerManagementSettingData WHERE Name='{escaped}'");
-        foreach (ManagementObject x in searcher.Get())
-        {
-            string method = enabled ? "Enable" : "Disable";
-            using var input = x.GetMethodParameters(method);
-            input["SelectiveSuspend"] = true;
-            using var output = x.InvokeMethod(method, input, null);
-            uint code = output?["ReturnValue"] == null ? 0 : Convert.ToUInt32(output["ReturnValue"]);
-            x.Dispose();
-            if (code != 0) throw new InvalidOperationException("Selective Suspend změna selhala: " + code);
-            InvalidateAdvancedPropertyCache();
-            return;
-        }
-        throw new InvalidOperationException("Selective Suspend není podporován.");
-    }
     private static string[] ToStrings(object? value)
     {
         if (value is Array a)

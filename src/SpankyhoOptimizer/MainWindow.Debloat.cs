@@ -17,6 +17,7 @@ public sealed partial class MainWindow
     private static DataTemplate DebloatRowTemplate() => UiResourceService.Get<DataTemplate>("DebloatRowLogoTemplateV151");
     private IReadOnlyList<InstalledAppInfo>? _debloatRowsSnapshot;
     private DebloatRowViewModel[]? _debloatRowsCache;
+    private CancellationToken _debloatActionToken;
 
     private DebloatRowViewModel[] GetDebloatRows(IReadOnlyList<InstalledAppInfo> apps)
     {
@@ -29,25 +30,75 @@ public sealed partial class MainWindow
         return _debloatRowsCache = rows;
     }
 
-    private void QueueDebloatRerender(CancellationToken token, string operation)
+    private static bool AreDebloatSummariesEquivalent(
+        IReadOnlyList<InstalledAppInfo> left, IReadOnlyList<InstalledAppInfo> right)
+    {
+        if (ReferenceEquals(left, right)) return true;
+        if (left.Count != right.Count) return false;
+        for (int i = 0; i < left.Count; i++)
+            if (left[i] != right[i]) return false;
+        return true;
+    }
+
+    internal static void RunDebloatSummaryEqualitySmoke()
+    {
+        var sample = new InstalledAppInfo(
+            "Smoke.A", "Smoke.A_1_x64__test", "Smoke.A_test",
+            "App A", "Test publisher", null, false,
+            DebloatCategory.ThirdParty, DebloatRisk.Optional, false, "Optional");
+        InstalledAppInfo[] first = [sample];
+        InstalledAppInfo[] equal = [sample with { }];
+        if (!AreDebloatSummariesEquivalent(first, equal) ||
+            !AreDebloatSummariesEquivalent(first, first) ||
+            AreDebloatSummariesEquivalent(first, Array.Empty<InstalledAppInfo>()) ||
+            AreDebloatSummariesEquivalent(first, [sample with { Publisher = "Changed publisher" }]) ||
+            AreDebloatSummariesEquivalent(first, [sample with { Recommended = true }]) ||
+            AreDebloatSummariesEquivalent(first, [sample with { Protected = true }]))
+            throw new InvalidOperationException("Debloat summary equality missed metadata/selection drift.");
+        LogService.Info("debloat",
+            "DEBLOAT_SUMMARY_EQUALITY_SMOKE_OK unchanged=true publisherChange=true recommendedChange=true protectedChange=true countChange=true");
+    }
+
+    private void QueueDebloatRerender(CancellationToken token, int generation, string operation)
     {
         DispatcherQueue.TryEnqueue(() =>
         {
-            if (token.IsCancellationRequested || _section != "debloat") return;
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "debloat") return;
             InvalidateDebloatPageCache();
             SafeTaskService.Forget(ShowSectionAsync("debloat"), "debloat", operation);
         });
     }
 
+    private async Task LoadDebloatAfterFirstFrameAsync(CancellationToken token, int generation)
+    {
+        try
+        {
+            await Task.Delay(150, token).ConfigureAwait(false);
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "debloat")
+                return;
+            await LoadDebloatAndRefreshAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+    }
+
     private async Task LoadDebloatAndRefreshAsync(CancellationToken token, bool forceRefresh = false)
     {
+        int generation = _navigationGeneration;
         try
         {
             if (!forceRefresh)
             {
                 bool hydrated = await InstalledAppService.TryWarmDisplaySnapshotAsync(token).ConfigureAwait(false);
-                if (hydrated && !token.IsCancellationRequested && _section == "debloat")
-                    QueueDebloatRerender(token, "Debloat display-cache rerender");
+                if (hydrated)
+                {
+                    // The hydrated snapshot is now in memory. Render it once:
+                    // BuildDebloatPageAsync schedules one deferred forced scan
+                    // when it is stale. Starting another scan here caused two
+                    // overlapping inventory requests and duplicate UI rebuilds.
+                    if (!token.IsCancellationRequested && _section == "debloat")
+                        QueueDebloatRerender(token, generation, "Debloat display-cache rerender");
+                    return;
+                }
             }
 
             var cached = forceRefresh ? null : InstalledAppService.TryGetMemorySnapshot(includeLogos: false);
@@ -55,7 +106,7 @@ public sealed partial class MainWindow
                 await InstalledAppService.GetInstalledAsync(token, forceRefresh: true, includeLogos: false).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
             if (_section == "debloat")
-                QueueDebloatRerender(token, "Debloat inventory rerender");
+                QueueDebloatRerender(token, generation, "Debloat inventory rerender");
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { LogService.Error("Debloat inventory failed", ex); }
@@ -83,14 +134,15 @@ public sealed partial class MainWindow
     private async Task RefreshDebloatDetailsAfterIdleAsync(
         DebloatRowViewModel[] rows,
         IReadOnlyList<InstalledAppInfo> displayedSnapshot,
-        CancellationToken token)
+        CancellationToken token,
+        int generation)
     {
         try
         {
             await Task.Delay(650, token);
             token.ThrowIfCancellationRequested();
-            if (_section != "debloat") return;
-            await RefreshDebloatDetailsAndUiAsync(rows, displayedSnapshot, token);
+            if (generation != _navigationGeneration || _section != "debloat") return;
+            await RefreshDebloatDetailsAndUiAsync(rows, displayedSnapshot, token, generation);
         }
         catch (OperationCanceledException) { }
     }
@@ -98,7 +150,8 @@ public sealed partial class MainWindow
     private async Task RefreshDebloatDetailsAndUiAsync(
         DebloatRowViewModel[] rows,
         IReadOnlyList<InstalledAppInfo> displayedSnapshot,
-        CancellationToken token)
+        CancellationToken token,
+        int generation)
     {
         try
         {
@@ -107,18 +160,19 @@ public sealed partial class MainWindow
                 token, forceRefresh: true, includeLogos: false);
             token.ThrowIfCancellationRequested();
 
-            var currentPackages = freshSummary.Select(x => x.PackageFullName)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            bool inventoryChanged =
-                freshSummary.Count != displayedSnapshot.Count ||
-                !currentPackages.SetEquals(displayedSnapshot.Select(x => x.PackageFullName));
+            // Package-ID equality alone misses renamed apps, publisher/risk
+            // changes and recommended/protected status changes. The scanner
+            // emits stable display-name order, so compare complete records.
+            // A truly unchanged inventory should not tear down the entire
+            // ItemsRepeater and recreate every Debloat row.
+            bool inventoryChanged = !AreDebloatSummariesEquivalent(displayedSnapshot, freshSummary);
 
             if (inventoryChanged)
             {
                 LogService.Info("debloat",
                     $"Deferred summary refresh changed inventory old={displayedSnapshot.Count} new={freshSummary.Count} ms={sw.ElapsedMilliseconds}");
-                if (_section == "debloat")
-                    QueueDebloatRerender(token, "Deferred Debloat inventory rerender");
+                if (generation == _navigationGeneration && _section == "debloat")
+                    QueueDebloatRerender(token, generation, "Deferred Debloat inventory rerender");
                 return;
             }
 
@@ -151,6 +205,7 @@ public sealed partial class MainWindow
 
     private async Task BuildDebloatPageAsync(CancellationToken token)
     {
+        _debloatActionToken = token;
         var perf = System.Diagnostics.Stopwatch.StartNew();
         var root = new StackPanel { Spacing = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
         // Prefer the lightweight summary snapshot for first paint. Persistent logo-map
@@ -179,7 +234,8 @@ public sealed partial class MainWindow
 
             root.Children.Add(loadingHero);
             ContentStack.Children.Add(root);
-            SafeTaskService.Forget(LoadDebloatAndRefreshAsync(token), "debloat", "Load installed apps");
+            int coldGeneration = _navigationGeneration;
+            SafeTaskService.Forget(LoadDebloatAfterFirstFrameAsync(token, coldGeneration), "debloat", "Load installed apps");
             return;
         }
 
@@ -211,8 +267,8 @@ public sealed partial class MainWindow
 
         long listMs = perf.ElapsedMilliseconds - snapshotMs - rowsMs;
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(PrimaryQuickButton("Doporučené odebrání", () => OpenDebloatKeepManagerAsync(token)));
-        actions.Children.Add(QuickButton("Ruční výběr", () => OpenDebloatManagerAsync(token)));
+        actions.Children.Add(PrimaryQuickButton("Doporučené odebrání", () => OpenDebloatKeepManagerAsync(_debloatActionToken)));
+        actions.Children.Add(QuickButton("Ruční výběr", () => OpenDebloatManagerAsync(_debloatActionToken)));
         actions.Children.Add(QuickButton("Obnovit", () =>
         {
             InstalledAppService.InvalidateCache();
@@ -249,7 +305,7 @@ public sealed partial class MainWindow
         if (InstalledAppService.SummaryNeedsBackgroundRefresh)
         {
             SafeTaskService.Forget(
-                RefreshDebloatDetailsAfterIdleAsync(source, apps, token),
+                RefreshDebloatDetailsAfterIdleAsync(source, apps, token, _navigationGeneration),
                 "debloat",
                 "Refresh persisted installed-app snapshot + logos");
         }

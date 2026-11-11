@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -76,10 +76,17 @@ public static class PowerPlanStateService
     private static Task<PowerPlanSnapshot>? _inFlight;
     private static int _generation;
 
+    // A backwards Windows clock adjustment must not make a previously
+    // captured power-plan snapshot look fresh indefinitely.
+    private static bool CacheFreshAt(DateTime nowUtc) =>
+        _cache != null && _cacheAt != default &&
+        nowUtc >= _cacheAt &&
+        nowUtc - _cacheAt < TimeSpan.FromSeconds(15);
+
     public static PowerPlanSnapshot? TryGetFreshSnapshot()
     {
         lock (CacheGate)
-            return _cache != null && DateTime.UtcNow - _cacheAt < TimeSpan.FromSeconds(15) ? _cache : null;
+            return CacheFreshAt(DateTime.UtcNow) ? _cache : null;
     }
 
     public static void InvalidateCache()
@@ -98,7 +105,7 @@ public static class PowerPlanStateService
         token.ThrowIfCancellationRequested();
         lock (CacheGate)
         {
-            if (_cache != null && DateTime.UtcNow - _cacheAt < TimeSpan.FromSeconds(15)) return true;
+            if (CacheFreshAt(DateTime.UtcNow)) return true;
             if (_inFlight != null && !_inFlight.IsCompleted) return false;
         }
 
@@ -155,13 +162,13 @@ public static class PowerPlanStateService
 
         lock (CacheGate)
         {
-            if (_cache != null && DateTime.UtcNow - _cacheAt < TimeSpan.FromSeconds(15)) return _cache;
+            if (CacheFreshAt(DateTime.UtcNow)) return _cache;
         }
 
         Task<PowerPlanSnapshot> task;
         lock (CacheGate)
         {
-            if (_cache != null && DateTime.UtcNow - _cacheAt < TimeSpan.FromSeconds(15)) return _cache;
+            if (CacheFreshAt(DateTime.UtcNow)) return _cache;
             if (_inFlight == null)
             {
                 int generation = _generation;

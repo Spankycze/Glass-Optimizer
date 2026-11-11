@@ -1,5 +1,13 @@
 # Changelog
 
+## 17.2.0
+
+- Improved UI navigation, page caching, lifecycle handling and runtime smoke coverage.
+- Hardened adaptive power, telemetry, AI workload and measured optimization paths with safer read-back and recovery behavior.
+- Improved Fan Agent, tray popup, hardware telemetry, startup and worker reliability.
+- Removed obsolete runtime, voice and legacy UI components while preserving supported features and rollback safety.
+- Preserved the power-plan safety guard for the AC `Never` values.
+
 ## 17.0.0
 
 - Updated the application major version to `17.0.0`.

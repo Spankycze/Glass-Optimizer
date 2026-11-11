@@ -1,7 +1,10 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using SpankyhoOptimizer.Models;
 using SpankyhoOptimizer.Services;
 
@@ -11,64 +14,121 @@ public sealed partial class MainWindow
 {
     private void ScheduleGpuTweakCards(CancellationToken token)
     {
-        if (_gpuTweakQueued || _gpuTweakHost == null || _gpuTweakHost.Children.Count > 0) return;
-        _gpuTweakQueued = true;
+        var host = _gpuTweakHost;
+        if (host == null || ReferenceEquals(_gpuTweakQueuedHost, host) || host.Children.Count > 0) return;
+        int generation = _navigationGeneration;
+        _gpuTweakQueuedHost = host;
 
-        var groups = _tweaks
-            .GroupBy(t => t.Group)
-            .Select(g => (Name: g.Key, Tweaks: g.ToArray()))
-            .ToArray();
+        var groups = new List<(string Name, List<TweakDefinition> Tweaks)>();
+        var groupIndexes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (TweakDefinition tweak in _tweaks)
+        {
+            if (!groupIndexes.TryGetValue(tweak.Group, out int index))
+            {
+                index = groups.Count;
+                groupIndexes[tweak.Group] = index;
+                groups.Add((tweak.Group, new List<TweakDefinition>()));
+            }
+            groups[index].Tweaks.Add(tweak);
+        }
         int groupIndex = 0;
         int tweakIndex = -1;
-        long totalUiMs = 0;
+        double totalUiMs = 0;
+        int slices = 0;
 
         void QueueNext()
         {
             if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                if (token.IsCancellationRequested || _section != "gpu" || _gpuTweakHost == null)
+                if (token.IsCancellationRequested ||
+                    generation != _navigationGeneration ||
+                    _section != "gpu" ||
+                    !ReferenceEquals(_gpuTweakHost, host))
                 {
-                    _gpuTweakQueued = false;
-                    return;
-                }
-
-                if (groupIndex >= groups.Length)
-                {
-                    _gpuTweakQueued = false;
-                    LogService.Info("performance", $"GPU_TWEAKS_DEFERRED staged=true uiMs={totalUiMs} count={CountClassicTweakCards(_gpuTweakHost)}");
+                    if (ReferenceEquals(_gpuTweakQueuedHost, host)) _gpuTweakQueuedHost = null;
                     return;
                 }
 
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var group = groups[groupIndex];
-                if (tweakIndex < 0)
+                int processed = 0;
+                // Do several cheap cards in one UI dispatch, but yield after
+                // ~3 ms (or 6 elements) rather than monopolizing a frame.
+                while (groupIndex < groups.Count && processed < 6 &&
+                       (processed == 0 || sw.Elapsed.TotalMilliseconds < 3))
                 {
-                    _gpuTweakHost.Children.Add(CreateClassicTweakGroupHeader(group.Name, group.Tweaks.Length));
-                    tweakIndex = 0;
-                    long stageMs = sw.ElapsedMilliseconds;
-                    totalUiMs += stageMs;
-                    LogService.Info("performance", $"GPU_TWEAKS_STAGE stage=header group={groupIndex} ms={stageMs}");
+                    var group = groups[groupIndex];
+                    if (tweakIndex < 0)
+                    {
+                        host.Children.Add(CreateClassicTweakGroupHeader(group.Name, group.Tweaks.Count));
+                        tweakIndex = 0;
+                    }
+                    else
+                    {
+                        host.Children.Add(CreateClassicTweakCard(group.Tweaks[tweakIndex++]));
+                        if (tweakIndex >= group.Tweaks.Count)
+                        {
+                            groupIndex++;
+                            tweakIndex = -1;
+                        }
+                    }
+                    processed++;
+                }
+                slices++;
+                totalUiMs += sw.Elapsed.TotalMilliseconds;
+                if (groupIndex < groups.Count)
                     QueueNext();
-                    return;
-                }
-
-                _gpuTweakHost.Children.Add(CreateClassicTweakCard(group.Tweaks[tweakIndex]));
-                int addedIndex = tweakIndex++;
-                long cardMs = sw.ElapsedMilliseconds;
-                totalUiMs += cardMs;
-                LogService.Info("performance", $"GPU_TWEAKS_STAGE stage=card group={groupIndex} index={addedIndex} ms={cardMs}");
-
-                if (tweakIndex >= group.Tweaks.Length)
+                else
                 {
-                    groupIndex++;
-                    tweakIndex = -1;
+                    if (ReferenceEquals(_gpuTweakQueuedHost, host)) _gpuTweakQueuedHost = null;
+                    LogService.Info("performance",
+                        $"GPU_TWEAKS_DEFERRED staged=true uiMs={totalUiMs:F2} slices={slices} count={CountClassicTweakCards(host)}");
                 }
-                QueueNext();
             }))
-                _gpuTweakQueued = false;
+            {
+                if (ReferenceEquals(_gpuTweakQueuedHost, host)) _gpuTweakQueuedHost = null;
+            }
         }
 
         QueueNext();
+    }
+
+    private async Task CompleteGpuTweaksAfterFirstFrameAsync(string cacheKey, bool staleDetection, CancellationToken token, int generation)
+    {
+        try
+        {
+            await Task.Delay(35, token).ConfigureAwait(false);
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "gpu") return;
+
+            List<TweakDefinition> tweaks;
+            if (!_tweakCache.TryGetValue(cacheKey, out tweaks!))
+            {
+                tweaks = await Task.Run(() => CatalogService.GetTweaks("gpu"), token).ConfigureAwait(false);
+                _tweakCache[cacheKey] = tweaks;
+            }
+
+            if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "gpu") return;
+            TweakDefinition[] snapshot = tweaks.ToArray();
+
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "gpu") return;
+
+                _tweaks = tweaks;
+                _gpuTweakHost = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Stretch };
+                ContentStack.Children.Add(_gpuTweakHost);
+                ScheduleGpuTweakCards(token);
+
+                SafeTaskService.Forget(
+                    RunGpuDeferredStateAfterSettleAsync(cacheKey, snapshot, staleDetection, token, generation),
+                    "gpu",
+                    "Deferred GPU state");
+            });
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            LogService.Error("gpu", "Deferred GPU catalog load failed", ex);
+        }
     }
 
     private async Task RunGpuDeferredStateAfterSettleAsync(string cacheKey, TweakDefinition[] tweaks, bool detect, CancellationToken token, int generation)
@@ -86,9 +146,28 @@ public sealed partial class MainWindow
     {
         try
         {
+            TweakDefinition[] immediate;
+            TweakDefinition[] lazy;
+            if (tweaks.Length == 0)
+            {
+                immediate = Array.Empty<TweakDefinition>();
+                lazy = Array.Empty<TweakDefinition>();
+            }
+            else
+            {
+                var immediateList = new List<TweakDefinition>(tweaks.Length);
+                var lazyList = new List<TweakDefinition>();
+                foreach (TweakDefinition tweak in tweaks)
+                {
+                    if (tweak.LazyDetect) lazyList.Add(tweak);
+                    else immediateList.Add(tweak);
+                }
+                immediate = immediateList.ToArray();
+                lazy = lazyList.ToArray();
+            }
+
             if (detect)
             {
-                var immediate = tweaks.Where(x => !x.LazyDetect).ToArray();
                 if (immediate.Length > 0)
                     await _engine.DetectAsync(immediate, token);
                 _tweakCacheTime[cacheKey] = DateTime.UtcNow;
@@ -99,7 +178,6 @@ public sealed partial class MainWindow
             await BuildHardwareRecommendedPanelAsync("gpu", tweaks, token);
             CaptureGpuPageCache();
 
-            var lazy = tweaks.Where(x => x.LazyDetect).ToArray();
             if (lazy.Length > 0)
                 SafeTaskService.Forget(
                     DetectLazyTweaksAfterSettleAsync("gpu", lazy, token, _navigationGeneration),

@@ -23,6 +23,10 @@ public static class HardwareSnapshotService
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static HardwareSnapshot? _cache;
     private static DateTime _cacheAt;
+    // PnP events can invalidate a snapshot while the asynchronous native scan
+    // is still running. Never publish an inventory from an older generation.
+    private static readonly object SnapshotLock = new();
+    private static long _generation;
     private static int _presentDeviceScanCount;
     private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan PresentDevicesPersistentTtl = TimeSpan.FromHours(2);
@@ -31,24 +35,49 @@ public static class HardwareSnapshotService
 
     public static async Task<HardwareSnapshot> GetAsync(bool forceRefresh = false, CancellationToken token = default)
     {
-        if (!forceRefresh && _cache != null && DateTime.UtcNow - _cacheAt < Ttl) return _cache;
+        lock (SnapshotLock)
+        {
+            if (!forceRefresh && _cache != null && DateTime.UtcNow - _cacheAt < Ttl)
+                return _cache;
+        }
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        await Gate.WaitAsync(token);
+        await Gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            if (!forceRefresh && _cache != null && DateTime.UtcNow - _cacheAt < Ttl) return _cache;
-            var overviewTask = SystemInfoService.GetSnapshotAsync(forceRefresh);
-            var gpuTask = GpuDriverService.DetectPrimaryGpuAsync(token);
-            var devicesTask = GetPresentDevicesAsync(forceRefresh, token);
-            await Task.WhenAll(overviewTask, gpuTask, devicesTask);
-            long totalMs = sw.ElapsedMilliseconds;
-            var snapshot = new HardwareSnapshot(await overviewTask, await gpuTask, await devicesTask,
-                Environment.OSVersion.Version.Build, DateTime.UtcNow);
-            _cache = snapshot;
-            _cacheAt = DateTime.UtcNow;
-            LogService.Info("performance",
-                $"HARDWARE_SNAPSHOT_PHASE overviewDone={overviewTask.IsCompletedSuccessfully} gpuDone={gpuTask.IsCompletedSuccessfully} devices={snapshot.Devices.Count} totalMs={totalMs}");
-            return snapshot;
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                long generation;
+                lock (SnapshotLock)
+                {
+                    if (!forceRefresh && _cache != null && DateTime.UtcNow - _cacheAt < Ttl)
+                        return _cache;
+                    generation = _generation;
+                }
+
+                var overviewTask = SystemInfoService.GetSnapshotAsync(forceRefresh);
+                var gpuTask = GpuDriverService.DetectPrimaryGpuAsync(token);
+                var devicesTask = GetPresentDevicesAsync(forceRefresh, generation, token);
+                await Task.WhenAll(overviewTask, gpuTask, devicesTask).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                var snapshot = new HardwareSnapshot(await overviewTask, await gpuTask, await devicesTask,
+                    Environment.OSVersion.Version.Build, DateTime.UtcNow);
+                lock (SnapshotLock)
+                {
+                    if (generation != _generation)
+                    {
+                        // A device was connected/removed during this scan.
+                        // Start over rather than republishing stale hardware.
+                        LogService.Info("hardware", "HARDWARE_SNAPSHOT_RETRY reason=pnp-generation-changed");
+                        continue;
+                    }
+                    _cache = snapshot;
+                    _cacheAt = DateTime.UtcNow;
+                }
+                LogService.Info("performance",
+                    $"HARDWARE_SNAPSHOT_PHASE overviewDone={overviewTask.IsCompletedSuccessfully} gpuDone={gpuTask.IsCompletedSuccessfully} devices={snapshot.Devices.Count} totalMs={sw.ElapsedMilliseconds}");
+                return snapshot;
+            }
         }
         finally
         {
@@ -56,17 +85,34 @@ public static class HardwareSnapshotService
         }
     }
 
-    public static async Task<OverviewSnapshot> GetOverviewAsync(bool forceRefresh = false, CancellationToken token = default)
+    // An immutable cached Overview task is already completed in most
+    // navigations. Return that exact task instead of allocating an async
+    // state machine + continuation for each cached Overview entry.
+    public static Task<OverviewSnapshot> GetOverviewAsync(bool forceRefresh = false, CancellationToken token = default)
     {
         token.ThrowIfCancellationRequested();
-        var snapshot = await SystemInfoService.GetSnapshotAsync(forceRefresh);
+        Task<OverviewSnapshot> snapshot = SystemInfoService.GetSnapshotAsync(forceRefresh);
+        if (snapshot.IsCompletedSuccessfully)
+        {
+            // Preserve the previous API contract: a cancellation occurring
+            // after the initial check but before completed-task return wins.
+            token.ThrowIfCancellationRequested();
+            return snapshot;
+        }
+        return AwaitOverviewSnapshotAsync(snapshot, token);
+    }
+
+    private static async Task<OverviewSnapshot> AwaitOverviewSnapshotAsync(
+        Task<OverviewSnapshot> snapshot, CancellationToken token)
+    {
+        OverviewSnapshot value = await snapshot.WaitAsync(token).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
-        return snapshot;
+        return value;
     }
 
     public static Task<HardwareSnapshot> GetAsync(CancellationToken token) => GetAsync(false, token);
 
-    private static async Task<IReadOnlyList<DeviceInfo>> GetPresentDevicesAsync(bool forceRefresh, CancellationToken token)
+    private static async Task<IReadOnlyList<DeviceInfo>> GetPresentDevicesAsync(bool forceRefresh, long generation, CancellationToken token)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         if (!forceRefresh &&
@@ -85,15 +131,27 @@ public static class HardwareSnapshotService
             return NativeCore.GetPresentDevices().Where(x => x.Present).ToArray();
         }, token).ConfigureAwait(false);
 
-        PersistentHardwareCacheService.WriteMachineStable(PresentDevicesPersistentKey, devices);
+        // The native scan can take ~100ms. If PnP changed mid-scan, never
+        // resurrect its old inventory in the persistent cache. Serialize
+        // the file commit with invalidation/removal of that same cache key.
+        lock (SnapshotLock)
+        {
+            if (generation == _generation)
+                PersistentHardwareCacheService.WriteMachineStable(PresentDevicesPersistentKey, devices);
+        }
         LogService.Info("performance", $"PRESENT_DEVICES_CACHE hit=false count={devices.Length} ms={sw.ElapsedMilliseconds}");
         return devices;
     }
 
     public static void TrimMemoryCache()
     {
-        _cache = null;
-        _cacheAt = default;
+        // A memory-only trim is not a PnP event. The stable on-disk inventory
+        // remains reusable, while publication stays serialized with readers.
+        lock (SnapshotLock)
+        {
+            _cache = null;
+            _cacheAt = default;
+        }
     }
 
     internal static async Task RunMemoryTrimPersistentCacheSmokeAsync(CancellationToken token)
@@ -113,27 +171,51 @@ public static class HardwareSnapshotService
         if (persisted.Devices.Count != fresh.Devices.Count)
             throw new InvalidOperationException($"Hardware memory-trim snapshot count mismatch: fresh={fresh.Devices.Count} persisted={persisted.Devices.Count}.");
 
-        LogService.Info("performance", $"HARDWARE_MEMORY_TRIM_CACHE_SMOKE_OK devices={fresh.Devices.Count} nativeScans={scansAfterTrimReload - scansBefore}");
+        // Simulate a startup-settle PnP notification: invalidate the in-memory
+        // inventory/generation but retain valid persistent device data.
+        long staleGeneration;
+        lock (SnapshotLock) staleGeneration = _generation;
+        InvalidateVolatile(dropPersistentDevices: false);
+        lock (SnapshotLock)
+        {
+            if (_generation == staleGeneration || _cache != null)
+                throw new InvalidOperationException("PnP generation did not invalidate the active hardware snapshot.");
+        }
+        var afterPnp = await GetAsync(false, token).ConfigureAwait(false);
+        if (ReferenceEquals(afterPnp, persisted) ||
+            afterPnp.Devices.Count != persisted.Devices.Count ||
+            PresentDeviceScanCountForDiagnostics != scansAfterTrimReload)
+            throw new InvalidOperationException("PnP memory invalidation lost the reusable persisted device snapshot.");
+
+        LogService.Info("performance", $"HARDWARE_MEMORY_TRIM_CACHE_SMOKE_OK devices={fresh.Devices.Count} nativeScans={scansAfterTrimReload - scansBefore} pnpGenerationChanged=true persistentRetained=true");
     }
 
     public static void InvalidateVolatile() => InvalidateVolatile(true);
 
     public static void InvalidateVolatile(bool dropPersistentDevices)
     {
-        _cache = null;
-        _cacheAt = default;
-        if (dropPersistentDevices)
-            PersistentHardwareCacheService.Remove(PresentDevicesPersistentKey);
-        // PnP/device changes can affect GPU, storage, network and the present-device set,
-        // but they do not require throwing away the machine-stable CPU/baseboard/RAM identity.
-        SystemInfoService.InvalidateDynamic();
+        lock (SnapshotLock)
+        {
+            _generation++;
+            _cache = null;
+            _cacheAt = default;
+            if (dropPersistentDevices)
+                PersistentHardwareCacheService.Remove(PresentDevicesPersistentKey);
+            // Keep SystemInfo's dynamic cache invalidation in the same
+            // publication barrier as the device generation transition.
+            SystemInfoService.InvalidateDynamic();
+        }
     }
 
     public static void Invalidate()
     {
-        _cache = null;
-        _cacheAt = default;
-        PersistentHardwareCacheService.Remove(PresentDevicesPersistentKey);
-        SystemInfoService.Invalidate();
+        lock (SnapshotLock)
+        {
+            _generation++;
+            _cache = null;
+            _cacheAt = default;
+            PersistentHardwareCacheService.Remove(PresentDevicesPersistentKey);
+            SystemInfoService.Invalidate();
+        }
     }
 }

@@ -12,6 +12,7 @@ namespace SpankyhoOptimizer;
 
 public sealed partial class MainWindow
 {
+    private int _updateStatusLoadGeneration;
     private Task BuildWindowsUpdateCenterAsync(CancellationToken token)
     {
         var phase = System.Diagnostics.Stopwatch.StartNew();
@@ -50,7 +51,9 @@ public sealed partial class MainWindow
 
     private void QueueWindowsUpdateAction(CancellationToken token, int generation)
     {
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        // A rejected low-priority enqueue must release the pending bit so the
+        // Windows Update action batches can be scheduled again.
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             if (generation != _updateActionsGeneration) return;
             if (token.IsCancellationRequested || _section != "update" || _updateActionsHost == null)
@@ -66,14 +69,16 @@ public sealed partial class MainWindow
                 {
                     var pauseButton = PrimaryQuickButton("Načítám stav…", async () =>
                     {
+                        int actionGeneration = _updateActionsGeneration;
                         await AdvancedCenterService.SetWindowsUpdatePauseAsync(!_updatePausedState);
+                        bool refresh = actionGeneration == _updateActionsGeneration && _section == "update";
                         InvalidateUpdatePageCache();
-                        await ShowSectionAsync("update");
+                        if (refresh) await ShowSectionAsync("update");
                     });
                     pauseButton.IsEnabled = false;
                     _updatePauseButton = pauseButton;
                     _updateActionsHost.Children.Add(pauseButton);
-                    if (_updateStatusBody != null && !_updateStatusLoadPending)
+                    if (_updateStatusBody != null)
                         SafeTaskService.Forget(
                             LoadWindowsUpdateCenterAsync(_updateStatusBody, pauseButton, token),
                             "update", "Windows Update status");
@@ -89,6 +94,7 @@ public sealed partial class MainWindow
                 case 2:
                     _updateActionsHost.Children.Add(QuickButton("Opravit komponenty", async () =>
                     {
+                        int actionGeneration = _updateActionsGeneration;
                         bool completed = await RunCancellableWithProgressAsync(
                             "Windows Update repair",
                             "DISM RestoreHealth + SFC…",
@@ -102,8 +108,9 @@ public sealed partial class MainWindow
                             "Windows Update repair",
                             ActionFeedbackKind.Applied,
                             "DISM/SFC oprava komponent doběhla. Obnovuji skutečný stav Windows Update.");
+                        bool refresh = actionGeneration == _updateActionsGeneration && _section == "update";
                         InvalidateUpdatePageCache();
-                        await ShowSectionAsync("update");
+                        if (refresh) await ShowSectionAsync("update");
                     }));
                     break;
             }
@@ -116,12 +123,14 @@ public sealed partial class MainWindow
                 QueueWindowsUpdateAction(token, generation);
             else
                 _updateActionsQueued = false;
-        });
+        })) _updateActionsQueued = false;
     }
 
     private async Task LoadWindowsUpdateCenterAsync(StackPanel body, Button pauseButton, CancellationToken token)
     {
-        if (_updateStatusLoadPending) return;
+        int generation = _updateActionsGeneration;
+        if (_updateStatusLoadPending && _updateStatusLoadGeneration == generation) return;
+        _updateStatusLoadGeneration = generation;
         _updateStatusLoadPending = true;
         try
         {
@@ -130,7 +139,7 @@ public sealed partial class MainWindow
             if (token.IsCancellationRequested || _section != "update") return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "update") return;
+                if (token.IsCancellationRequested || generation != _updateActionsGeneration || _section != "update" || !ReferenceEquals(_updateStatusBody, body)) return;
                 _updatePausedState = s.Paused;
                 _updateStatusUiAt = DateTime.UtcNow;
                 pauseButton.Content = s.Paused ? "Obnovit aktualizace" : "Pozastavit 7 dní";
@@ -141,9 +150,7 @@ public sealed partial class MainWindow
                 body.Children.Add(InsightRow("CHYBY", s.RecentErrorCount == 0 ? "Bez nedávných chyb" : s.RecentErrorCount + " nedávných chyb"));
                 body.Children.Add(InsightRow("ODCHYLKY NASTAVENÍ", drift == null
                     ? "Zatím nekontrolováno"
-                    : drift.Drifted.Length == 0
-                        ? $"0 odchylek • {drift.Checked} ověřeno"
-                        : $"{drift.Drifted.Length} odchylek • {drift.Checked} ověřeno"));
+                    : TweakDriftWatchdogService.FormatDriftSummary(drift)));
                 if (drift?.Drifted.Length > 0)
                     body.Children.Add(new TextBlock
                     {
@@ -163,7 +170,7 @@ public sealed partial class MainWindow
             {
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (_section != "update") return;
+                    if (token.IsCancellationRequested || generation != _updateActionsGeneration || _section != "update" || !ReferenceEquals(_updateStatusBody, body)) return;
                     pauseButton.Content = "Stav nedostupný";
                     pauseButton.IsEnabled = false;
                     body.Children.Clear();
@@ -182,7 +189,11 @@ public sealed partial class MainWindow
                 });
             }
         }
-        finally { _updateStatusLoadPending = false; }
+        finally
+        {
+            if (_updateStatusLoadGeneration == generation)
+                _updateStatusLoadPending = false;
+        }
     }
     private Task BuildStorageAdvancedAsync(CancellationToken token)
     {
@@ -190,22 +201,48 @@ public sealed partial class MainWindow
         _storageAdvancedBody = body;
         body.Children.Add(new TextBlock { Text = "Načítám firmware a volné místo…", Foreground = TextSecondaryBrush() });
         ContentStack.Children.Add(BuildSectionSurface("storage", "Detail úložiště", "Firmware • teplota pokud ji disk poskytuje • volné místo", body));
+        ContentStack.Children.Add(ActionCard("Windows temp", "Bezpečný úklid uživatelské TEMP: pouze soubory starší 24 hodin, bez symbolických odkazů a shader cache. Před smazáním zobrazí náhled.", "Zkontrolovat temp", async () =>
+            {
+                var preview = await SafeTempCleanupService.InspectUserTempAsync();
+                if (preview.Truncated)
+                {
+                    ShowActionFeedback("Windows temp", ActionFeedbackKind.Info, "TEMP obsahuje příliš mnoho položek; bezpečnostní limit byl dosažen. Nic nebylo smazáno.");
+                    return;
+                }
+                if (preview.EligibleFiles == 0)
+                {
+                    ShowActionFeedback("Windows temp", ActionFeedbackKind.Info, "Žádné vhodné starší soubory. Nic nebylo smazáno.");
+                    return;
+                }
+                string estimate = $"K odstranění: {preview.EligibleFiles} souborů (~{preview.EligibleBytes / 1048576.0:0.0} MB). " +
+                                  "Nedávno změněné soubory, systémové položky, odkazy a shader cache nebudou smazány.";
+                if (!await ShowStyledConfirmAsync("Vyčistit uživatelskou TEMP?", estimate, "Vyčistit", "Zrušit", "Windows temp")) return;
+                var result = await SafeTempCleanupService.CleanUserTempAsync();
+                string summary = $"Odstraněno {result.RemovedFiles} souborů (součet velikostí {result.RemovedBytes / 1048576.0:0.0} MB)." +
+                                 $" Přeskočeno {result.SkippedFiles}, chyby {result.FailedFiles}." +
+                                 (result.Truncated ? " Dosažen bezpečnostní limit; část souborů nebyla zpracována." : "");
+                ShowActionFeedback("Windows temp", result.FailedFiles > 0 || result.Truncated ? ActionFeedbackKind.Info : ActionFeedbackKind.Verified, summary);
+                await ShowMessageAsync("Úložiště", summary);
+            }));
         SafeTaskService.Forget(LoadStorageAdvancedAsync(body, token), "storage", "Lazy storage advanced");
         return Task.CompletedTask;
     }
 
     private async Task LoadStorageAdvancedAsync(StackPanel body, CancellationToken token)
     {
+        int generation = _navigationGeneration;
         try
         {
             var s = await AdvancedCenterService.GetStorageAdvancedAsync(token);
-            if (token.IsCancellationRequested || _section != "storage") return;
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "storage" || !ReferenceEquals(_storageAdvancedBody, body)) return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "storage") return;
+                if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                    _section != "storage" || !ReferenceEquals(_storageAdvancedBody, body)) return;
                 body.Children.Clear();
-                body.Children.Add(InsightRow("VOLUMES", s.Volumes));
-                body.Children.Add(InsightRow("DISKY", s.Physical));
+                body.Children.Add(InsightRow("Oddíly a volné místo", s.Volumes));
+                body.Children.Add(InsightRow("Fyzické disky", s.Physical));
             });
         }
         catch (OperationCanceledException) { }
@@ -216,7 +253,8 @@ public sealed partial class MainWindow
             {
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (_section != "storage") return;
+                    if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                        _section != "storage" || !ReferenceEquals(_storageAdvancedBody, body)) return;
                     body.Children.Clear();
                     body.Children.Add(new TextBlock
                     {
@@ -233,6 +271,21 @@ public sealed partial class MainWindow
     }
 
 
+    private TextBlock? _componentAdvisorCount;
+    private string? _componentAdvisorSub;
+
+    private void RefreshComponentAdvisorCount(string sub, UserFeatureProfile profile)
+    {
+        if (_componentAdvisorCount is not { } label || label.Parent == null ||
+            !string.Equals(_componentAdvisorSub, sub, StringComparison.OrdinalIgnoreCase))
+            return;
+        var options = ContextOptionsForCurrentSub();
+        int count = options.Count(option => profile.Keeps(option.Key));
+        string text = $"Chráníš {count} z {options.Length} volitelných funkcí v této sekci.";
+        if (!string.Equals(label.Text, text, StringComparison.Ordinal))
+            label.Text = text;
+    }
+
     private void BuildComponentAdvisor()
     {
         var profile = UserFeatureProfileService.Load();
@@ -242,7 +295,14 @@ public sealed partial class MainWindow
             if (profile.Keeps(options[i].Key)) kept++;
 
         var body = new StackPanel { Spacing = 7 };
-        body.Children.Add(new TextBlock { Text = $"Chráníš {kept} z {options.Length} volitelných funkcí v této sekci.", FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
+        var countLabel = new TextBlock
+        {
+            Text = $"Chráníš {kept} z {options.Length} volitelných funkcí v této sekci.",
+            FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush()
+        };
+        _componentAdvisorCount = countLabel;
+        _componentAdvisorSub = _sub ?? "Služby";
+        body.Children.Add(countLabel);
         body.Children.Add(new TextBlock { Text = "Doporučení nikdy automaticky nevypíná hardware nebo službu označenou jako používanou. Rizikové a systémově chráněné položky zůstávají blokované.", Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap });
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -265,13 +325,16 @@ public sealed partial class MainWindow
 
     private async Task LoadAppHealthAsync(StackPanel body, CancellationToken token)
     {
+        int generation = _navigationGeneration;
         try
         {
             var checks = await AdvancedCenterService.GetAppHealthAsync(token);
-            if (token.IsCancellationRequested || _section != "fixer") return;
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "fixer" || !ReferenceEquals(_fixerAppHealthHost, body)) return;
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_section != "fixer") return;
+                if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                    _section != "fixer" || !ReferenceEquals(_fixerAppHealthHost, body)) return;
                 body.Children.Clear();
                 foreach (var c in checks)
                 {
@@ -290,7 +353,8 @@ public sealed partial class MainWindow
             {
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (_section != "fixer") return;
+                    if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                        _section != "fixer" || !ReferenceEquals(_fixerAppHealthHost, body)) return;
                     body.Children.Clear();
                     body.Children.Add(new TextBlock
                     {

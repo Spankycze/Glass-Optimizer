@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.UI.Xaml;
@@ -11,6 +11,8 @@ public sealed partial class MainWindow
     private Dictionary<string, List<UIElement>>? _componentsPageCacheStore;
     private Dictionary<string, DateTime>? _componentsPageCacheAtStore;
     private Dictionary<string, long>? _componentsPageRevisionStampStore;
+    // Coalesce duplicate asynchronous row refreshes within one navigation generation.
+    private int _driverCacheRefreshQueuedGeneration = -1;
 
     private Dictionary<string, List<UIElement>> _componentsPageCache =>
         _componentsPageCacheStore ??= new(StringComparer.OrdinalIgnoreCase);
@@ -21,9 +23,15 @@ public sealed partial class MainWindow
 
     private bool TryAttachComponentsPageCache(string sub, System.Threading.CancellationToken token)
     {
-        if (!_componentsPageCache.TryGetValue(sub, out var cached) ||
-            !_componentsPageCacheAt.TryGetValue(sub, out var at) ||
-            DateTime.UtcNow - at > TimeSpan.FromSeconds(20)) return false;
+        if (!_componentsPageCache.TryGetValue(sub, out var cached)) return false;
+        var age = DateTime.UtcNow - (_componentsPageCacheAt.TryGetValue(sub, out var at) ? at : DateTime.MinValue);
+        if (age < TimeSpan.Zero || age > TimeSpan.FromSeconds(20))
+        {
+            // Expired subpages must not stay rooted in the cache dictionary while
+            // a fresh page is constructed (especially when switching between subpages).
+            InvalidateComponentsPageCache(sub);
+            return false;
+        }
 
         if (string.Equals(sub, "Task Scheduler", StringComparison.OrdinalIgnoreCase) &&
             TaskSchedulerService.NeedsBasicBackgroundRefresh)
@@ -38,18 +46,31 @@ public sealed partial class MainWindow
             long stamp = _componentsPageRevisionStamp.TryGetValue(sub, out var cachedStamp) ? cachedStamp : long.MinValue;
             long current = CurrentDriverRevisionStamp();
             if (current != stamp)
-                SafeTaskService.Forget(RefreshDriverCacheAfterAttachAsync(sub, token), "drivers", "Driver cache batched refresh");
+            {
+                int generation = _navigationGeneration;
+                if (System.Threading.Interlocked.Exchange(ref _driverCacheRefreshQueuedGeneration, generation) != generation)
+                {
+                    SafeTaskService.Forget(
+                        RefreshDriverCacheAfterAttachAsync(sub, generation, token),
+                        "drivers",
+                        "Driver cache batched refresh");
+                }
+            }
         }
         return true;
     }
 
-    private async System.Threading.Tasks.Task RefreshDriverCacheAfterAttachAsync(string sub, System.Threading.CancellationToken token)
+    private async System.Threading.Tasks.Task RefreshDriverCacheAfterAttachAsync(
+        string sub,
+        int generation,
+        System.Threading.CancellationToken token)
     {
         try
         {
             int refreshed = await RefreshDriverTweakRowsAsync(token);
             token.ThrowIfCancellationRequested();
-            if (!string.Equals(_section, "components", StringComparison.OrdinalIgnoreCase) ||
+            if (generation != _navigationGeneration ||
+                !string.Equals(_section, "components", StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(_sub, sub, StringComparison.Ordinal))
                 return;
 
@@ -59,11 +80,15 @@ public sealed partial class MainWindow
             LogService.Info("drivers", $"DRIVER_CACHE_REFRESH_OK rows={_driverRows?.Length ?? 0} refreshed={refreshed} stamp={stamp}");
         }
         catch (System.OperationCanceledException) { }
+        finally
+        {
+            System.Threading.Interlocked.CompareExchange(ref _driverCacheRefreshQueuedGeneration, -1, generation);
+        }
     }
 
     private void CaptureComponentsPageCache(string sub)
     {
-        _componentsPageCache[sub] = ContentStack.Children.Cast<UIElement>().ToList();
+        _componentsPageCache[sub] = SnapshotChildren(ContentStack);
         _componentsPageCacheAt[sub] = DateTime.UtcNow;
         _componentsPageRevisionStamp[sub] = string.Equals(sub, "Ovladače", StringComparison.OrdinalIgnoreCase)
             ? CurrentDriverRevisionStamp()

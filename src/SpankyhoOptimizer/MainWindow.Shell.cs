@@ -23,24 +23,26 @@ public sealed partial class MainWindow
     private Image? _heroBackgroundImage;
     private Border? _heroImageFrame;
     private bool _actionBarInitialized;
-    private Border? _prewarmedActionBar;
-    private int _actionBarPrewarmGeneration;
     private bool _mainTabsCompleted;
-    private bool _sidebarDeferredQueued;
-    private int _sidebarDeferredIndex;
     private bool _heroActionButtonReady;
-    private readonly Dictionary<string, Button> _navButtons = new();
     private readonly Dictionary<string, Button> _categoryButtons = new();
     private string _activeCategory = "home";
 
     private static readonly (string Title, string Section)[] MainSectionItems =
     {
         ("Přehled","overview"),("Systémové tweaky","system"),("Power Plan","power"),
-        ("Internet / Síť","network"),("GPU / Display","gpu"),("Úložiště / NVMe","storage"),("Nastavení","settings"),
-        ("USB / HID","usb"),("Ventilátory","lianli"),("Po spuštění","startup"),("UI / Explorer","ui"),("Windows Update","update"),
+        ("Internet / Síť","network"),("GPU / Display","gpu"),("Úložiště / NVMe","storage"),
+        ("USB / HID","usb"),("Ventilátory","lianli"),("Po spuštění","startup"),("UI / Explorer","ui"),("Personalizace","themes"),("Windows Update","update"),
         ("Spotify / Spicetify","spicetify"),("Programy / Launchery","apps"),("Soukromí","privacy"),("AI Debloater","ai"),("AI System Runtime","ai-runtime"),
-        ("Defender","defender"),("Debloater","debloat"),("Fixer","fixer"),("PowerShell","powershell"),("Cursor","cursor")
+        ("Defender","defender"),("Debloater","debloat"),("Fixer","fixer"),("Nastavení","settings")
     };
+
+    private (string Title, string Section)[] GetAvailableMainSectionItems()
+    {
+        return IsLianLiSupported()
+            ? MainSectionItems
+            : MainSectionItems.Where(item => item.Section != "lianli").ToArray();
+    }
 
     private bool _shellFirstPaintCompleted;
     private Border? _mainTabsShell;
@@ -72,17 +74,15 @@ public sealed partial class MainWindow
     private void BuildShell()
     {
         _actionBarInitialized = false;
-        _prewarmedActionBar = null;
-        System.Threading.Interlocked.Increment(ref _actionBarPrewarmGeneration);
         _mainTabsCompleted = false;
-        _sidebarDeferredQueued = false;
-        _sidebarDeferredIndex = 0;
+        _deferredSidebarBatchCount = 0;
+        _deferredSidebarLongestBatchMs = 0;
         _heroActionButtonReady = false;
         _categoryButtons.Clear();
         _activeCategory = string.Empty;
         var shellPhase = System.Diagnostics.Stopwatch.StartNew();
         long backdropStartMs = shellPhase.ElapsedMilliseconds;
-        SystemBackdrop = _darkTheme ? new OptimizerGlassBackdrop() : null;
+        SystemBackdrop = UseDarkAcrylicBackdrop ? new OptimizerGlassBackdrop() : null;
         var shellBackdrop = BuildShellBackdrop();
         long backdropMs = shellPhase.ElapsedMilliseconds - backdropStartMs;
         RootGrid = new Grid { Background = shellBackdrop, RequestedTheme = _darkTheme ? ElementTheme.Dark : ElementTheme.Light };
@@ -94,16 +94,19 @@ public sealed partial class MainWindow
         long rootLayoutMs = shellPhase.ElapsedMilliseconds;
 
         HeaderCard = BuildHeroPlaceholder(shellBackdrop);
-        _heroDeferredCompleted = false;
         Grid.SetColumnSpan(HeaderCard, 2);
         RootGrid.Children.Add(HeaderCard);
         long heroMs = shellPhase.ElapsedMilliseconds;
 
         var mainTabs = BuildMainTabs(shellBackdrop);
+        // The complete sidebar is attached atomically after the
+        // initial shell paint by ScheduleDeferredSidebarAfterFirstRenderAsync.
+        // Building it here added ~40–50ms to Window construction AND made
+        // that existing deferred startup path an expensive no-op.
         mainTabs.Width = ShellSidebarWidth;
         mainTabs.HorizontalAlignment = HorizontalAlignment.Left;
         mainTabs.VerticalAlignment = VerticalAlignment.Stretch;
-        mainTabs.Margin = new Thickness(0, _darkTheme ? 50 : 38, 0, 0);
+        mainTabs.Margin = new Thickness(0, _darkTheme ? ShellTitleBarHeight : 38, 0, 0);
         Canvas.SetZIndex(mainTabs, 40);
         RootGrid.Children.Add(mainTabs);
         long tabsMs = shellPhase.ElapsedMilliseconds;
@@ -130,6 +133,8 @@ public sealed partial class MainWindow
             Background = shellBackdrop,
             Spacing = 0
         };
+        // Content height changes are not HWND resizes. They must respect any
+        // recent real resize quiet window but must not restart its 110ms clock.
         PageHost.SizeChanged += (_, _) => SchedulePageScrollPolicyRefresh();
         PageHost.AddHandler(
             UIElement.KeyDownEvent,
@@ -163,18 +168,25 @@ public sealed partial class MainWindow
 
         RootGrid.SizeChanged += (_, e) =>
         {
-            bool compactWidth = e.NewSize.Width < 1180;
-            PageHost.Padding = compactWidth ? new Thickness(16, 1, 16, 12) : new Thickness(24, 1, 24, 12);
+            // Width/height changes still update geometry; only crossing the
+            // 1180px breakpoint needs a WinUI Padding property write/layout.
+            // The rowless shell is the sole writer of the page padding.
+            // A separate compact-padding write here used to be immediately
+            // overwritten by UpdateRowlessShellGeometry on this very event,
+            // causing duplicate XAML layout invalidation at the breakpoint.
             UpdateRowlessShellGeometry(e.NewSize.Width, null, e.NewSize.Height);
-            SchedulePageScrollPolicyRefresh();
+            // Preserve all six existing live gauges when crossing the
+            // two-/three-column Overview breakpoint during window resize.
+            ReflowOverviewGaugeColumns(e.NewSize.Width);
+            SchedulePageScrollPolicyRefresh(fromResize: true);
         };
 
         AdminBadge = new TextBlock { Text = "Správce", Visibility = Visibility.Collapsed };
         long titleStartMs = shellPhase.ElapsedMilliseconds;
         AppTitleBar = new Grid
         {
-            Height = _darkTheme ? 50 : 36,
-            Padding = new Thickness(_darkTheme ? 24 : 12, 0, 142, 0),
+            Height = _darkTheme ? ShellTitleBarHeight : 36,
+            Padding = new Thickness(_darkTheme ? 20 : 12, 0, 142, 0),
             Visibility = Visibility.Collapsed
         };
         long titleBuildMs = shellPhase.ElapsedMilliseconds;
@@ -193,7 +205,7 @@ public sealed partial class MainWindow
     }
 
     private const double StartupClientWidth = 1304d;
-    private const double ShellTitleBarHeight = 50d;
+    private const double ShellTitleBarHeight = 44d;
     private static double ShellSidebarWidth => _darkTheme ? 200d : 188d;
     private static double HeroFrameLeft => ShellSidebarWidth + 1;
     private const double HeroFrameRight = 16d;
@@ -208,7 +220,7 @@ public sealed partial class MainWindow
 
     private static double CalculateSectionHeroHeight(string? section, double clientWidth) =>
         string.Equals(section, "overview", StringComparison.OrdinalIgnoreCase)
-            ? (_darkTheme ? 144d : 128d)
+            ? (_darkTheme ? 116d : 108d)
             : ShellTitleBarHeight;
 
     private void UpdateRowlessShellGeometry(double width = 0, double? heroHeightOverride = null, double height = 0)
@@ -218,11 +230,44 @@ public sealed partial class MainWindow
             : (RootGrid.ActualWidth > 1 ? RootGrid.ActualWidth : StartupClientWidth);
         bool overviewHero = string.Equals(_section, "overview", StringComparison.OrdinalIgnoreCase);
         double heroHeight = heroHeightOverride ?? CalculateSectionHeroHeight(_section, actualWidth);
-        HeaderCard.Visibility = overviewHero ? Visibility.Visible : Visibility.Collapsed;
-        PageHost.Padding = overviewHero ? new Thickness(24,10,24,24) : new Thickness(24,24,24,24);
-        if (_mainTabsShell != null) { _mainTabsShell.Width = ShellSidebarWidth; _mainTabsShell.Margin = new Thickness(0, UseGlassChrome ? 50 : 38, 0, 0); }
-        if (_actionBarInitialized) ActionBar.Margin = new Thickness(ShellSidebarWidth + 20,0,20,20);
-        // Hero visually continues underneath the custom titlebar; do not reserve a 36px gap.
+        Visibility headerVisibility = overviewHero ? Visibility.Visible : Visibility.Collapsed;
+        if (HeaderCard.Visibility != headerVisibility)
+            HeaderCard.Visibility = headerVisibility;
+        // Keep horizontal padding consistent through Resize, navigation,
+        // and the breakpoint. Vertical Overview insets remain 8/10 so all
+        // six meters retain the original scroll-free layout.
+        double sidePadding = ShellViewportPaddingPolicy.IsCompact(actualWidth) ? 16d : 24d;
+        var pagePadding = overviewHero
+            ? new Thickness(sidePadding, 8, sidePadding, 10)
+            : new Thickness(sidePadding, 24, sidePadding, 24);
+        if (!PageHost.Padding.Equals(pagePadding))
+            PageHost.Padding = pagePadding;
+        if (_mainTabsShell != null)
+        {
+            if (_mainTabsShell.Width != ShellSidebarWidth)
+                _mainTabsShell.Width = ShellSidebarWidth;
+            var sidebarMargin = new Thickness(0, UseGlassChrome ? ShellTitleBarHeight : 38, 0, 0);
+            if (!_mainTabsShell.Margin.Equals(sidebarMargin))
+                _mainTabsShell.Margin = sidebarMargin;
+            if (_mainTabsShell.Visibility != Visibility.Visible)
+                _mainTabsShell.Visibility = Visibility.Visible;
+            if (_mainTabsShell.Opacity != 1)
+                _mainTabsShell.Opacity = 1;
+            if (_mainTabsShell.HorizontalAlignment != HorizontalAlignment.Left)
+                _mainTabsShell.HorizontalAlignment = HorizontalAlignment.Left;
+            if (_mainTabsShell.VerticalAlignment != VerticalAlignment.Stretch)
+                _mainTabsShell.VerticalAlignment = VerticalAlignment.Stretch;
+            if (Canvas.GetZIndex(_mainTabsShell) != 40)
+                Canvas.SetZIndex(_mainTabsShell, 40);
+            EnsureSidebarScrollHost();
+        }
+        if (_actionBarInitialized)
+        {
+            var actionMargin = new Thickness(ShellSidebarWidth + 20,0,20,20);
+            if (!ActionBar.Margin.Equals(actionMargin))
+                ActionBar.Margin = actionMargin;
+        }
+        // Hero visually continues underneath the custom titlebar; do not reserve a separate titlebar gap.
         double bannerHeight = Math.Max(1d, heroHeight);
 
         if (double.IsNaN(HeaderCard.Height) || Math.Abs(HeaderCard.Height - heroHeight) > 0.1)
@@ -285,6 +330,12 @@ public sealed partial class MainWindow
                     _pageScroll.Height = availableHeight;
             }
         }
+        // Navigation changes the caption extent only when switching between
+        // Overview and a regular page. Don't make expensive native region calls
+        // for each intermediate SizeChanged during a mouse resize.
+        if (_customTitleBarPrimed &&
+            (_heroDragSignature == null || _heroDragSignature.Value.Overview != overviewHero))
+            UpdateHeroDragRegions();
     }
 
     private void OnPageHostKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
@@ -295,6 +346,7 @@ public sealed partial class MainWindow
         DependencyObject? focused = RootGrid.XamlRoot == null
             ? null
             : Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(RootGrid.XamlRoot) as DependencyObject;
+
         if (IsPageScrollKeyReserved(focused))
         {
             if (e.Key is Windows.System.VirtualKey.Home
@@ -315,8 +367,17 @@ public sealed partial class MainWindow
             return;
         }
 
+        if (ApplyPageScrollKeyForPolicy(e.Key))
+            e.Handled = true;
+    }
+
+    private bool ApplyPageScrollKeyForPolicy(Windows.System.VirtualKey key)
+    {
+        if (_pageScroll.VerticalScrollMode != ScrollMode.Enabled || _pageScroll.ScrollableHeight <= 1)
+            return false;
+
         double target;
-        switch (e.Key)
+        switch (key)
         {
             case Windows.System.VirtualKey.Home:
                 target = 0;
@@ -335,11 +396,11 @@ public sealed partial class MainWindow
                     _pageScroll.VerticalOffset - Math.Max(1, _pageScroll.ViewportHeight * 0.9));
                 break;
             default:
-                return;
+                return false;
         }
 
         _pageScroll.ChangeView(null, target, null, true);
-        e.Handled = true;
+        return true;
     }
 
     private bool IsPageScrollKeyReserved(DependencyObject? focused)
@@ -364,50 +425,16 @@ public sealed partial class MainWindow
 
     private Border BuildHeroPlaceholder(Brush shellBackdrop)
     {
-        _heroDeferredCompleted = false;
-        return new Border
-        {
-            Background = shellBackdrop,
-            BorderThickness = new Thickness(0)
-        };
-    }
-
-    private void CompleteDeferredHero()
-    {
-        if (_heroDeferredCompleted) return;
-        var phase = System.Diagnostics.Stopwatch.StartNew();
-
-        var placeholder = HeaderCard;
-        double preservedHeight = placeholder.Height;
-        var fullHero = BuildCinematicHero();
-        fullHero.Height = preservedHeight;
-        fullHero.VerticalAlignment = VerticalAlignment.Top;
-        Grid.SetColumnSpan(fullHero, 2);
-
-        int heroIndex = RootGrid.Children.IndexOf(placeholder);
-        if (heroIndex >= 0)
-        {
-            RootGrid.Children.RemoveAt(heroIndex);
-            RootGrid.Children.Insert(heroIndex, fullHero);
-        }
-        HeaderCard = fullHero;
-        UpdateRowlessShellGeometry(heroHeightOverride: preservedHeight);
-
-        if (CatalogService.TryGetSection(_section, out var section) && section != null)
-        {
-            PageTitle.Text = _section == "overview" ? "P\u0159ehled" : section.Title;
-            PageSubtitle.Text = _section == "overview" ? "Hardware, \u017eiv\u00e9 vyu\u017eit\u00ed a stav syst\u00e9mu" : section.Subtitle;
-        }
-        HeroTextPanel.Visibility = Visibility.Visible;
+        // The current Overview hero is intentionally lightweight. Building it on the
+        // first frame avoids a visible empty-header -> real-header swap with negligible
+        // startup cost. Expensive image/data work remains deferred separately.
+        Border hero = BuildBlackOverviewHeader();
+        hero.Background = UseGlassChrome ? ThemeColor(0, 0, 0, 0) : shellBackdrop;
+        hero.BorderThickness = new Thickness(0);
         _heroDeferredCompleted = true;
-
-        long layoutMs = phase.ElapsedMilliseconds;
-        LoadShellImagesDeferred();
-        LogService.Info("performance", $"HERO_DEFERRED_STAGE stableLayout=true layoutMs={layoutMs} imageSourceMs={phase.ElapsedMilliseconds - layoutMs} totalMs={phase.ElapsedMilliseconds}");
+        return hero;
     }
 
-    private Border BuildCinematicHero()
-    { return BuildBlackOverviewHeader(); }
     private Border BuildMainTabs(Brush shellBackdrop)
     {
         var shell = new Border
@@ -419,16 +446,28 @@ public sealed partial class MainWindow
         };
         _mainTabsShell = shell;
         CategoryBar = new StackPanel { Spacing = 4 };
-        // Keep the first-paint sidebar shell lightweight. The ScrollViewer is only
-        // needed once deferred navigation buttons begin materializing.
-        shell.Child = CategoryBar;
+        shell.Child = new ScrollViewer
+        {
+            Content = CategoryBar,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollMode = ScrollMode.Enabled,
+            HorizontalScrollMode = ScrollMode.Disabled,
+            Background = new SolidColorBrush(Colors.Transparent)
+        };
         return shell;
     }
 
     private void EnsureSidebarScrollHost()
     {
-        if (_mainTabsShell == null || _mainTabsShell.Child is ScrollViewer) return;
-        _mainTabsShell.Child = null;
+        if (_mainTabsShell == null) return;
+        if (_mainTabsShell.Child is ScrollViewer sv)
+        {
+            if (!ReferenceEquals(sv.Content, CategoryBar))
+                sv.Content = CategoryBar;
+            return;
+        }
+
         _mainTabsShell.Child = new ScrollViewer
         {
             Content = CategoryBar,
@@ -440,81 +479,166 @@ public sealed partial class MainWindow
         };
     }
 
+    private const int DeferredSidebarBatchSize = 3;
+    private const int DeferredSidebarBatchBudgetMs = 8;
+    private int _deferredSidebarBatchCount;
+    private long _deferredSidebarLongestBatchMs;
+
     private async System.Threading.Tasks.Task ScheduleDeferredSidebarAfterFirstRenderAsync()
     {
-        await System.Threading.Tasks.Task.Delay(50).ConfigureAwait(false);
+        // Each WinUI button and SVG costs native initialization. Building all
+        // 21 within ONE UI callback blocked the dispatcher for 35-57 ms.
+        // Prepare time-budgeted offscreen batches, then attach the complete
+        // menu atomically. Normal-priority small turns avoid the 200ms delay
+        // caused by starving low-priority batches behind background UI tasks;
+        // no partially built navigation controls become visible.
+        await System.Threading.Tasks.Task.Yield();
+        if (_windowLifetimeCts.IsCancellationRequested || _mainTabsCompleted) return;
 
+        var root = RootGrid;
+        var items = GetAvailableMainSectionItems();
+        var prepared = new StackPanel { Spacing = CategoryBar.Spacing };
+        var phase = System.Diagnostics.Stopwatch.StartNew();
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            EnsureSidebarScrollHost();
-            tcs.TrySetResult(true);
-        }))
+        // Yield above has already placed us on a post-first-render UI turn.
+        // Preparing the first TextBlock here (12-16ms native cold start)
+        // keeps it separate from the button batch without paying for an
+        // additional DispatcherQueue turn. The complete menu still attaches
+        // atomically only after all buttons have been prepared.
+        var labelWarm = System.Diagnostics.Stopwatch.StartNew();
+        var firstLabel = CreateMainSidebarLabel(items[0].Title);
+        long labelMs = labelWarm.ElapsedMilliseconds;
+        if (labelMs >= DeferredSidebarBatchBudgetMs)
+            LogService.Info("performance", $"SIDEBAR_FIRST_LABEL_PREPARED ms={labelMs}");
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
+            () => BuildDeferredSidebarBatch(root, prepared, items, 0, phase, tcs, firstLabel)))
             return;
 
-        await tcs.Task.ConfigureAwait(false);
-        QueueDeferredSidebarBatch();
+        _ = await tcs.Task.ConfigureAwait(false);
     }
 
-    private void QueueDeferredSidebarBatch()
+    private void BuildDeferredSidebarBatch(
+        Grid root, StackPanel prepared, (string Title, string Section)[] items, int start,
+        System.Diagnostics.Stopwatch phase, TaskCompletionSource<bool> done,
+        TextBlock? firstPreparedLabel = null)
     {
-        if (_mainTabsCompleted || _sidebarDeferredQueued) return;
-        _sidebarDeferredQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        try
         {
-            _sidebarDeferredQueued = false;
-            if (_mainTabsCompleted) return;
-
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            int start = _sidebarDeferredIndex;
-            int batchSize = start == 0 ? 2 : 4;
-            int end = System.Math.Min(start + batchSize, MainSectionItems.Length);
-            for (int i = start; i < end; i++)
-                AddMainSection(CategoryBar, MainSectionItems[i].Title, MainSectionItems[i].Section);
-            _sidebarDeferredIndex = end;
-            LogService.Info("performance", $"SIDEBAR_DEFERRED_BATCH start={start} added={end - start} ms={sw.ElapsedMilliseconds} total={CategoryBar.Children.Count}");
-
-            if (end < MainSectionItems.Length)
+            // Theme reconstruction may replace RootGrid before a queued batch runs.
+            // Never attach old-theme buttons or mutate the new shell.
+            if (_windowLifetimeCts.IsCancellationRequested ||
+                !ReferenceEquals(RootGrid, root) || _mainTabsCompleted)
             {
-                QueueDeferredSidebarBatch();
+                done.TrySetResult(false);
                 return;
             }
 
-            _mainTabsCompleted = true;
-            UpdateCategorySelection(_section);
-            LogService.Info("performance", $"SIDEBAR_DEFERRED items={MainSectionItems.Length} batched=true");
-        });
+            var batch = System.Diagnostics.Stopwatch.StartNew();
+            // Native WinUI SVG control creation has a cold-start spike on
+            // the first item. Never put more than three controls or more than
+            // the 8ms soft budget into the same dispatcher callback.
+            int end = start;
+            while (end < items.Length && end - start < DeferredSidebarBatchSize)
+            {
+                var item = items[end];
+                AddMainSection(prepared, item.Title, item.Section,
+                    end == 0 ? firstPreparedLabel : null);
+                end++;
+                if (batch.ElapsedMilliseconds >= DeferredSidebarBatchBudgetMs)
+                    break;
+            }
+            long batchMs = batch.ElapsedMilliseconds;
+            _deferredSidebarBatchCount++;
+            _deferredSidebarLongestBatchMs = Math.Max(_deferredSidebarLongestBatchMs, batchMs);
+            // Log only an actual dispatcher hitch; the final aggregate
+            // already records the full sidebar build and slowest batch.
+            if (batchMs >= DeferredSidebarBatchBudgetMs)
+                LogService.Info("performance",
+                    $"SIDEBAR_DEFERRED_BATCH start={start} added={end - start} ms={batchMs}");
+
+            if (end < items.Length)
+            {
+                if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
+                    () => BuildDeferredSidebarBatch(root, prepared, items, end, phase, done)))
+                    done.TrySetResult(false);
+                return;
+            }
+
+            // Navigation can change while offscreen batches are being built.
+            // Correct only stale selected visuals rather than repainting all
+            // 21 buttons and triggering native animations unnecessarily.
+            foreach (var entry in _categoryButtons)
+            {
+                bool shouldBeActive = string.Equals(entry.Key, _section, StringComparison.OrdinalIgnoreCase);
+                if ((entry.Value.BorderThickness.Left > 0) != shouldBeActive)
+                    SetCategoryButtonVisualState(entry.Value, shouldBeActive);
+            }
+
+            AttachCompletedMainTabs(prepared, phase, phase.ElapsedMilliseconds);
+            done.TrySetResult(true);
+        }
+        catch (Exception ex)
+        {
+            done.TrySetException(ex);
+        }
     }
 
     private void CompleteDeferredMainTabs()
     {
-        // Theme rebuilds bypass the asynchronous startup sidebar path.
-        EnsureSidebarScrollHost();
-        if (_mainTabsCompleted) return;
-        if (_sidebarDeferredIndex > 0)
+        // Theme replacement must still complete synchronously: its caller
+        // immediately applies theme resources and restores navigation.
+        if (_mainTabsCompleted)
         {
-            CategoryBar.Children.Clear();
-            _categoryButtons.Clear();
-            _sidebarDeferredIndex = 0;
-            _sidebarDeferredQueued = false;
+            EnsureSidebarScrollHost();
+            return;
         }
+
         var phase = System.Diagnostics.Stopwatch.StartNew();
-        foreach (var item in MainSectionItems) AddMainSection(CategoryBar, item.Title, item.Section);
+        var prepared = new StackPanel { Spacing = CategoryBar.Spacing };
+        foreach (var item in GetAvailableMainSectionItems())
+            AddMainSection(prepared, item.Title, item.Section);
+        AttachCompletedMainTabs(prepared, phase, phase.ElapsedMilliseconds);
+    }
+
+    private void AttachCompletedMainTabs(
+        StackPanel prepared, System.Diagnostics.Stopwatch phase, long prepareMs)
+    {
+        CategoryBar = prepared;
+        EnsureSidebarScrollHost();
+        long attachMs = phase.ElapsedMilliseconds - prepareMs;
         _mainTabsCompleted = true;
-        UpdateCategorySelection(_section);
-        LogService.Info("performance", $"SIDEBAR_DEFERRED items={MainSectionItems.Length} ms={phase.ElapsedMilliseconds}");
+        _activeCategory = _section;
+        LogService.Info("performance",
+            $"SIDEBAR_DEFERRED items={CategoryBar.Children.Count} ms={phase.ElapsedMilliseconds} prepareMs={prepareMs} attachMs={attachMs} atomic=true batches={_deferredSidebarBatchCount} maxBatchMs={_deferredSidebarLongestBatchMs}");
     }
 
     internal async System.Threading.Tasks.Task RunSidebarDeferredSmokeAsync()
     {
         for (int i = 0; i < 40 && !_mainTabsCompleted; i++)
             await System.Threading.Tasks.Task.Delay(25);
-        int expectedSidebarItems = MainSectionItems.Length;
+        // The startup Overview metadata must never silently diverge from the
+        // canonical catalog; assert record value equality after the first
+        // frame when the catalog is allowed to initialize during smoke.
+        if (StartupOverviewSection != CatalogService.GetSection("overview"))
+            throw new InvalidOperationException("Startup Overview metadata drifted from the catalog.");
+        if (StartupSystemSection != CatalogService.GetSection("system"))
+            throw new InvalidOperationException("Fast System metadata drifted from the catalog.");
+        var items = GetAvailableMainSectionItems();
+        int expectedSidebarItems = items.Length;
+        // A cold asset decode may end a batch early, so the number of turns
+        // is intentionally adaptive while each turn remains small.
+        if (_deferredSidebarBatchCount != 0 &&
+            (_deferredSidebarBatchCount < (expectedSidebarItems + DeferredSidebarBatchSize - 1) / DeferredSidebarBatchSize ||
+             _deferredSidebarBatchCount > expectedSidebarItems ||
+             _deferredSidebarLongestBatchMs <= 0))
+            throw new InvalidOperationException(
+                $"Deferred sidebar budgeted batching failed: batches={_deferredSidebarBatchCount} maxMs={_deferredSidebarLongestBatchMs}.");
         if (!_mainTabsCompleted || CategoryBar.Children.Count != expectedSidebarItems || _categoryButtons.Count != expectedSidebarItems)
             throw new InvalidOperationException($"Deferred sidebar incomplete: completed={_mainTabsCompleted} children={CategoryBar.Children.Count} buttons={_categoryButtons.Count} expected={expectedSidebarItems}.");
 
-        if (_mainTabsShell?.Child is not ScrollViewer { VerticalScrollMode: ScrollMode.Enabled, VerticalScrollBarVisibility: ScrollBarVisibility.Hidden })
-            throw new InvalidOperationException("Sidebar scrolling host invariant broken.");
+        if (_mainTabsShell?.Child is not ScrollViewer { VerticalScrollMode: ScrollMode.Enabled, VerticalScrollBarVisibility: ScrollBarVisibility.Hidden } scrollHost ||
+            !ReferenceEquals(scrollHost.Content, CategoryBar))
+            throw new InvalidOperationException("Sidebar scrolling host/atomic attachment invariant broken.");
 
         var assets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (Button button in _categoryButtons.Values)
@@ -525,14 +649,42 @@ public sealed partial class MainWindow
                 throw new InvalidOperationException($"Sidebar hit-test invariant broken for {section}: enabled={button.IsEnabled} buttonHit={button.IsHitTestVisible} childHit={row.IsHitTestVisible}.");
             if (button.ClickMode != ClickMode.Release)
                 throw new InvalidOperationException($"Sidebar click mode invariant broken for {section}: {button.ClickMode}.");
+            // New sidebar buttons must be born at the final geometry. A
+            // post-construction resize costs native layout work for all 21
+            // elements and can cause a visibly inconsistent first frame.
+            if (row.Children.Count < 2 || row.Children[0] is not Grid iconHost ||
+                row.Children[1] is not TextBlock navLabel ||
+                iconHost.Children.Count < 2 || iconHost.Children[1] is not Image svgIcon ||
+                iconHost.Width != 30 || iconHost.Height != 30 ||
+                svgIcon.Width != 28 || svgIcon.Height != 28 ||
+                button.MinHeight != (_darkTheme ? 48 : 36) ||
+                button.CornerRadius.TopLeft != (_darkTheme ? 20 : 16) ||
+                button.Padding.Top != (_darkTheme ? 6 : 3) ||
+                row.Spacing != (_darkTheme ? 11 : 9) ||
+                navLabel.Tag is not string { Length: > 0 } fontTag ||
+                fontTag != "UiNavigationSize" ||
+                navLabel.FontSize != UiFontSize("UiNavigationSize") ||
+                navLabel.MaxWidth != (_darkTheme ? 122 : 112))
+                throw new InvalidOperationException($"Sidebar final-layout invariant broken for {section}.");
+            string expectedTitle = items.First(x => x.Section == section).Title;
+            if (Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(button) != expectedTitle ||
+                Microsoft.UI.Xaml.Automation.AutomationProperties.GetAutomationId(button) != "sidebar-" + section)
+                throw new InvalidOperationException($"Sidebar UIAutomation identity missing or incorrect for {section}.");
+            bool selected = string.Equals(section, _section, StringComparison.OrdinalIgnoreCase);
+            if ((button.BorderThickness.Left > 0) != selected)
+                throw new InvalidOperationException($"Sidebar initial selection border mismatch for {section}.");
+            if (!selected && (button.Shadow != null || button.Translation.Z != 0))
+                throw new InvalidOperationException($"Sidebar inactive button retained shadow/translation: {section}.");
             assets.Add(SidebarIconName(section));
         }
-        int expectedUniqueAssets = MainSectionItems.Select(x => SidebarIconName(x.Section)).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        int expectedUniqueAssets = items.Select(x => SidebarIconName(x.Section)).Distinct(StringComparer.OrdinalIgnoreCase).Count();
         if (assets.Count != expectedUniqueAssets)
             throw new InvalidOperationException($"Sidebar icon coverage mismatch: {assets.Count}/{expectedUniqueAssets} unique assets for {expectedSidebarItems} sections.");
         if (!ReferenceEquals(SidebarIconSource("gpu"), SidebarIconSource("gpu")) ||
-            !ReferenceEquals(SidebarIconSource("network"), SidebarIconSource("network")))
-            throw new InvalidOperationException("Sidebar SVG source cache did not reuse image sources.");
+            !ReferenceEquals(SidebarIconSource("network"), SidebarIconSource("network")) ||
+            !ReferenceEquals(SidebarIconSource("gpu"), SectionIconSource("gpu")) ||
+            !ReferenceEquals(SidebarIconSource("overview"), SectionIconSource("overview")))
+            throw new InvalidOperationException("Shared SVG source cache did not reuse image sources across sidebar/section surfaces.");
 
         foreach (string asset in HardwareIconMap.Values.Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -544,7 +696,7 @@ public sealed partial class MainWindow
             !ReferenceEquals(SectionIconSource("restore"), SectionIconSource("update")))
             throw new InvalidOperationException("Utility icon alias/source cache mismatch.");
 
-        LogService.Info("SIDEBAR_DEFERRED_SMOKE_OK uniqueAssets=21 style=CustomSvg sourceCache=true utilityAssetsVerified=true hitTestOwner=button clickMode=release");
+        LogService.Info($"SIDEBAR_DEFERRED_SMOKE_OK uniqueAssets={assets.Count} sections={expectedSidebarItems} style=CustomSvg sourceCache=true utilityAssetsVerified=true hitTestOwner=button clickMode=release");
     }
 
     internal async System.Threading.Tasks.Task RunHeroActionDeferredSmokeAsync()
@@ -568,9 +720,6 @@ public sealed partial class MainWindow
         if (ActionBar.Visibility != Visibility.Collapsed)
             throw new InvalidOperationException("Action bar placeholder should stay collapsed when there are no dirty tweaks.");
 
-        if (_prewarmedActionBar != null)
-            throw new InvalidOperationException("Action bar should remain on-demand; startup prewarm unexpectedly ran.");
-
         var attach = System.Diagnostics.Stopwatch.StartNew();
         EnsureActionBarInitialized();
         long attachMs = attach.ElapsedMilliseconds;
@@ -582,31 +731,51 @@ public sealed partial class MainWindow
         LogService.Info("ACTIONBAR_LAZY_SMOKE_OK cleanStateSkipped=true onDemand=true factoryVerified=true attachMs=" + attachMs);
     }
 
-    private void AddMainSection(StackPanel host, string title, string section)
+    private TextBlock CreateMainSidebarLabel(string title) => new()
     {
-        bool preview = IsUiPreviewBuild();
+        Text = title, Tag = "UiNavigationSize", FontSize = UiFontSize("UiNavigationSize"),
+        FontWeight = FontWeights.SemiBold,
+        Foreground = _darkTheme ? ThemeColor(232,232,232) : TextPrimaryBrush(),
+        TextWrapping = TextWrapping.Wrap, MaxWidth = _darkTheme ? 122 : 112,
+        MaxLines = 2, VerticalAlignment = VerticalAlignment.Center
+    };
+
+    private void AddMainSection(StackPanel host, string title, string section, TextBlock? preparedLabel = null)
+    {
+        // First sidebar entry frequently takes 23-39 ms during cold native
+        // control creation. Resolve the expensive phase only during smoke
+        // or explicit performance diagnostics, not in normal navigation.
+        var firstIconProfile = LogService.PerformanceDiagnosticsEnabled &&
+            string.Equals(section, "overview", StringComparison.OrdinalIgnoreCase)
+            ? System.Diagnostics.Stopwatch.StartNew() : null;
         // PERF/UI INVARIANT: the Button must own all pointer input. Child visuals are display-only,
         // otherwise future icon/hover work can silently break sidebar navigation hit-testing.
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 9,
+            Spacing = _darkTheme ? 11 : 9,
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false
         };
-        var menuIcon = SidebarIcon(section, 22);
+        long rowMs = firstIconProfile?.ElapsedMilliseconds ?? 0;
+        var menuIcon = SidebarIcon(section, 22, navigation: true);
+        long iconMs = firstIconProfile?.ElapsedMilliseconds ?? 0;
         menuIcon.Margin = new Thickness(0, 0, 1, 0);
         row.Children.Add(menuIcon);
-        row.Children.Add(new TextBlock { Text = title, FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = _darkTheme ? ThemeColor(232,232,232) : TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, MaxWidth = 112, MaxLines = 2, VerticalAlignment = VerticalAlignment.Center });
+        long iconAttachMs = firstIconProfile?.ElapsedMilliseconds ?? 0;
+        var navLabel = preparedLabel ?? CreateMainSidebarLabel(title);
+        long labelCreateMs = firstIconProfile?.ElapsedMilliseconds ?? 0;
+        row.Children.Add(navLabel);
+        long rowContentMs = firstIconProfile?.ElapsedMilliseconds ?? 0;
         var button = new Button
         {
             Tag = section,
             Content = row,
-            MinHeight = 36,
+            MinHeight = _darkTheme ? 48 : 36,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Left,
-            Padding = new Thickness(8, 3, 8, 3),
-            CornerRadius = new CornerRadius(16),
+            Padding = _darkTheme ? new Thickness(8, 6, 8, 6) : new Thickness(8, 3, 8, 3),
+            CornerRadius = new CornerRadius(_darkTheme ? 20 : 16),
             Background = SidebarButtonBackground(active: false),
             BorderBrush = SidebarButtonBorder(active: false),
             BorderThickness = new Thickness(0),
@@ -614,35 +783,53 @@ public sealed partial class MainWindow
             IsHitTestVisible = true,
             IsEnabled = true
         };
-        EnsureAccessibleButton(button, title);
-        button.PointerEntered += (_, _) =>
-        {
-            if (!string.Equals(_activeCategory, section, StringComparison.OrdinalIgnoreCase))
-            {
-                button.Background = SidebarHoverBackground();
-                button.BorderBrush = _darkTheme ? ThemeColor(82,126,184,224) : BorderThemeBrush();
-            }
-        };
-        button.PointerExited += (_, _) =>
-        {
-            if (!string.Equals(_activeCategory, section, StringComparison.OrdinalIgnoreCase))
-                SetCategoryButtonVisualState(button, active: false);
-        };
+        long buttonMs = firstIconProfile?.ElapsedMilliseconds ?? 0;
+        // Stable UI Automation identity for sidebar navigation regardless of visual layout.
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, title);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(button, "sidebar-" + section);
+        // Share two instance handlers across the entire sidebar instead of capturing
+        // 21 different buttons/section strings in 42 long-lived closures.
+        button.PointerEntered += OnMainSidebarPointerEntered;
+        button.PointerExited += OnMainSidebarPointerExited;
         button.ClickMode = ClickMode.Release;
         button.Click += OnMainSidebarButtonClick;
-        SetCategoryButtonVisualState(button, string.Equals(section, _section, StringComparison.OrdinalIgnoreCase));
-        ApplyGlassNavigationGeometry(button, _darkTheme);
+        // Inactive visuals were already initialized in the Button initializer.
+        // Do not reset properties/shadows/transforms again on every cold sidebar build.
+        if (string.Equals(section, _section, StringComparison.OrdinalIgnoreCase))
+            SetCategoryButtonVisualState(button, active: true, resetMotion: false);
+        // All navigation geometry is set at construction. Theme changes still
+        // call ApplyGlassNavigationGeometry for existing buttons.
         button.Resources["ButtonBackgroundPointerOver"] = SidebarHoverBackground();
         button.Resources["ButtonBackgroundPressed"] = _darkTheme ? ThemeColor(100, 24, 55, 79) : SurfaceBrush();
         button.Resources["ButtonBorderBrushPointerOver"] = _darkTheme ? GlassEdgeBrush() : BorderThemeBrush();
-        AttachHoverMotion(button, 1.008f);
+        // Keep persistent sidebar buttons transform-free; pointer feedback is already handled
+        // by their background/border states and must never make menu content disappear.
         _categoryButtons[section] = button;
         host.Children.Add(button);
+        if (firstIconProfile is { } slowWatch && slowWatch.ElapsedMilliseconds >= 8)
+            LogService.Info("performance",
+                $"SIDEBAR_FIRST_BUTTON_PHASE rowMs={rowMs} svgMs={iconMs-rowMs} iconAttachMs={iconAttachMs-iconMs} labelCreateMs={labelCreateMs-iconAttachMs} labelAttachMs={rowContentMs-labelCreateMs} buttonMs={buttonMs-rowContentMs} wiringMs={slowWatch.ElapsedMilliseconds-buttonMs} totalMs={slowWatch.ElapsedMilliseconds}");
+    }
+
+    private void OnMainSidebarPointerEntered(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string section } button ||
+            string.Equals(_activeCategory, section, StringComparison.OrdinalIgnoreCase)) return;
+        button.Background = SidebarHoverBackground();
+        button.BorderBrush = _darkTheme ? ThemeColor(82,126,184,224) : BorderThemeBrush();
+    }
+
+    private void OnMainSidebarPointerExited(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string section } button &&
+            !string.Equals(_activeCategory, section, StringComparison.OrdinalIgnoreCase))
+            SetCategoryButtonVisualState(button, active: false, resetMotion: false);
     }
 
     private void OnMainSidebarButtonClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: string section }) return;
+        if (string.Equals(section, _section, StringComparison.OrdinalIgnoreCase)) return;
         SafeTaskService.Forget(
             NavigateMainSectionFromUiAsync(section),
             "navigation",
@@ -651,7 +838,7 @@ public sealed partial class MainWindow
 
     private Border BuildSubNavigation()
     {
-        var shell = new Border { Background = _darkTheme ? ThemeColor(40,14,28,42) : SurfaceBrush(), BorderBrush = _darkTheme ? ThemeColor(54,120,164,196) : BorderThemeBrush(), BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(28, 8, 28, 8), Visibility = Visibility.Collapsed };
+        var shell = new Border { Background = UseGlassChrome ? GlassPanelBrush() : SurfaceBrush(), BorderBrush = UseGlassChrome ? ThemeColor(0,0,0,0) : BorderThemeBrush(), BorderThickness = UseGlassChrome ? new Thickness(0) : new Thickness(0, 0, 0, 1), Padding = new Thickness(28, 8, 28, 8), Visibility = Visibility.Collapsed };
         SideMenu = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Visibility = Visibility.Collapsed };
         SubSelectorHost = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Visibility = Visibility.Collapsed };
         shell.Child = SubSelectorHost; SubNavShell = shell; return shell;
@@ -662,37 +849,40 @@ public sealed partial class MainWindow
         if (string.Equals(_activeCategory, key, StringComparison.OrdinalIgnoreCase))
             return;
 
-        if (_categoryButtons.TryGetValue(_activeCategory, out var previous))
-            SetCategoryButtonVisualState(previous, active: false);
+        Button? previous = null;
+        if (_categoryButtons.TryGetValue(_activeCategory, out previous))
+            SetCategoryButtonVisualState(previous, active: false, resetMotion: false);
 
-
-        if (_categoryButtons.TryGetValue(key, out var current))
-        {
-            SetCategoryButtonVisualState(current, active: true);
-
-        }
+        _categoryButtons.TryGetValue(key, out Button? current);
+        if (current != null)
+            SetCategoryButtonVisualState(current, active: true, resetMotion: false);
 
         _activeCategory = key;
-
+        // The sidebar uses only built-in Button hover state, no persistent
+        // compositor animations. Native StopAnimation/Scale/Opacity calls are
+        // occasionally 60+ ms on a busy compositor and stalled GPU navigation
+        // despite its own page construction taking <10 ms. Update colors and
+        // selection synchronously; repair any inherited motion off the hot path.
+        int generation = _navigationGeneration;
+        if (previous != null || current != null)
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                if (generation != _navigationGeneration) return;
+                if (previous is { IsLoaded: true }) ResetMotionVisual(previous);
+                if (current is { IsLoaded: true }) ResetMotionVisual(current);
+            });
     }
 
-    private static void SetCategoryButtonVisualState(Button button, bool active)
+    private static void SetCategoryButtonVisualState(
+        Button button, bool active, bool resetMotion = true)
     {
-        var timing = System.Diagnostics.Stopwatch.StartNew();
+        if (resetMotion) ResetMotionVisual(button);
         button.Foreground = active ? ThemeColor(255, 255, 255) : (_darkTheme ? ThemeColor(192,192,192) : TextSecondaryBrush());
         button.Background = SidebarButtonBackground(active);
         button.BorderBrush = SidebarButtonBorder(active);
         button.BorderThickness = new Thickness(active ? 1 : 0);
-        long brushesMs = timing.ElapsedMilliseconds;
         button.Shadow = _darkTheme && active ? (_glassNavigationShadow ??= new ThemeShadow()) : null;
         button.Translation = new System.Numerics.Vector3(0, 0, _darkTheme && active ? 10 : 0);
-        long shadowMs = timing.ElapsedMilliseconds;
-        ApplyGlassNavigationGeometry(button, _darkTheme);
-        long geometryMs = timing.ElapsedMilliseconds;
-        button.Resources["ButtonBackgroundPointerOver"] = SidebarHoverBackground();
-        button.Resources["ButtonBackgroundPressed"] = _darkTheme ? ThemeColor(100, 24, 55, 79) : SurfaceBrush();
-        button.Resources["ButtonBorderBrushPointerOver"] = _darkTheme ? GlassEdgeBrush() : BorderThemeBrush();
-        if (timing.ElapsedMilliseconds > 5) LogService.Info("performance", $"SIDEBAR_STATE_PHASE section={button.Tag} active={active} brushesMs={brushesMs} shadowMs={shadowMs-brushesMs} geometryMs={geometryMs-shadowMs} resourcesMs={timing.ElapsedMilliseconds-geometryMs}");
     }
 
     private static ThemeShadow? _glassNavigationShadow;
@@ -715,7 +905,7 @@ public sealed partial class MainWindow
 
     private static Brush SidebarButtonBorder(bool active)
         => !_darkTheme ? BorderThemeBrush() : active
-            ? (_sidebarActiveBorder ??= GlassEdgeBrush())
+            ? (_sidebarActiveBorder ??= GlassBlueEdgeBrush())
             : (_sidebarInactiveBorder ??= ThemeColor(0,0,0,0));
 
     private void EnsureActionBarInitialized()
@@ -723,8 +913,7 @@ public sealed partial class MainWindow
         if (_actionBarInitialized) return;
         var phase = System.Diagnostics.Stopwatch.StartNew();
         var old = ActionBar;
-        var bar = _prewarmedActionBar ?? BuildActionBar();
-        _prewarmedActionBar = null;
+        var bar = BuildActionBar();
         bar.Margin = new Thickness(ShellSidebarWidth + 20, 0, 20, 20);
         bar.VerticalAlignment = VerticalAlignment.Bottom;
         bar.SizeChanged += (_, _) => UpdateRowlessShellGeometry();
@@ -734,49 +923,6 @@ public sealed partial class MainWindow
         _actionBarInitialized = true;
         UpdateRowlessShellGeometry();
         LogService.Info("performance", $"ACTIONBAR_DEFERRED_STAGE ms={phase.ElapsedMilliseconds}");
-    }
-
-    private async System.Threading.Tasks.Task PrewarmActionBarAfterFirstRenderAsync()
-    {
-        int generation = System.Threading.Volatile.Read(ref _actionBarPrewarmGeneration);
-        await System.Threading.Tasks.Task.Delay(750).ConfigureAwait(false);
-        if (generation != System.Threading.Volatile.Read(ref _actionBarPrewarmGeneration) ||
-            _actionBarInitialized || _prewarmedActionBar != null)
-            return;
-
-        var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>(
-            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            try
-            {
-                if (generation != System.Threading.Volatile.Read(ref _actionBarPrewarmGeneration) ||
-                    _actionBarInitialized || _prewarmedActionBar != null)
-                {
-                    tcs.TrySetResult(false);
-                    return;
-                }
-
-                var sw = System.Diagnostics.Stopwatch.StartNew();
-                _prewarmedActionBar = BuildActionBar();
-                LogService.Info("performance", $"ACTIONBAR_FACTORY_PREWARM ms={sw.ElapsedMilliseconds}");
-                tcs.TrySetResult(true);
-            }
-            catch (Exception ex)
-            {
-                LogService.Error("performance", "ActionBar factory prewarm failed", ex);
-                tcs.TrySetException(ex);
-            }
-        }))
-            tcs.TrySetResult(false);
-
-        await tcs.Task.ConfigureAwait(false);
-    }
-
-    private void LoadShellImagesDeferred()
-    {
-        if (_heroBackgroundImage != null && _heroBackgroundImage.Source == null)
-            _heroBackgroundImage.Source = new BitmapImage(new Uri("ms-appx:///Assets/HeroTargetExact.png"));
     }
 
     private Border BuildActionBar()
@@ -807,7 +953,7 @@ public sealed partial class MainWindow
         ApplyPillButtonAppearance(apply);
         ApplyMaterialButtonAppearance(apply, primary: true);
         apply.BorderBrush = _darkTheme ? GlassBlueEdgeBrush() : ButtonVioletBorderBrush();
-        apply.Foreground = _darkTheme ? ThemeColor(6,23,38) : TextPrimaryBrush();
+        apply.Foreground = _darkTheme ? ThemeColor(246,250,255) : TextPrimaryBrush();
         apply.MinWidth = 190; apply.MinHeight = 50; apply.FontSize = 17;
         AttachHoverMotion(apply, 1.012f);
         apply.Click += Apply_Click;
@@ -819,11 +965,16 @@ public sealed partial class MainWindow
 
     private void UpdateVisualSelection(string key, string glyph)
     {
-        string topKey = key is "logs" or "restore" ? "settings" : key;
+        string topKey = key switch
+        {
+            "logs" or "restore" => "settings",
+            "cursor" or "powershell" => "themes",
+            _ => key
+        };
         UpdateCategorySelection(topKey);
         if (SubNavShell != null)
             SubNavShell.Visibility = _subOptions.ContainsKey(key) ? Visibility.Visible : Visibility.Collapsed;
-        UpdateRowlessShellGeometry();
+        // ShowSectionCoreAsync applies geometry once after its target hero height is known.
     }
 
 }

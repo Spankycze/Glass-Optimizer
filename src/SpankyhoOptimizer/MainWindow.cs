@@ -28,6 +28,7 @@ public sealed partial class MainWindow : Window
     private readonly ConcurrentDictionary<string, List<TweakDefinition>> _tweakCache = new();
     private readonly ConcurrentDictionary<string, DateTime> _tweakCacheTime = new();
 
+    private static readonly List<TweakDefinition> EmptyComponentTweaks = new(0);
     private List<TweakDefinition> _tweaks = new List<TweakDefinition>();
 
     private string _section = "overview";
@@ -51,11 +52,19 @@ public sealed partial class MainWindow : Window
     private bool _startupTitlebarThemeCompleted;
     private bool _startupTitlebarNativeApplied;
     private IntPtr _windowHandle;
+    // ConfigureWindow resolves AppWindow once. Reuse its native projection
+    // for startup caption/Glass work instead of resolving HWND twice more.
+    private AppWindow? _cachedCaptionAppWindow;
+    private AppWindowTitleBar? _cachedCaptionTitleBar;
+    // Native inactive/active caption colors are independent of window focus.
+    // DWM switches between the two palettes itself; rewriting unchanged
+    // WinRT colors on every activation costs 18–26ms on this machine.
+    private (Windows.UI.Color Foreground, Windows.UI.Color Inactive,
+        Windows.UI.Color Hover, Windows.UI.Color Pressed)? _appliedNativeCaptionColors;
+    private int _nativeCaptionColorApplyCount;
+    private int _nativeCaptionColorSkipCount;
 
-    private readonly Dictionary<string, string[]> _subOptions = new Dictionary<string, string[]>
-    {
-        ["browsers"] = new string[7] { "Firefox", "Chrome", "Edge", "Brave", "Opera", "Opera GX", "Vivaldi" }
-    };
+    private readonly Dictionary<string, string[]> _subOptions = new Dictionary<string, string[]>();
     private readonly Dictionary<string, Button[]> _subSelectorCache = new(StringComparer.OrdinalIgnoreCase);
 
     private Grid RootGrid;
@@ -71,8 +80,26 @@ public sealed partial class MainWindow : Window
     private StackPanel ContentStack;
     private Grid _contentLayerHost;
     private readonly Queue<StackPanel> _detachedNavigationHosts = new();
+    // Reuse one fully cleaned WinUI host instead of allocating a native
+    // panel/composition backing object on each large-page navigation.
+    private StackPanel? _recycledNavigationHost;
+    // Keep the fully rendered System Tweaks tree attached to its own collapsed
+    // host between section visits. Unlike child-by-child reparenting, this
+    // preserves native XAML composition/virtualization state while cached.
+    private StackPanel? _persistentSystemHost;
+    private StackPanel? _persistentPowerHost;
+    private int _powerHostIdleDetachQueued;
+    private static readonly TimeSpan PowerHostIdleDetachDelay = TimeSpan.FromMilliseconds(1400);
+    private int _inPlaceNavigationClears;
+    private int _reusedNavigationHosts;
     private readonly Dictionary<UIElement, StackPanel> _detachedNavigationOwners = new();
-    private bool _detachedNavigationCleanupQueued;
+    // Debounce resumes on a worker thread while cleanup runs on the UI dispatcher.
+    // Atomic reservation ensures neither thread observes a stale queue flag.
+    private int _detachedNavigationCleanupQueued;
+    private bool TryReserveDetachedNavigationCleanup() =>
+        System.Threading.Interlocked.CompareExchange(ref _detachedNavigationCleanupQueued, 1, 0) == 0;
+    private void ReleaseDetachedNavigationCleanup() =>
+        System.Threading.Volatile.Write(ref _detachedNavigationCleanupQueued, 0);
 
     private Border ActionBar;
 
@@ -89,18 +116,32 @@ public sealed partial class MainWindow : Window
 
     private async Task CleanupPendingExostenzaAfterFirstRenderAsync()
     {
-        await Task.Delay(250).ConfigureAwait(false);
-        string? state = await GpuDriverService.ReconcilePendingExostenzaAsync().ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(state))
-            LogService.Info("drivers", "EXOSTENZA_STARTUP_RECONCILE " + state);
+        CancellationToken token = _windowLifetimeCts.Token;
+        try
+        {
+            await Task.Delay(250, token).ConfigureAwait(false);
+            string? state = await GpuDriverService.ReconcilePendingExostenzaAsync(token).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(state))
+                LogService.Info("drivers", "EXOSTENZA_STARTUP_RECONCILE " + state);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Normal window shutdown: never keep driver reconciliation alive past UI lifetime.
+        }
     }
 
     public MainWindow()
     {
         var ctorPhase = Stopwatch.StartNew();
-        Title = "Spankyho Optimizer";
+        Title = "Glass Optimizer";
+        // Do not instantiate UISettings on the constructor hot path. The first Activated event
+        // refreshes the OS animation preference immediately after the window becomes visible.
         long themeStartMs = ctorPhase.ElapsedMilliseconds;
-        _themePreference = AppThemeService.LoadPreference();
+        // Optimizer has ONE user-facing appearance: dark Glass. The legacy
+        // palette system remains internal for contrast and visual regression
+        // tests; old saved user theme choices must not change startup UI.
+        // Read-only: do not rewrite or delete the user's old registry setting.
+        _themePreference = AppThemePreference.Dark;
         long themePreferenceMs = ctorPhase.ElapsedMilliseconds - themeStartMs;
         _darkTheme = AppThemeService.ResolveDark(_themePreference);
         long themeDarkMs = ctorPhase.ElapsedMilliseconds - themeStartMs - themePreferenceMs;
@@ -128,10 +169,37 @@ public sealed partial class MainWindow : Window
         ConfigureWindow();
         long windowMs = ctorPhase.ElapsedMilliseconds;
         StartupDiagnostics.BufferInfo($"MAINWINDOW_CTOR themeMs={themeMs} shellMs={shellMs - themeMs} windowMs={windowMs - shellMs} totalMs={windowMs}");
-Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual")); CleanupWindowResources(); };
+Closed += (_, _) =>
+        {
+            // Window cleanup must run even if persisting the last UI position fails.
+            try { UiStateService.Save(new UiState(_section, _sub, "Manual")); }
+            finally { CleanupWindowResources(); }
+        };
         Activated += (_, e) =>
         {
-            _windowTelemetryActive = e.WindowActivationState != WindowActivationState.Deactivated;
+            if (_windowLifetimeCts.IsCancellationRequested) return;
+            bool nextTelemetryActive = e.WindowActivationState != WindowActivationState.Deactivated;
+            bool activationChanged = _windowTelemetryActive != nextTelemetryActive;
+            if (activationChanged)
+                Interlocked.Increment(ref _liveMetricsActivationEpoch);
+            _windowTelemetryActive = nextTelemetryActive;
+            if (_windowTelemetryActive)
+            {
+                if (_section == "overview") SignalLiveMetricsWake();
+                UiMotionSettingsService.RefreshSystemPreference();
+            }
+
+            // A desktop updater popup is a separate top-level window. The main Optimizer must keep
+            // exactly the same glass/titlebar surfaces when it becomes inactive; otherwise DWM can
+            // briefly restore an opaque inactive caption and WinUI can expose fallback card colors.
+            // Repeated CodeActivated/PointerActivated events with unchanged focus
+            // must not rewrite DWM/titlebar properties or rebuild 21 sidebar visuals.
+            // The initial activation still primes native glass before first paint.
+            if (UseGlassChrome && (activationChanged || !_customTitleBarPrimed))
+            {
+                ApplyWindowTitleBarTheme();
+                QueueGlassActivationRepair();
+            }
         };
         RootGrid.Loaded += (_, _) =>
         {
@@ -151,26 +219,24 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             // AppWindow.TitleBar pass a few hundred milliseconds later.
             // Do not build custom titlebar children inside Window.Activate()/Loaded.
             // Geometry is already reserved, so a next-tick attach cannot move the header.
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, ActivateCustomTitleBarNow);
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            {
-                CompleteDeferredShellBackdrop();
-                CompleteDeferredHero();
-                SafeTaskService.Forget(ScheduleDeferredSidebarAfterFirstRenderAsync(), "performance", "Deferred sidebar");
-            });
+            // A usable drag region outranks sidebar/data warmup. High-priority
+            // registration after Loaded keeps Window.Activate safe while allowing
+            // the first mouse drag before background UI jobs consume the queue.
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.High, ActivateCustomTitleBarNow);
+            DispatcherQueue.TryEnqueue(
+                Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                CompleteDeferredShellBackdrop);
+            SafeTaskService.Forget(
+                ScheduleDeferredSidebarAfterFirstRenderAsync(),
+                "performance",
+                "Deferred sidebar");
             SafeTaskService.ForgetDeferred(ScheduleDeferredWindowSetupAfterFirstRenderAsync(), "performance", "Deferred window setup");
             SafeTaskService.Forget(ShowSectionAsync(_section), "navigation", "Initial section load");
-            // Start latency-critical prewarm only after Loaded/Window.Activate returns. Some async
-            // methods do useful work before their first await, so starting them inline regresses startup.
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            {
-                SafeTaskService.ForgetDeferred(
-                    RunStagedPostRenderPrewarmAsync(),
-                    "performance",
-                    "Staged post-render prewarm");
-            });
+            // Section-specific catalogs and control factories now warm strictly on demand.
+            // Overview startup only keeps its live telemetry and genuinely required background jobs.
             SafeTaskService.ForgetDeferred(StartLiveMetricsAfterFirstRenderAsync(), "performance", "Deferred live metrics");
             SafeTaskService.ForgetDeferred(CheckUpstreamUpdatesOnStartupAsync(), "upstream", "Startup GitHub update check");
+            SafeTaskService.ForgetDeferred(CheckDesktopUpdateNotificationsAsync(), "update", "Desktop glass update notifications");
             SafeTaskService.ForgetDeferred(RunCursorStartupWatchdogAsync(), "cursor", "Cursor startup watchdog");
             if (GpuDriverService.HasPendingExostenzaCleanup)
                 SafeTaskService.ForgetDeferred(CleanupPendingExostenzaAfterFirstRenderAsync(), "drivers", "Deferred Exostenza cleanup");
@@ -185,6 +251,7 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         var phase = Stopwatch.StartNew();
         _windowHandle = WindowNative.GetWindowHandle(this);
         AppWindow fromWindowId = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(_windowHandle));
+        _cachedCaptionAppWindow = fromWindowId;
         long getWindowMs = phase.ElapsedMilliseconds;
         fromWindowId.Resize(new SizeInt32(1320, 860));
         long resizeOnlyMs = phase.ElapsedMilliseconds;
@@ -216,14 +283,14 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         long titleContentMs = phase.ElapsedMilliseconds - resizeMs - titleBrushBuildMs - titleBrushSetMs;
 
         // Keep native caption extension deferred until after Window.Activate. The custom
-        // 36px titlebar geometry is already reserved so the shell itself does not relayout.
+        // glass titlebar geometry is already reserved so the shell itself does not relayout.
 
-        // Keep the 36px titlebar geometry visible from the first frame.
+        // Keep the final glass titlebar geometry visible from the first frame.
         // SetTitleBar/caption colors can wait for activation; visible title children cannot.
         AppTitleBar.Visibility = Visibility.Visible;
         HeaderCard.Margin = new Thickness(0);
 
-        // First-frame invariant: visible custom titlebar content and its 36px geometry are
+        // First-frame invariant: visible custom titlebar content and final glass geometry are
         // already present. The expensive native drag/caption attachment is intentionally queued
         // from RootGrid.Loaded, after Window.Activate returns, so WinUI cold initialization does
         // not block first activation and the header geometry still cannot jump.
@@ -236,8 +303,16 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
 
     private async Task ScheduleDeferredWindowSetupAfterFirstRenderAsync()
     {
-        await Task.Delay(650).ConfigureAwait(false);
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, CompleteDeferredWindowSetup);
+        // First paint is already complete when this is scheduled. Yield once and let the
+        // dispatcher run icon/min-size setup at low priority instead of adding a visible 650 ms lag.
+        await Task.Yield();
+        if (_windowLifetimeCts.IsCancellationRequested) return;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (_windowLifetimeCts.IsCancellationRequested) return;
+            CompleteDeferredWindowSetup();
+            QueueGpuIntroPrewarm();
+        });
     }
 
     private void CompleteDeferredWindowSetup()
@@ -282,17 +357,6 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         LogService.Info("WINDOW_SETUP_DEFERRED_SMOKE_OK");
     }
 
-    private async Task ScheduleStartupTitleBarThemeAsync()
-    {
-        await Task.Delay(300).ConfigureAwait(false);
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-        {
-            ApplyWindowTitleBarTheme();
-            Volatile.Write(ref _startupTitlebarThemeCompleted, true);
-            LogService.Info("performance", "TITLEBAR_CUSTOM_THEME_STAGE transparentCaption=true");
-        });
-    }
-
     internal async Task RunDeferredTitlebarSmokeAsync()
     {
         // PERF/UI REGRESSION GUARD: brand/title content must exist before deferred caption work.
@@ -309,6 +373,11 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             throw new InvalidOperationException("Custom titlebar was not primed after activation.");
         if (AppTitleBar.Visibility != Visibility.Visible || AppTitleBar.Children.Count == 0)
             throw new InvalidOperationException("Custom titlebar content is missing.");
+        if (_darkTheme &&
+            (Math.Abs(AppTitleBar.Height - ShellTitleBarHeight) > 0.1 ||
+             Math.Abs(AppTitleBar.Padding.Left - 20d) > 0.1))
+            throw new InvalidOperationException(
+                $"Glass titlebar first-frame geometry mismatch: height={AppTitleBar.Height:0.##}/{ShellTitleBarHeight:0.##}, leftPadding={AppTitleBar.Padding.Left:0.##}/20.");
 
         double headerHeight = HeaderCard.Height;
         double pageTop = _pageScroll?.Margin.Top ?? -1;
@@ -331,7 +400,10 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             Math.Abs(_heroImageFrame.Margin.Top) > 0.1 ||
             Math.Abs(_heroImageFrame.Height - HeaderCard.Height) > 0.5)
             throw new InvalidOperationException(
-                $"Hero/titlebar seam invariant broken: heroTop={_heroImageFrame?.Margin.Top ?? -1:0.##} heroH={_heroImageFrame?.Height ?? -1:0.##} headerH={HeaderCard.Height:0.##}.");
+                $"Hero/titlebar seam invariant broken: heroTop={_heroImageFrame?.Margin.Top ?? -1:0.##} heroH={_heroImageFrame?.Height:0.##}/{HeaderCard.Height:0.##}.");
+        // Native hit-testing must cover the hero without stealing sidebar
+        // navigation or Windows caption buttons after titlebar registration.
+        VerifyHeroDragRegions();
 
         LogService.Info("TITLEBAR_STABLE_SMOKE_OK customTransparent=true syncActivation=true stableGeometry=true heroUnderTitlebar=true");
     }
@@ -343,32 +415,58 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         try
         {
             IntPtr hwnd = WindowNative.GetWindowHandle(this);
-            AppWindow appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(hwnd));
-            var tb = appWindow.TitleBar;
+            AppWindow appWindow = _cachedCaptionAppWindow ??
+                AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(hwnd));
+            _cachedCaptionAppWindow = appWindow;
+            var tb = _cachedCaptionTitleBar ?? appWindow.TitleBar;
+            _cachedCaptionTitleBar = tb;
             var transparent = ColorHelper.FromArgb(0, 0, 0, 0);
             var titleFg = ColorHelper.FromArgb(255, _themePalette.TextPrimary.R, _themePalette.TextPrimary.G, _themePalette.TextPrimary.B);
             var inactiveFg = ColorHelper.FromArgb(255, _themePalette.TextSecondary.R, _themePalette.TextSecondary.G, _themePalette.TextSecondary.B);
             var hoverBg = ColorHelper.FromArgb(48, _themePalette.SurfaceElevated.R, _themePalette.SurfaceElevated.G, _themePalette.SurfaceElevated.B);
             var pressedBg = ColorHelper.FromArgb(76, _themePalette.Border.R, _themePalette.Border.G, _themePalette.Border.B);
 
-            tb.ExtendsContentIntoTitleBar = true;
-            tb.BackgroundColor = transparent;
-            tb.ForegroundColor = titleFg;
-            tb.ButtonBackgroundColor = transparent;
-            tb.ButtonInactiveBackgroundColor = transparent;
-            tb.ButtonForegroundColor = titleFg;
-            tb.ButtonInactiveForegroundColor = inactiveFg;
-            tb.ButtonHoverBackgroundColor = hoverBg;
-            tb.ButtonHoverForegroundColor = titleFg;
-            tb.ButtonPressedBackgroundColor = pressedBg;
-            tb.ButtonPressedForegroundColor = titleFg;
-            tb.InactiveBackgroundColor = transparent;
-            tb.InactiveForegroundColor = inactiveFg;
+            bool extensionChanged = !tb.ExtendsContentIntoTitleBar;
+            if (extensionChanged)
+                tb.ExtendsContentIntoTitleBar = true;
 
+            var signature = (Foreground: titleFg, Inactive: inactiveFg,
+                Hover: hoverBg, Pressed: pressedBg);
+            bool colorsChanged = extensionChanged ||
+                _appliedNativeCaptionColors is not { } previous ||
+                !previous.Equals(signature);
+            if (colorsChanged)
+            {
+                // DWM handles active/inactive titlebar transitions using the
+                // values already set below; activation must not resend the same
+                // 12 expensive native WinRT writes for an unchanged palette.
+                tb.BackgroundColor = transparent;
+                tb.ForegroundColor = titleFg;
+                tb.ButtonBackgroundColor = transparent;
+                tb.ButtonInactiveBackgroundColor = transparent;
+                tb.ButtonForegroundColor = titleFg;
+                tb.ButtonInactiveForegroundColor = inactiveFg;
+                tb.ButtonHoverBackgroundColor = hoverBg;
+                tb.ButtonHoverForegroundColor = titleFg;
+                tb.ButtonPressedBackgroundColor = pressedBg;
+                tb.ButtonPressedForegroundColor = titleFg;
+                tb.InactiveBackgroundColor = transparent;
+                tb.InactiveForegroundColor = inactiveFg;
+                _appliedNativeCaptionColors = signature;
+                _nativeCaptionColorApplyCount++;
+            }
+            else
+            {
+                _nativeCaptionColorSkipCount++;
+            }
+
+            // Keep native glass/rounded-corner policy repair on a real
+            // activation, even when colors are already correct.
             ApplyNativeGlassWindowShape();
             _startupTitlebarNativeApplied = false;
             _startupTitlebarThemeCompleted = true;
-            LogService.Info("performance", $"TITLEBAR_CUSTOM_THEME_APPLY transparent=true totalMs={sw.ElapsedMilliseconds}");
+            LogService.Info("performance",
+                $"TITLEBAR_CUSTOM_THEME_APPLY colorsChanged={colorsChanged} extended={extensionChanged} totalMs={sw.ElapsedMilliseconds}");
         }
         catch (Exception ex)
         {
@@ -386,12 +484,14 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
 
     private Task NavigateSubSectionFromUiAsync(string section, string sub)
     {
-        if (string.Equals(_section, section, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(_sub, sub, StringComparison.Ordinal))
+        bool sameSection = string.Equals(_section, section, StringComparison.OrdinalIgnoreCase);
+        if (sameSection && string.Equals(_sub, sub, StringComparison.Ordinal))
             return Task.CompletedTask;
 
         _sub = sub;
-        return ShowSectionAsync(section);
+        // A changed sub-tab within the same section must not be mistaken for
+        // a redundant sidebar click. Keep the fast skip for unchanged tabs.
+        return ShowSectionAsync(section, forceNavigation: sameSection);
     }
 
     private static async Task DisposeNavigationCancellationAsync(
@@ -413,17 +513,32 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
 
     public Task NavigateExternalAsync(string key) => ShowSectionAsync(key);
 
-    private async Task ShowSectionAsync(string key)
+    private async Task ShowSectionAsync(string key, bool forceNavigation = false)
     {
-        if (string.Equals(key, "components", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(key, "services", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(key, "drivers", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(key, "tasks", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(key, "services", StringComparison.OrdinalIgnoreCase))
         {
-            key = "ai-runtime";
+            key = "components";
+            _sub = "Služby";
+        }
+        else if (string.Equals(key, "drivers", StringComparison.OrdinalIgnoreCase))
+        {
+            key = "components";
+            _sub = "Ovladače";
+        }
+        else if (string.Equals(key, "tasks", StringComparison.OrdinalIgnoreCase))
+        {
+            key = "components";
+            _sub = "Task Scheduler";
         }
 
-        if (TrySkipRedundantSameSectionNavigation(key))
+        if (string.Equals(key, "lianli", StringComparison.OrdinalIgnoreCase))
+        {
+            var supported = await Task.Run(LianLiSlInfinityService.Detect).ConfigureAwait(true);
+            if (!supported.Present)
+                return;
+        }
+
+        if (!forceNavigation && TrySkipRedundantSameSectionNavigation(key))
         {
             _lastNavigationErrorId = null;
             _lastNavigationUtc = DateTime.UtcNow;
@@ -434,6 +549,12 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         int generation = Interlocked.Increment(ref _navigationGeneration);
         var sw = Stopwatch.StartNew();
 
+        // The persistent content host may be swapped while attaching a cached
+        // section. Remember whether this exact loaded host was already reset
+        // here so its native animations are not stopped twice at navigation end.
+        FrameworkElement originalNavigationHost = ContentStack;
+        bool originalNavigationHostReset = originalNavigationHost.IsLoaded;
+        AnimateSectionOut(ContentStack);
         CancelActiveProgressOperationForNavigation();
 
         // One CTS owns both superseded-navigation cancellation and the 20s timeout.
@@ -476,22 +597,48 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
                 _initialSectionNavigationCompleted = true;
                 _lastNavigationErrorId = null;
                 _lastNavigationUtc = DateTime.UtcNow;
-                EnsureVisibleSectionLayout(key);
+                long layoutStartMs = sw.ElapsedMilliseconds;
+                EnsureVisibleSectionLayout(key,
+                    originalNavigationHostReset && ReferenceEquals(originalNavigationHost, ContentStack));
+                // Recover a missed first-paint GPU intro prewarm after returning to Overview.
+                // Deferred window setup owns the initial attempt; never block first activation.
+                if (key == "overview" && _deferredWindowSetupCompleted && _gpuStaticHero == null)
+                    QueueGpuIntroPrewarm();
+                long layoutMs = sw.ElapsedMilliseconds - layoutStartMs;
 
-                // Visual polish is intentionally deferred one low-priority dispatcher turn.
-                // Composition animation + the first scroll-policy timer must not extend the
-                // latency-critical navigation await or cold-render benchmark.
-                int visualGeneration = generation;
-                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-                {
-                    if (visualGeneration != _navigationGeneration) return;
-                    AnimateSectionIn(ContentStack);
-                    SchedulePageScrollPolicyRefresh();
-                });
+                // EnsureVisibleSectionLayout already restores the persistent ContentStack
+                // composition state. A second queued visual reset is duplicate native work;
+                // schedule only the coalesced scroll-policy pass after navigation completes.
+                SchedulePageScrollPolicyRefresh();
 
                 long totalMs = sw.ElapsedMilliseconds;
-                if (totalMs >= 20)
-                    LogService.Info("navigation", $"{key} ready ms={totalMs} buildMs={buildMs} visualTail=deferred");
+                // Diagnose the occasional 25ms strict System foreground gate
+                // without sampling process counters or changing the hot path.
+                // The known 29ms outlier had wrapper setup=13 and core=16ms,
+                // coincident with unrelated Driver factory prewarm.
+                if (key == "system" && totalMs >= 25)
+                    LogService.Info("performance",
+                        $"SYSTEM_NAV_SLOW totalMs={totalMs} setupMs={navSetupMs} cancelMs={cancelMs} coreMs={buildMs - navSetupMs} postCoreMs={layoutStartMs - buildMs} layoutMs={layoutMs}");
+                if (key == "gpu" && totalMs >= 35)
+                    LogService.Info("performance", $"GPU_NAV_WRAPPER_DIAG totalMs={totalMs} setupMs={navSetupMs} coreMs={buildMs - navSetupMs} postCoreMs={layoutStartMs - buildMs} layoutMs={layoutMs} tailMs={totalMs - layoutStartMs - layoutMs}");
+                if (totalMs >= 20 && LogService.PerformanceDiagnosticsEnabled)
+                {
+                    // Reading working set, handles and GC statistics here used
+                    // to inflate the actual foreground navigation time (including
+                    // cold System render). Keep exact navigation timing and sample
+                    // process counters on the LOW priority dispatcher after the
+                    // first frame, never synchronously in the navigation path.
+                    long measuredMs = totalMs;
+                    long measuredCoreMs = buildMs - navSetupMs;
+                    long measuredCancelMs = cancelMs;
+                    long measuredLayoutMs = layoutMs;
+                    DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+                    {
+                        if (generation != _navigationGeneration) return;
+                        var memory = PerformanceTelemetryService.GetSnapshot();
+                        LogService.Info("navigation", $"{key} ready ms={measuredMs} coreMs={measuredCoreMs} cancelMs={measuredCancelMs} layoutMs={measuredLayoutMs} wsMB={memory.WorkingSetMb} privateMB={memory.PrivateMb} managedMB={memory.ManagedMb} handles={memory.Handles} gc0={memory.Gen0} scrollPolicy=coalesced telemetry=deferred");
+                    });
+                }
             }
         }
         catch (OperationCanceledException) when (generation != _navigationGeneration)
@@ -511,14 +658,14 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         }
         catch (Exception ex)
         {
-            await navigationCts.CancelAsync();
-
             if (generation != _navigationGeneration)
             {
                 LogService.Info("navigation",
                     $"{key} stale failure ignored gen={generation} currentGen={_navigationGeneration} type={ex.GetType().Name}");
                 return;
             }
+
+            await navigationCts.CancelAsync();
 
             CrashFingerprintService.Record(ex, "navigation", key);
             string id = ErrorService.NewCorrelationId();
@@ -532,10 +679,21 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
     }
 
 
-    private void EnsureVisibleSectionLayout(string section)
+    private void EnsureVisibleSectionLayout(string section, bool contentHostAlreadyReset = false)
     {
         if (_pageScroll == null || _contentLayerHost == null || RootGrid == null) return;
 
+        // Persistent UI must never retain handoff-compositor opacity/scale state.
+        // The start of this navigation already reset its original host. Only
+        // skip a second reset if the same loaded host is still attached here.
+        // Independent layout-repair callers use the default full reset.
+        if (!contentHostAlreadyReset && ContentStack?.IsLoaded == true)
+            ResetMotionVisual(ContentStack);
+        if (_mainTabsShell?.IsLoaded == true) ResetMotionVisual(_mainTabsShell);
+        if (HeaderCard?.IsLoaded == true) ResetMotionVisual(HeaderCard);
+        // Selected/previous menu buttons have already been reset by UpdateCategorySelection.
+        // All remaining persistent sidebar buttons never animate. Avoid 21 unnecessary
+        // compositor StopAnimation/Scale/Opacity calls for each navigation.
         bool needsGeometryRepair =
             double.IsNaN(_pageScroll.Height) || _pageScroll.Height <= 1 ||
             _pageScroll.Visibility != Visibility.Visible ||
@@ -576,8 +734,15 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
                 _contentLayerHost.ActualWidth >= 100 && _contentLayerHost.ActualHeight >= 100;
             bool contentReady =
                 ContentStack.IsLoaded && ContentStack.ActualWidth >= 100 && ContentStack.ActualHeight >= 1;
+            bool sidebarReady =
+                _mainTabsShell != null &&
+                _mainTabsShell.Visibility == Visibility.Visible &&
+                _mainTabsShell.Opacity >= 0.99 &&
+                _mainTabsShell.ActualWidth >= 100 &&
+                CategoryBar.Children.Count == MainSectionItems.Length &&
+                _categoryButtons.Count == MainSectionItems.Length;
 
-            if (pageReady && layerReady && contentReady)
+            if (pageReady && layerReady && contentReady && sidebarReady)
                 return;
         }
 
@@ -588,42 +753,80 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             $"content={ContentStack.ActualWidth:0.#}x{ContentStack.ActualHeight:0.#}/loaded={ContentStack.IsLoaded}.");
     }
 
-    private int _pageScrollPolicyQueued;
-    private int _pageScrollPolicyDirty;
     private DispatcherTimer? _pageScrollSettleTimer;
+    private EventHandler<object>? _pageScrollSettleTimerTickHandler;
+    private long _lastPageScrollResizeTicks;
+    private const int PageScrollResizeQuietMilliseconds = 110;
 
-    private void SchedulePageScrollPolicyRefresh()
+    private void SchedulePageScrollPolicyRefresh(bool fromResize = false)
     {
-        if (_pageScroll == null || PageHost == null) return;
+        if (_pageScroll == null || PageHost == null ||
+            _windowLifetimeCts.IsCancellationRequested) return;
 
-        Interlocked.Exchange(ref _pageScrollPolicyDirty, 1);
-        if (Interlocked.Exchange(ref _pageScrollPolicyQueued, 1) == 0)
-        {
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            {
-                Interlocked.Exchange(ref _pageScrollPolicyDirty, 0);
-                ApplyPageScrollPolicyNow();
-
-                Interlocked.Exchange(ref _pageScrollPolicyQueued, 0);
-                if (Volatile.Read(ref _pageScrollPolicyDirty) != 0)
-                    SchedulePageScrollPolicyRefresh();
-            });
-        }
+        // Both resize and page hydration can request a potentially expensive
+        // three-pass Overview layout. During a real window drag, an explicit
+        // navigation/hydration request must NOT bypass the resize quiet period
+        // or block pointer input by synchronously invoking UpdateLayout.
+        // Without a preceding resize, normal navigation runs on the next tick.
+        if (fromResize)
+            _lastPageScrollResizeTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 
         _pageScrollSettleTimer ??= CreatePageScrollSettleTimer();
-        _pageScrollSettleTimer.Stop();
-        _pageScrollSettleTimer.Start();
+        if (!_pageScrollSettleTimer.IsEnabled)
+            _pageScrollSettleTimer.Start();
     }
+
+    internal static bool PageScrollResizeRefreshDue(TimeSpan sinceLastResize) =>
+        sinceLastResize.TotalMilliseconds >= PageScrollResizeQuietMilliseconds;
 
     private DispatcherTimer CreatePageScrollSettleTimer()
     {
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(60) };
-        timer.Tick += (_, _) =>
+        _pageScrollSettleTimerTickHandler = (_, _) =>
         {
+            if (_windowLifetimeCts.IsCancellationRequested)
+            {
+                timer.Stop();
+                return;
+            }
+            TimeSpan sinceResize = _lastPageScrollResizeTicks == 0
+                ? TimeSpan.MaxValue
+                : System.Diagnostics.Stopwatch.GetElapsedTime(_lastPageScrollResizeTicks);
+            if (!PageScrollResizeRefreshDue(sinceResize))
+                return;
             timer.Stop();
+            _lastPageScrollResizeTicks = 0;
             ApplyPageScrollPolicyNow();
         };
+        timer.Tick += _pageScrollSettleTimerTickHandler;
         return timer;
+    }
+
+    private double MeasurePageContentExtentHeight()
+    {
+        if (ContentStack == null || PageHost == null) return 0;
+
+        static double VisibleExtent(Panel panel)
+        {
+            double total = 0;
+            foreach (UIElement child in panel.Children)
+            {
+                if (child is not FrameworkElement fe || fe.Visibility == Visibility.Collapsed)
+                    continue;
+
+                // ActualHeight is stable after layout; DesiredSize is the safer fallback during
+                // deferred page hydration. Never use the parent StackPanel's stale stretched slot.
+                double h = fe.ActualHeight > 0 ? fe.ActualHeight : fe.DesiredSize.Height;
+                total += Math.Max(0, h);
+                if (fe.Margin.Top > 0) total += fe.Margin.Top;
+                if (fe.Margin.Bottom > 0) total += fe.Margin.Bottom;
+            }
+            return total;
+        }
+
+        double content = VisibleExtent(ContentStack);
+        double actions = TopActions is { Visibility: not Visibility.Collapsed } ? VisibleExtent(TopActions) : 0;
+        return PageHost.Padding.Top + PageHost.Padding.Bottom + content + actions;
     }
 
     private void ApplyPageScrollPolicyNow()
@@ -631,8 +834,32 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         if (_pageScroll == null || PageHost == null) return;
 
         double viewport = _pageScroll.ViewportHeight;
-        double contentHeight = PageHost.ActualHeight;
+        double contentHeight = MeasurePageContentExtentHeight();
         if (viewport <= 0 || contentHeight <= 0) return;
+
+        // Overview must use the entire available page, not stop at the
+        // former 752px layout. Fit only after all nine cards are hydrated.
+        // No extra timer: reuse the existing coalesced scroll-policy pass.
+        // WinUI may consume part of a size change inside minimum-height
+        // cards on the first measure. Three bounded layout passes converge
+        // without a per-frame timer or continuously polling the UI tree.
+        int fitPasses = 0;
+        long slowestLayoutMs = 0;
+        var fitTiming = System.Diagnostics.Stopwatch.StartNew();
+        for (int pass = 0; pass < 3 &&
+             FitReferenceOverviewToViewport(viewport, contentHeight); pass++)
+        {
+            long beforeLayout = fitTiming.ElapsedMilliseconds;
+            PageHost.UpdateLayout();
+            slowestLayoutMs = Math.Max(slowestLayoutMs, fitTiming.ElapsedMilliseconds - beforeLayout);
+            contentHeight = MeasurePageContentExtentHeight();
+            fitPasses++;
+        }
+        long fitTotalMs = fitTiming.ElapsedMilliseconds;
+        if (fitTotalMs >= 8 || slowestLayoutMs >= 8)
+            LogService.Info("performance",
+                $"PAGE_SCROLL_FIT section={_section} passes={fitPasses} totalMs={fitTotalMs} " +
+                $"maxLayoutMs={slowestLayoutMs} viewport={viewport:0.#} content={contentHeight:0.#}");
 
         bool overflow = contentHeight > viewport + 1.0;
         ScrollMode target = overflow ? ScrollMode.Enabled : ScrollMode.Disabled;
@@ -652,6 +879,21 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         if (key == "overview")
             return _cpuGauge != null && _ramGauge != null && _gpuGauge != null && _diskGauge != null;
 
+        // Runtime's interactive controls are intentionally NOT retained when
+        // navigating away. While this exact page is already attached, however,
+        // a repeat sidebar click should not discard it and re-read all status
+        // files or recreate every WinUI toggle. Explicit Refresh forces rebuild.
+        if (key == "ai-runtime" && _lastNavigationErrorId == null)
+            return ContentStack.Children.OfType<StackPanel>().Any(host =>
+                string.Equals(host.Tag as string, "AiRuntimeBodyHost", StringComparison.Ordinal));
+
+        // A repeated Themes click with its current page already attached has no
+        // useful work to perform. The 8s absolute cache expiry still handles
+        // external wallpaper changes and forces a fresh page when required.
+        if (key == "themes" && _themesPageCache is { Count: > 0 } &&
+            ThemesCacheLifetimePolicy.IsFresh(_themesPageCacheAtUtc, DateTime.UtcNow, ThemesPageCacheTtl))
+            return true;
+
         if (key == "network" && _networkPageCache != null)
         {
             DateTime now = DateTime.UtcNow;
@@ -667,24 +909,12 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             DateTime.UtcNow - _powerPageCacheAt <= TimeSpan.FromSeconds(12))
             return true;
 
-        // System and browser pages already own live, refreshable page caches. Re-entering
-        // the exact same section/subsection must be a true no-op; rebuilding/reattaching
+        // System pages already own live, refreshable page caches. Re-entering
+        // the exact same section must be a true no-op; rebuilding/reattaching
         // the same WinUI tree repeatedly grows native wrapper high-water memory.
         if (key == "system" && _systemPageCache is { Count: > 0 } &&
             _systemVirtualRowsCache != null && _systemVirtualMapCache != null)
             return true;
-
-        if (key == "browsers")
-        {
-            string browserSub = _sub ?? "Firefox";
-            if (_browserPageCachesStore != null &&
-                _browserPageCachesStore.ContainsKey(browserSub) &&
-                _browserVirtualRowsCacheStore != null &&
-                _browserVirtualRowsCacheStore.ContainsKey(browserSub) &&
-                _browserVirtualMapCacheStore != null &&
-                _browserVirtualMapCacheStore.ContainsKey(browserSub))
-                return true;
-        }
 
         if (key == "ui" &&
             _uiPageCache is { Count: > 0 } &&
@@ -702,7 +932,7 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             throw new OperationCanceledException(token);
     }
 
-    private void AttachCachedElement(UIElement element)
+    private void AttachCachedElement(UIElement element, bool deferHostInvalidation = false)
     {
         DependencyObject? currentParent = VisualTreeHelper.GetParent(element);
         if (ReferenceEquals(currentParent, ContentStack))
@@ -710,7 +940,9 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
 
         if (currentParent is Panel parent)
         {
+            // A direct parent already owns the child; avoid scanning detached hosts.
             parent.Children.Remove(element);
+            _detachedNavigationOwners.Remove(element);
         }
         else
         {
@@ -735,6 +967,19 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         }
 
         ContentStack.Children.Add(element);
+
+        // Cached WinUI elements can retain their previous measure slot after they are detached
+        // from a taller page. Force a fresh measure so a short page (notably Overview) cannot
+        // inherit the previous section's height and falsely enable scrolling.
+        element.InvalidateMeasure();
+        element.InvalidateArrange();
+        if (!deferHostInvalidation)
+        {
+            ContentStack.InvalidateMeasure();
+            ContentStack.InvalidateArrange();
+            _contentLayerHost?.InvalidateMeasure();
+            PageHost?.InvalidateMeasure();
+        }
     }
 
     private void QueueDetachedNavigationHostCleanup(StackPanel host)
@@ -742,31 +987,93 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         if (host.Children.Count == 0)
             return;
 
-        foreach (UIElement child in host.Children)
-            _detachedNavigationOwners[child] = host;
-
+        // Hide old, non-interactive content immediately so a hidden heavy page
+        // cannot participate in layout/composition while low-priority cleanup
+        // incrementally removes its children. Cached roots still reparent safely.
+        if (host.Visibility != Visibility.Collapsed)
+            host.Visibility = Visibility.Collapsed;
+        host.IsHitTestVisible = false;
+        // Keep detach O(1): cached elements can reattach through the existing queue fallback.
+        // Eagerly indexing every child here made large Startup pages charge their teardown cost
+        // to the next section's foreground navigation.
         _detachedNavigationHosts.Enqueue(host);
-        ScheduleDetachedNavigationHostCleanup();
+        ScheduleDetachedNavigationHostCleanup(delayFirstFrame: true);
     }
 
-    private void ScheduleDetachedNavigationHostCleanup()
-    {
-        if (_detachedNavigationCleanupQueued || _detachedNavigationHosts.Count == 0)
-            return;
+    // Do not let a continuous stream of navigation events starve native
+    // WinUI wrapper cleanup indefinitely. Always keep teardown on the
+    // low-priority dispatcher; only bound the initial debounce.
+    internal static bool ShouldBeginDetachedHostCleanup(TimeSpan idle, TimeSpan queuedFor, int pendingHosts)
+        => idle >= TimeSpan.FromMilliseconds(140)
+            || queuedFor >= TimeSpan.FromMilliseconds(420)
+            || (pendingHosts >= 4 && queuedFor >= TimeSpan.FromMilliseconds(120));
 
-        _detachedNavigationCleanupQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+    private async Task DelayDetachedNavigationHostCleanupAsync(int pendingHostsAtSchedule)
+    {
+        try
         {
-            _detachedNavigationCleanupQueued = false;
+            var queuedAt = System.Diagnostics.Stopwatch.StartNew();
+            while (!_windowLifetimeCts.IsCancellationRequested)
+            {
+                TimeSpan idleFor = DateTime.UtcNow - _lastNavigationUtc;
+                if (ShouldBeginDetachedHostCleanup(idleFor, queuedAt.Elapsed, pendingHostsAtSchedule))
+                    break;
+
+                TimeSpan remainingQuiet = TimeSpan.FromMilliseconds(140) - idleFor;
+                TimeSpan remainingDeadline = TimeSpan.FromMilliseconds(420) - queuedAt.Elapsed;
+                TimeSpan wait = remainingQuiet < remainingDeadline ? remainingQuiet : remainingDeadline;
+                if (wait < TimeSpan.FromMilliseconds(20))
+                    wait = TimeSpan.FromMilliseconds(20);
+                await Task.Delay(wait, _windowLifetimeCts.Token).ConfigureAwait(false);
+            }
+            if (_windowLifetimeCts.IsCancellationRequested) return;
+
+            if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                ReleaseDetachedNavigationCleanup();
+                // A queued WinUI callback may run after Window.Closed has invalidated native XAML peers.
+                if (_windowLifetimeCts.IsCancellationRequested)
+                    return;
+                ScheduleDetachedNavigationHostCleanup();
+            }))
+                ReleaseDetachedNavigationCleanup();
+        }
+        catch (OperationCanceledException)
+        {
+            ReleaseDetachedNavigationCleanup();
+        }
+    }
+
+    private void ScheduleDetachedNavigationHostCleanup(bool delayFirstFrame = false)
+    {
+        if (_windowLifetimeCts.IsCancellationRequested)
+            return;
+        if (_detachedNavigationHosts.Count == 0 || !TryReserveDetachedNavigationCleanup())
+            return;
+        if (delayFirstFrame)
+        {
+            SafeTaskService.Forget(DelayDetachedNavigationHostCleanupAsync(_detachedNavigationHosts.Count), "navigation", "Deferred detached host cleanup");
+            return;
+        }
+
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            ReleaseDetachedNavigationCleanup();
+            // Never dereference native Children after CleanupWindowResources cancels the window lifetime.
+            if (_windowLifetimeCts.IsCancellationRequested)
+                return;
             if (_detachedNavigationHosts.Count == 0)
                 return;
 
             var host = _detachedNavigationHosts.Peek();
-            if (host.Children.Count > 0)
+            int removeCount = DetachedNavigationCleanupPolicy.RemoveCount(
+                host.Children.Count, _detachedNavigationHosts.Count);
+            for (int i = 0; i < removeCount; i++)
             {
-                var child = host.Children[host.Children.Count - 1];
+                int index = host.Children.Count - 1;
+                var child = host.Children[index];
                 _detachedNavigationOwners.Remove(child);
-                host.Children.RemoveAt(host.Children.Count - 1);
+                host.Children.RemoveAt(index);
             }
 
             if (host.Children.Count == 0)
@@ -774,24 +1081,154 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
                 _detachedNavigationHosts.Dequeue();
                 if (_contentLayerHost.Children.Contains(host))
                     _contentLayerHost.Children.Remove(host);
+                if (_recycledNavigationHost == null && !ReferenceEquals(host, ContentStack))
+                    _recycledNavigationHost = host;
             }
 
             ScheduleDetachedNavigationHostCleanup();
-        });
+        }))
+            ReleaseDetachedNavigationCleanup();
     }
 
-    private void ClearNavigationHostsFast()
+    private void SchedulePinnedPowerHostIdleDetach()
     {
-        if (ContentStack.Children.Count > 0)
-        {
-            var oldContent = ContentStack;
-            oldContent.IsHitTestVisible = false;
-            oldContent.Opacity = 0;
+        if (System.Threading.Interlocked.CompareExchange(ref _powerHostIdleDetachQueued, 1, 0) != 0)
+            return;
+        SafeTaskService.Forget(DetachPinnedPowerHostAfterQuietAsync(), "navigation", "Power host idle detach");
+    }
 
-            var replacement = new StackPanel { Spacing = 0 };
-            _contentLayerHost.Children.Add(replacement);
-            ContentStack = replacement;
-            QueueDetachedNavigationHostCleanup(oldContent);
+    private async Task DetachPinnedPowerHostAfterQuietAsync()
+    {
+        try
+        {
+            await Task.Delay(PowerHostIdleDetachDelay, _windowLifetimeCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            System.Threading.Interlocked.Exchange(ref _powerHostIdleDetachQueued, 0);
+            return;
+        }
+
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            System.Threading.Interlocked.Exchange(ref _powerHostIdleDetachQueued, 0);
+            if (_windowLifetimeCts.IsCancellationRequested) return;
+            var pinned = _persistentPowerHost;
+            if (pinned == null || ReferenceEquals(pinned, ContentStack) ||
+                pinned.Visibility != Visibility.Collapsed) return;
+            if (DateTime.UtcNow - _lastNavigationUtc < PowerHostIdleDetachDelay)
+            {
+                SchedulePinnedPowerHostIdleDetach();
+                return;
+            }
+            if (_contentLayerHost.Children.Contains(pinned))
+                _contentLayerHost.Children.Remove(pinned);
+        }))
+            System.Threading.Interlocked.Exchange(ref _powerHostIdleDetachQueued, 0);
+    }
+
+    // A recycled host that is still attached or re-adopted as a pinned/current host
+    // would make Children.Add throw COMException 0x800F1000 (element already has a parent).
+    private StackPanel TakeRecycledNavigationHost(out bool recycled)
+    {
+        var host = _recycledNavigationHost;
+        _recycledNavigationHost = null;
+        recycled = host != null &&
+            host.Parent == null &&
+            host.Children.Count == 0 &&
+            !ReferenceEquals(host, ContentStack) &&
+            !ReferenceEquals(host, _persistentPowerHost) &&
+            !ReferenceEquals(host, _persistentSystemHost);
+        return recycled ? host! : new StackPanel { Spacing = 0 };
+    }
+
+    // Reusing a host formerly collapsed for native cleanup must explicitly
+    // restore Visibility. Opacity=1 alone does not make WinUI layout it.
+    internal static void ActivateRecycledNavigationHost(StackPanel host)
+    {
+        if (host.Children.Count != 0)
+            throw new InvalidOperationException("Recycled navigation host was not empty.");
+        host.Visibility = Visibility.Visible;
+        host.IsHitTestVisible = true;
+        host.Opacity = 1;
+    }
+
+    private void ClearNavigationHostsFast(string previousSection, string nextSection)
+    {
+        // Power's cache TTL is shorter than the periodic global trim. Drop an
+        // expired pinned native tree before any new Power host can replace it.
+        if (_persistentPowerHost != null && !IsPowerPageCacheFresh())
+            InvalidatePowerPageCache();
+
+        if (string.Equals(previousSection, "system", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(nextSection, "system", StringComparison.OrdinalIgnoreCase) &&
+            _systemPageCache is { Count: 1 } && _systemVirtualRowsCache != null &&
+            ReferenceEquals(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(_systemPageCache[0]), ContentStack) &&
+            ContentStack.Children.Count == 1)
+        {
+            // Keep the existing cached WinUI tree in the visual layer, but
+            // collapsed and not hit-testable. No element detachment takes place.
+            var systemHost = ContentStack;
+            systemHost.IsHitTestVisible = false;
+            systemHost.Visibility = Visibility.Collapsed;
+            _persistentSystemHost = systemHost;
+            ContentStack = TakeRecycledNavigationHost(out bool recycled);
+            if (ContentStack.Children.Count != 0)
+                throw new InvalidOperationException("Recycled navigation host was not empty.");
+            ContentStack.Visibility = Visibility.Visible;
+            ContentStack.IsHitTestVisible = true;
+            _contentLayerHost.Children.Add(ContentStack);
+            if (recycled) _reusedNavigationHosts++;
+        }
+        else if (string.Equals(previousSection, "power", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(nextSection, "power", StringComparison.OrdinalIgnoreCase) &&
+            CanParkPowerPageCache())
+        {
+            var powerHost = ContentStack;
+            powerHost.IsHitTestVisible = false;
+            powerHost.Visibility = Visibility.Collapsed;
+            _persistentPowerHost = powerHost;
+            // Keep the loaded tree during rapid navigation; only detach the
+            // complete host when the user has been idle long enough.
+            SchedulePinnedPowerHostIdleDetach();
+            ContentStack = TakeRecycledNavigationHost(out bool recycled);
+            if (ContentStack.Children.Count != 0)
+                throw new InvalidOperationException("Recycled navigation host was not empty.");
+            ContentStack.Visibility = Visibility.Visible;
+            ContentStack.IsHitTestVisible = true;
+            _contentLayerHost.Children.Add(ContentStack);
+            if (recycled) _reusedNavigationHosts++;
+        }
+        else if (ContentStack.Children.Count > 0)
+        {
+            // Most compact sections have few/lightweight roots, so clear
+            // them in place. GPU is the exception: its three/four direct
+            // roots contain a deep native stats + driver visual tree, and
+            // clearing only those few roots synchronously was observed at
+            // 61ms during GPU cancellation navigation. Reuse the existing
+            // deferred host-cleanup path for GPU regardless of root count.
+            if (ContentStack.Children.Count <= 8 &&
+                !string.Equals(previousSection, "gpu", StringComparison.OrdinalIgnoreCase))
+            {
+                ContentStack.Children.Clear();
+                _inPlaceNavigationClears++;
+            }
+            else
+            {
+                // Heavy pages keep the deferred first-frame teardown so
+                // navigation remains responsive. Reuse a previously cleaned
+                // host when possible, never a host that still owns children.
+                var oldContent = ContentStack;
+                oldContent.IsHitTestVisible = false;
+                oldContent.Opacity = 0;
+
+                var replacement = TakeRecycledNavigationHost(out bool recycled);
+                ActivateRecycledNavigationHost(replacement);
+                _contentLayerHost.Children.Add(replacement);
+                ContentStack = replacement;
+                if (recycled) _reusedNavigationHosts++;
+                QueueDetachedNavigationHostCleanup(oldContent);
+            }
         }
 
         if (TopActions.Children.Count > 0)
@@ -800,16 +1237,70 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             SubSelectorHost.Children.Clear();
         if (SubSelectorHost.Visibility != Visibility.Collapsed)
             SubSelectorHost.Visibility = Visibility.Collapsed;
+
+        if (string.Equals(nextSection, "system", StringComparison.OrdinalIgnoreCase) &&
+            _persistentSystemHost != null && _systemPageCache is { Count: 1 } &&
+            _systemVirtualRowsCache != null && _systemVirtualMapCache != null)
+        {
+            // The ordinary navigation path has already emptied or replaced
+            // ContentStack. Recycle that empty host, then reveal the existing
+            // system visual tree without removing or reattaching its children.
+            var unusedHost = ContentStack;
+            if (unusedHost.Children.Count != 0)
+                throw new InvalidOperationException("Navigation host not empty before pinned system reuse.");
+            if (_contentLayerHost.Children.Contains(unusedHost))
+                _contentLayerHost.Children.Remove(unusedHost);
+            if (_recycledNavigationHost == null)
+                _recycledNavigationHost = unusedHost;
+            ContentStack = _persistentSystemHost;
+            ContentStack.Visibility = Visibility.Visible;
+            ContentStack.IsHitTestVisible = true;
+        }
+        else if (string.Equals(nextSection, "power", StringComparison.OrdinalIgnoreCase) &&
+            _persistentPowerHost != null && IsPowerPageCacheFresh())
+        {
+            var unusedHost = ContentStack;
+            if (unusedHost.Children.Count != 0)
+                throw new InvalidOperationException("Navigation host not empty before pinned power reuse.");
+            // The pinned host itself may be the current (in-place cleared) host; never recycle it.
+            if (!ReferenceEquals(unusedHost, _persistentPowerHost))
+            {
+                if (_contentLayerHost.Children.Contains(unusedHost))
+                    _contentLayerHost.Children.Remove(unusedHost);
+                if (_recycledNavigationHost == null)
+                    _recycledNavigationHost = unusedHost;
+            }
+            ContentStack = _persistentPowerHost;
+            if (!_contentLayerHost.Children.Contains(ContentStack))
+                _contentLayerHost.Children.Add(ContentStack);
+            ContentStack.Visibility = Visibility.Visible;
+            ContentStack.IsHitTestVisible = true;
+        }
     }
+
+    // Overview is the first visible section. Reading the full tweak catalog
+    // merely to obtain its immutable label/icon can initialize unrelated
+    // source indexes on the WinUI dispatcher. Keep the Overview metadata
+    // locally until another section actually needs CatalogService.
+    private static readonly SectionDefinition StartupOverviewSection = new(
+        "overview", "Přehled", "Stav systému a rychlé profily", "\uE80F");
+    // System's immutable metadata is needed before its tweak catalog. Using
+    // this value-equal record avoids making the UI wait for CatalogService's
+    // first static initialization during the navigation shell phase.
+    private static readonly SectionDefinition StartupSystemSection = new(
+        "system", "Systémové tweaky", "Windows, boot a virtualizace", "\uE770");
 
     private async Task ShowSectionCoreAsync(string key, int generation, CancellationToken token)
     {
         var navPhase = Stopwatch.StartNew();
         token.ThrowIfCancellationRequested();
         if (generation != _navigationGeneration) throw new OperationCanceledException(token);
+        string previousSection = _section;
         CleanupForNavigation(key);
         long cleanupMs = navPhase.ElapsedMilliseconds;
         _section = key;
+        if (key == "overview" && _windowTelemetryActive)
+            SignalLiveMetricsWake();
         _themeSection = key;
         UpdateGlassShell();
         bool overviewNoScroll = string.Equals(key, "overview", StringComparison.OrdinalIgnoreCase) &&
@@ -832,9 +1323,24 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             ActionBar.Visibility = Visibility.Collapsed;
         _powerPageCacheAttached = false;
         long stateMs = navPhase.ElapsedMilliseconds;
-        ClearNavigationHostsFast();
+        ClearNavigationHostsFast(previousSection, key);
         long clearMs = navPhase.ElapsedMilliseconds;
-        SectionDefinition sectionDefinition = CatalogService.GetSection(key);
+        SectionDefinition sectionDefinition = key == "overview"
+            ? StartupOverviewSection
+            : key == "system"
+                ? StartupSystemSection
+            : key == "components"
+                ? new SectionDefinition(
+                    "components",
+                    _sub ?? "Služby",
+                    _sub switch
+                    {
+                        "Ovladače" => "Správa ovladačů a kompatibility zařízení",
+                        "Task Scheduler" => "Plánované úlohy a doporučené nastavení",
+                        _ => "Bezpečné doporučené nastavení služeb"
+                    },
+                    "\uE713")
+                : CatalogService.GetSection(key);
         long catalogMs = navPhase.ElapsedMilliseconds;
         UpdateVisualSelection(key, sectionDefinition.IconGlyph);
         long selectionMs = navPhase.ElapsedMilliseconds;
@@ -845,8 +1351,9 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         double targetHeaderHeight = CalculateSectionHeroHeight(
             key,
             RootGrid.ActualWidth > 1 ? RootGrid.ActualWidth : StartupClientWidth);
-        if (Math.Abs(HeaderCard.Height - targetHeaderHeight) > 0.1)
-            UpdateRowlessShellGeometry(heroHeightOverride: targetHeaderHeight);
+        // The navigation selection changed SubNav visibility. Apply the final layout once,
+        // including the target hero height; the previous flow could do two full passes.
+        UpdateRowlessShellGeometry(heroHeightOverride: targetHeaderHeight);
         long headerSizeMs = navPhase.ElapsedMilliseconds;
         string heroTitle = key == "overview" ? "P\u0159ehled" : sectionDefinition.Title;
         string heroSubtitle = key == "overview"
@@ -882,11 +1389,25 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             {
                 _sub = value[0];
             }
-            if (!value.Contains<string>(_sub))
+            if (Array.IndexOf(value, _sub) < 0)
             {
                 _sub = value[0];
             }
-            BuildSubSelector(key, value);
+            bool deferComponentsServiceSelector =
+                key == "components" && string.Equals(_sub, "Služby", StringComparison.Ordinal);
+            if (!deferComponentsServiceSelector)
+            {
+                BuildSubSelector(key, value);
+            }
+            else
+            {
+                int selectorGeneration = generation;
+                string[] selectorOptions = value;
+                SafeTaskService.Forget(
+                    CompleteDeferredComponentsSelectorAsync(selectorOptions, selectorGeneration, token),
+                    "components",
+                    "Deferred Components selector");
+            }
         }
         else
         {
@@ -904,7 +1425,12 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         }
         if (key == "overview")
         {
+            long beforeOverviewMs = navPhase.ElapsedMilliseconds;
             await BuildOverviewDashboardAsync(token);
+            long overviewMs = navPhase.ElapsedMilliseconds - beforeOverviewMs;
+            if (LogService.PerformanceDiagnosticsEnabled)
+                LogService.Info("performance",
+                    $"NAV_OVERVIEW_BUILD preludeMs={beforeOverviewMs} overviewMs={overviewMs} coreMs={navPhase.ElapsedMilliseconds} cache={_overviewPageCache?.Count ?? 0}");
             return;
         }
         if (key == "power")
@@ -914,6 +1440,7 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         }
         if (key == "debloat")
         {
+            _debloatActionToken = token;
             if (TryAttachDebloatPageCache()) return;
             await BuildDebloatPageAsync(token);
             ThrowIfNavigationStale(generation, token);
@@ -953,9 +1480,18 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             await BuildSpicetifyPageAsync(token);
             return;
         }
+        if (key == "themes")
+        {
+            if (!TryAttachThemesPageCache())
+            {
+                BuildThemesPage();
+                CaptureThemesPageCache();
+            }
+            return;
+        }
         if (key == "powershell")
         {
-            await BuildPowerShellTweakerPageAsync(token);
+            await BuildPowerShellPageAsync(token);
             return;
         }
         if (key == "cursor")
@@ -973,7 +1509,8 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             var startupNavPerf = Stopwatch.StartNew();
             if (TryAttachStartupPageCache())
             {
-                LogService.Info("performance", $"STARTUP_NAV_PHASE cacheHit=true totalMs={startupNavPerf.ElapsedMilliseconds}");
+                if (startupNavPerf.ElapsedMilliseconds >= 8)
+                    LogService.Info("performance", $"STARTUP_NAV_PHASE cacheHit=true totalMs={startupNavPerf.ElapsedMilliseconds}");
                 return;
             }
             long cacheMs = startupNavPerf.ElapsedMilliseconds;
@@ -990,7 +1527,8 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             long modernizerMs = startupNavPerf.ElapsedMilliseconds - cacheMs - managerMs;
             CaptureStartupPageCache();
             long captureMs = startupNavPerf.ElapsedMilliseconds - cacheMs - managerMs - modernizerMs;
-            LogService.Info("performance", $"STARTUP_NAV_PHASE cacheHit=false cacheMs={cacheMs} managerMs={managerMs} modernizerMs={modernizerMs} captureMs={captureMs} totalMs={startupNavPerf.ElapsedMilliseconds}");
+            if (startupNavPerf.ElapsedMilliseconds >= 10)
+                LogService.Info("performance", $"STARTUP_NAV_PHASE cacheHit=false cacheMs={cacheMs} managerMs={managerMs} modernizerMs={modernizerMs} captureMs={captureMs} totalMs={startupNavPerf.ElapsedMilliseconds}");
             return;
         }
         if (key == "usb")
@@ -1010,8 +1548,23 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         }
         if (key == "components")
         {
-            var componentPerf = Stopwatch.StartNew();
             string componentSub = _sub ?? "Služby";
+            if (string.Equals(componentSub, "Služby", StringComparison.OrdinalIgnoreCase))
+            {
+                _tweaks = EmptyComponentTweaks;
+                if (_componentsPageCacheStore != null && TryAttachComponentsPageCache("Služby", token))
+                    return;
+
+                await BuildServiceManagerPageAsync(token);
+                ThrowIfNavigationStale(generation, token);
+                SafeTaskService.Forget(
+                    CompleteDeferredServiceChromeAsync(generation, token),
+                    "components",
+                    "Deferred service chrome/cache");
+                return;
+            }
+
+            var componentPerf = Stopwatch.StartNew();
             string componentCacheKey = "components|" + componentSub;
             if (!_tweakCache.TryGetValue(componentCacheKey, out _tweaks))
                 _tweakCache[componentCacheKey] = _tweaks = CatalogService.GetTweaks("components", componentSub);
@@ -1019,7 +1572,8 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
 
             if (TryAttachComponentsPageCache(componentSub, token))
             {
-                LogService.Info("performance", $"COMPONENT_NAV_PHASE sub={componentSub} cacheHit=true catalogMs={catalogPhaseMs} totalMs={componentPerf.ElapsedMilliseconds}");
+                if (componentPerf.ElapsedMilliseconds >= 8)
+                    LogService.Info("performance", $"COMPONENT_NAV_PHASE sub={componentSub} cacheHit=true catalogMs={catalogPhaseMs} totalMs={componentPerf.ElapsedMilliseconds}");
                 return;
             }
             long cachePhaseMs = componentPerf.ElapsedMilliseconds - catalogPhaseMs;
@@ -1028,22 +1582,17 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             long buildStart = componentPerf.ElapsedMilliseconds;
             if (componentSub == "Ovladače")
                 await BuildDriverManagerPageAsync(token);
-            else if (componentSub == "Task Scheduler")
-                await BuildTaskManagerPageAsync(token);
             else
-            {
-                await BuildServiceManagerPageAsync(token);
-                ThrowIfNavigationStale(generation, token);
-                BuildWindowsModernizerVendorPanel(token);
-            }
+                await BuildTaskManagerPageAsync(token);
             ThrowIfNavigationStale(generation, token);
             long buildPhaseMs = componentPerf.ElapsedMilliseconds - buildStart;
 
             long captureStart = componentPerf.ElapsedMilliseconds;
             CaptureComponentsPageCache(componentSub);
             long capturePhaseMs = componentPerf.ElapsedMilliseconds - captureStart;
-            LogService.Info("performance",
-                $"COMPONENT_NAV_PHASE sub={componentSub} cacheHit=false catalogMs={catalogPhaseMs} cacheMs={cachePhaseMs} contextMs={contextPhaseMs} buildMs={buildPhaseMs} captureMs={capturePhaseMs} totalMs={componentPerf.ElapsedMilliseconds}");
+            if (componentPerf.ElapsedMilliseconds >= 10)
+                LogService.Info("performance",
+                    $"COMPONENT_NAV_PHASE sub={componentSub} cacheHit=false catalogMs={catalogPhaseMs} cacheMs={cachePhaseMs} contextMs={contextPhaseMs} buildMs={buildPhaseMs} captureMs={capturePhaseMs} totalMs={componentPerf.ElapsedMilliseconds}");
             return;
         }
         if (key == "ai") { await BuildAiPageAsync(token); return; }
@@ -1055,15 +1604,67 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             return;
         }
         if (key == "defender") { await BuildDefenderPageAsync(token); return; }
+        if (key == "gpu")
+        {
+            long gpuStartMs = navPhase.ElapsedMilliseconds;
+            const string gpuCacheKey = "gpu|";
+            SynchronizeGpuDetectionGeneration();
+            bool gpuStale = !_tweakCacheTime.TryGetValue(gpuCacheKey, out var gpuDetectedAt) ||
+                DateTime.UtcNow - gpuDetectedAt > TimeSpan.FromSeconds(90);
+
+            if (_tweakCache.TryGetValue(gpuCacheKey, out var cachedGpuTweaks))
+                _tweaks = cachedGpuTweaks;
+            else
+                _tweaks = EmptyComponentTweaks;
+
+            if (TryAttachGpuPageCache(token))
+            {
+                // Expired tweak detection is independent of the cached GPU page.
+                // Keep its WinUI tree, and re-read states in the background.
+                if (gpuStale)
+                    SafeTaskService.Forget(
+                        RunGpuDeferredStateAfterSettleAsync(gpuCacheKey, _tweaks.ToArray(), true, token, generation),
+                        "gpu", "Refresh stale GPU tweaks without rebuilding page");
+                return;
+            }
+            if (gpuStale) InvalidateGpuPageCache();
+            long gpuPrepareMs = navPhase.ElapsedMilliseconds;
+
+            BuildGpuDriverCenter(token);
+            long gpuBuildMs = navPhase.ElapsedMilliseconds;
+            ThrowIfNavigationStale(generation, token);
+            ScheduleGpuActions(token);
+            SafeTaskService.Forget(
+                CompleteGpuTweaksAfterFirstFrameAsync(gpuCacheKey, gpuStale, token, generation),
+                "gpu",
+                "Deferred GPU catalog + tweak UI");
+            long gpuEndMs = navPhase.ElapsedMilliseconds;
+            if (gpuEndMs - gpuStartMs >= 15 || gpuEndMs >= 35)
+                LogService.Info("performance", $"GPU_NAV_DIAG preludeMs={gpuStartMs} prepareMs={gpuPrepareMs - gpuStartMs} buildMs={gpuBuildMs - gpuPrepareMs} deferredMs={gpuEndMs - gpuBuildMs} totalMs={gpuEndMs} stale={gpuStale}");
+            return;
+        }
         Stopwatch? systemForeground = key == "system" ? Stopwatch.StartNew() : null;
         Stopwatch? storageCatalogPhase = key == "storage" ? Stopwatch.StartNew() : null;
         string tweakCacheKey = key + "|" + (_sub ?? "");
-        if (!_tweakCache.TryGetValue(tweakCacheKey, out var cachedTweaks))
+        // First System navigation needs only the empty virtual host. Construct
+        // catalog definitions in the existing LOW-priority root callback after
+        // foreground has returned, not synchronously on WinUI and not in a
+        // racing worker whose scheduling can delay the 35ms first-paint gate.
+        bool deferSystemCatalog = key == "system" && _systemPageCache == null &&
+            !_tweakCache.ContainsKey("system|");
+        if (deferSystemCatalog)
         {
-            cachedTweaks = CatalogService.GetTweaks(key, _sub);
-            _tweakCache[tweakCacheKey] = cachedTweaks;
+            _tweaks = EmptyComponentTweaks;
         }
-        _tweaks = key == "system" ? GlassSystemTweaks(cachedTweaks) : cachedTweaks;
+        else
+        {
+            if (!_tweakCache.TryGetValue(tweakCacheKey, out var cachedTweaks))
+            {
+                cachedTweaks = CatalogService.GetTweaks(key, _sub);
+                _tweakCache[tweakCacheKey] = cachedTweaks;
+            }
+            _tweaks = key == "system" ? GlassSystemTweaks(cachedTweaks) : cachedTweaks;
+        }
         long systemCatalogMs = systemForeground?.ElapsedMilliseconds ?? 0;
         long storageCatalogMs = storageCatalogPhase?.ElapsedMilliseconds ?? 0;
         if (key == "system" && TryAttachSystemPageCache(token))
@@ -1085,23 +1686,11 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         if (key == "privacy") BuildPrivacyActions();
         if (key == "ui" && TryAttachUiPageCache())
         {
-            BuildWinhanceUiActions();
             bool uiStale = !_tweakCacheTime.TryGetValue(tweakCacheKey, out var uiDetectedAt) ||
                 DateTime.UtcNow - uiDetectedAt > TimeSpan.FromSeconds(90);
             if (uiStale)
                 ScheduleRenderFirstBackground("ui", tweakCacheKey, _tweaks.ToArray(), true, token);
             return;
-        }
-        if (key == "browsers")
-        {
-            string browserSub = _sub ?? "Firefox";
-            bool browserStale = !_tweakCacheTime.TryGetValue(tweakCacheKey, out var browserDetectedAt) || DateTime.UtcNow - browserDetectedAt > TimeSpan.FromSeconds(90);
-            if (TryAttachBrowserPageCache(browserSub))
-            {
-                if (browserStale)
-                    ScheduleRenderFirstBackground("browsers", tweakCacheKey, _tweaks.ToArray(), true, token);
-                return;
-            }
         }
         if (key == "memory")
         {
@@ -1112,8 +1701,17 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             long storagePreMs = navPhase.ElapsedMilliseconds;
             var storageForeground = Stopwatch.StartNew();
             bool storageStale = !_tweakCacheTime.TryGetValue(tweakCacheKey, out var storageDetectedAt) || DateTime.UtcNow - storageDetectedAt > TimeSpan.FromSeconds(90);
-            if (!storageStale && TryAttachStoragePageCache(token))
+            if (TryAttachStoragePageCache(token))
+            {
+                // Refresh expired tweak states without discarding a healthy
+                // storage UI. The cache attach already refreshes stale disk
+                // health/advanced panels and resumes deferred content.
+                if (storageStale)
+                    SafeTaskService.Forget(
+                        RunStorageDeferredStateAfterSettleAsync(tweakCacheKey, _tweaks.ToArray(), true, token, generation),
+                        "storage", "Refresh stale storage tweaks without rebuilding page");
                 return;
+            }
             if (storageStale) InvalidateStoragePageCache();
 
             AttachStorageStaticShell(token, out long storageHeroMs, out long storageMetricsMs);
@@ -1123,26 +1721,11 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             long storageActionsMs = storageForeground.ElapsedMilliseconds - storageHeroMs - storageMetricsMs;
             ScheduleStorageTools(token);
             long storageScheduleMs = storageForeground.ElapsedMilliseconds - storageHeroMs - storageMetricsMs - storageActionsMs;
-            LogService.Info("performance",
-                $"STORAGE_FOREGROUND_PHASE preStorageMs={storagePreMs} catalogMs={storageCatalogMs} heroMs={storageHeroMs} metricsMs={storageMetricsMs} actionsMs={storageActionsMs} scheduleMs={storageScheduleMs} totalMs={storageForeground.ElapsedMilliseconds}");
-        }
-        if (key == "gpu")
-        {
-            var gpuBuild = Stopwatch.StartNew();
-            SynchronizeGpuDetectionGeneration();
-            bool gpuStale = !_tweakCacheTime.TryGetValue(tweakCacheKey, out var gpuDetectedAt) || DateTime.UtcNow - gpuDetectedAt > TimeSpan.FromSeconds(90);
-            if (!gpuStale && TryAttachGpuPageCache(token))
-                return;
-            if (gpuStale) InvalidateGpuPageCache();
-            long setupMs = gpuBuild.ElapsedMilliseconds;
-            BuildGpuDriverCenter(token);
-            ThrowIfNavigationStale(generation, token);
-            long driverCenterMs = gpuBuild.ElapsedMilliseconds - setupMs;
-            ScheduleGpuActions(token);
-            long actionsMs = gpuBuild.ElapsedMilliseconds - setupMs - driverCenterMs;
-            if (gpuBuild.ElapsedMilliseconds >= 5)
+            // Repeated cached navigation commonly takes 0ms. Retain actionable
+            // slow-path diagnostics without flooding performance-smoke output.
+            if (storageForeground.ElapsedMilliseconds >= 5)
                 LogService.Info("performance",
-                    $"GPU_BUILD_PHASE setupMs={setupMs} driverCenterMs={driverCenterMs} actionsMs={actionsMs} totalMs={gpuBuild.ElapsedMilliseconds}");
+                    $"STORAGE_FOREGROUND_PHASE preStorageMs={storagePreMs} catalogMs={storageCatalogMs} heroMs={storageHeroMs} metricsMs={storageMetricsMs} actionsMs={storageActionsMs} scheduleMs={storageScheduleMs} totalMs={storageForeground.ElapsedMilliseconds}");
         }
         if (key == "network")
         {
@@ -1178,7 +1761,8 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             ScheduleNetworkTools(token);
             long networkToolsMs = networkBuild.ElapsedMilliseconds - networkShellMs - networkPerfMs - networkDashboardMs - networkDriverMs;
             CaptureNetworkPageCache();
-            LogService.Info("performance", $"NETWORK_BUILD shellMs={networkShellMs} perfMs={networkPerfMs} dashboardMs={networkDashboardMs} driverMs={networkDriverMs} toolsMs={networkToolsMs} totalMs={networkBuild.ElapsedMilliseconds}");
+            if (networkBuild.ElapsedMilliseconds >= 10)
+                LogService.Info("performance", $"NETWORK_BUILD shellMs={networkShellMs} perfMs={networkPerfMs} dashboardMs={networkDashboardMs} driverMs={networkDriverMs} toolsMs={networkToolsMs} totalMs={networkBuild.ElapsedMilliseconds}");
         }
         if (key == "storage")
         {
@@ -1194,7 +1778,8 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             BuildStorageSnapshot(token);
             BuildWindowsModernizerStoragePanel(token);
             long snapshotMs = storageBuild.ElapsedMilliseconds - kickoffMs;
-            LogService.Info("performance", $"STORAGE_BUILD kickoffMs={kickoffMs} snapshotMs={snapshotMs} toolsMs=0 totalMs={storageBuild.ElapsedMilliseconds}");
+            if (storageBuild.ElapsedMilliseconds >= 5)
+                LogService.Info("performance", $"STORAGE_BUILD kickoffMs={kickoffMs} snapshotMs={snapshotMs} toolsMs=0 totalMs={storageBuild.ElapsedMilliseconds}");
         }
         if (key == "update")
         {
@@ -1203,59 +1788,23 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             await BuildWindowsUpdateCenterAsync(token);
             ThrowIfNavigationStale(generation, token);
         }
-        if (key == "browsers")
-        {
-            string browser = _sub ?? "Firefox";
-            var browserBuild = Stopwatch.StartNew();
-
-            BuildBrowserDashboard(browser, token);
-            long dashboardMs = browserBuild.ElapsedMilliseconds;
-
-            BuildBrowserCachePanel(browser, token);
-            long cachePanelMs = browserBuild.ElapsedMilliseconds - dashboardMs;
-
-            long updaterMs = 0;
-            long advancedMs = 0;
-            long modernizerMs = 0;
-            if (browser == "Firefox")
-            {
-                long phaseStart = browserBuild.ElapsedMilliseconds;
-                BuildFirefoxUpdaterPanel(token);
-                updaterMs = browserBuild.ElapsedMilliseconds - phaseStart;
-
-                phaseStart = browserBuild.ElapsedMilliseconds;
-                BuildFirefoxAdvancedPanel(token);
-                advancedMs = browserBuild.ElapsedMilliseconds - phaseStart;
-
-                phaseStart = browserBuild.ElapsedMilliseconds;
-                BuildWindowsModernizerFirefoxPanel(token);
-                modernizerMs = browserBuild.ElapsedMilliseconds - phaseStart;
-            }
-
-            LogService.Info("performance",
-                $"BROWSER_BUILD_PHASE browser={browser} dashboardMs={dashboardMs} cachePanelMs={cachePanelMs} updaterMs={updaterMs} advancedMs={advancedMs} modernizerMs={modernizerMs} totalMs={browserBuild.ElapsedMilliseconds}");
-        }
         if (key == "ui")
         {
             var uiBuild = Stopwatch.StartNew();
             BuildContextMenuTweaker();
-            long contextMenuMs = uiBuild.ElapsedMilliseconds;
-
-            BuildWindowsModernizerUiPanel(token);
-            long modernizerUiMs = uiBuild.ElapsedMilliseconds - contextMenuMs;
-
-            BuildWinhanceUiActions();
-            long winhanceUiMs = uiBuild.ElapsedMilliseconds - contextMenuMs - modernizerUiMs;
-
-            LogService.Info("performance",
-                $"UI_BUILD_PHASE contextMenuMs={contextMenuMs} modernizerMs={modernizerUiMs} winhanceMs={winhanceUiMs} totalMs={uiBuild.ElapsedMilliseconds}");
+            if (uiBuild.ElapsedMilliseconds >= 10)
+                LogService.Info("performance",
+                    $"UI_BUILD_PHASE contextMenuMs={uiBuild.ElapsedMilliseconds} legacyExtras=false totalMs={uiBuild.ElapsedMilliseconds}");
         }
         var renderTailPerf = Stopwatch.StartNew();
-        TweakDefinition[] lazyTweaks = _tweaks.Where(x => x.LazyDetect).ToArray();
-        TweakDefinition[] immediateTweaks = _tweaks.Where(x => !x.LazyDetect).ToArray();
+        bool renderFirst = key is "system" or "privacy" or "network" or "memory" or "ui" or "storage" or "update";
+        // All render-first sections defer tweak detection and its immediate/lazy
+        // partition to the low-priority dispatcher. Avoid two useless LINQ
+        // enumerations + arrays on the cold foreground navigation hot path.
+        TweakDefinition[] lazyTweaks = renderFirst ? Array.Empty<TweakDefinition>() : _tweaks.Where(x => x.LazyDetect).ToArray();
+        TweakDefinition[] immediateTweaks = renderFirst ? Array.Empty<TweakDefinition>() : _tweaks.Where(x => !x.LazyDetect).ToArray();
         long splitTweaksMs = renderTailPerf.ElapsedMilliseconds;
         bool staleDetection = !_tweakCacheTime.TryGetValue(tweakCacheKey, out var detectedAt) || DateTime.UtcNow - detectedAt > TimeSpan.FromSeconds(90);
-        bool renderFirst = key is "system" or "privacy" or "network" or "gpu" or "memory" or "ui" or "browsers" or "storage" or "update";
         if (renderFirst)
         {
             var phase = Stopwatch.StartNew();
@@ -1265,12 +1814,6 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
                 ContentStack.Children.Add(_networkTweakHost);
                 ScheduleNetworkTweakCards(token);
             }
-            else if (key == "gpu")
-            {
-                _gpuTweakHost = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Stretch };
-                ContentStack.Children.Add(_gpuTweakHost);
-                ScheduleGpuTweakCards(token);
-            }
             else if (key == "storage")
             {
                 _storageTweakHost = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -1279,8 +1822,11 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             }
             else if (key == "system")
             {
+                // Only an empty host exists before the first deferred System
+                // render. Attach it in that same Low-priority callback so a
+                // cold native visual-tree insertion cannot block foreground
+                // navigation during a rapid multi-section smoke/user tour.
                 _systemVirtualHost = new StackPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
-                ContentStack.Children.Add(_systemVirtualHost);
                 ScheduleSystemVirtualCards(token);
             }
             else
@@ -1288,28 +1834,23 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
                 BuildTweakCards();
             }
             long cardsMs = phase.ElapsedMilliseconds;
-            if (key == "system" && systemForeground != null)
+            if (key == "system" && systemForeground != null && systemForeground.ElapsedMilliseconds >= 12)
                 LogService.Info("performance", $"SYSTEM_FOREGROUND_PHASE catalogMs={systemCatalogMs} preRenderMs={systemForeground.ElapsedMilliseconds - systemCatalogMs - cardsMs} cardsMs={cardsMs} totalMs={systemForeground.ElapsedMilliseconds}");
             if (key == "network") CaptureNetworkPageCache();
-            if (key == "browsers") CaptureBrowserPageCache(_sub ?? "Firefox");
             if (key == "update") CaptureUpdatePageCache();
             if (key == "system" && _systemVirtualRowsCache != null) CaptureSystemPageCache();
             if (key == "privacy") CapturePrivacyPageCache();
             if (key == "ui") CaptureUiPageCache();
-            if (key is "network" or "storage" or "gpu")
-                LogService.Info("performance", $"RENDER_TAIL_PHASE section={key} splitMs={splitTweaksMs} cardsMs={cardsMs} totalMs={renderTailPerf.ElapsedMilliseconds}");
-            LogService.Info("performance", $"TWEAK_UI_PHASE section={key} count={_tweaks.Count} cardsMs={cardsMs}");
-            if (key == "gpu")
+            // Zero-ms navigation must not queue two performance.log writes.
+            // Slow paths still retain both diagnostics for investigation.
+            long tailMs = renderTailPerf.ElapsedMilliseconds;
+            if (cardsMs >= 5 || tailMs >= 12)
             {
-                int gpuDeferredGeneration = generation;
-                TweakDefinition[] gpuDeferredTweaks = _tweaks.ToArray();
-                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-                {
-                    if (token.IsCancellationRequested || gpuDeferredGeneration != _navigationGeneration || _section != "gpu") return;
-                    SafeTaskService.Forget(RunGpuDeferredStateAfterSettleAsync(tweakCacheKey, gpuDeferredTweaks, staleDetection, token, gpuDeferredGeneration), "gpu", "Deferred GPU state");
-                });
+                if (key is "network" or "storage" or "gpu")
+                    LogService.Info("performance", $"RENDER_TAIL_PHASE section={key} splitMs={splitTweaksMs} cardsMs={cardsMs} totalMs={tailMs}");
+                LogService.Info("performance", $"TWEAK_UI_PHASE section={key} count={_tweaks.Count} cardsMs={cardsMs}");
             }
-            else if (key == "storage")
+            if (key == "storage")
             {
                 int storageDeferredGeneration = generation;
                 TweakDefinition[] storageDeferredTweaks = _tweaks.ToArray();
@@ -1319,8 +1860,10 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
                     SafeTaskService.Forget(RunStorageDeferredStateAfterSettleAsync(tweakCacheKey, storageDeferredTweaks, staleDetection, token, storageDeferredGeneration), "storage", "Deferred storage state");
                 });
             }
-            else
+            else if (!deferSystemCatalog)
             {
+                // A deferred first-System catalog schedules its own state
+                // detection after the root has its real 57 model definitions.
                 ScheduleRenderFirstBackground(key, tweakCacheKey, _tweaks.ToArray(), staleDetection, token);
             }
             return;
@@ -1379,8 +1922,9 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         }
         try
         {
-            // Read-only detection is shared work: finish it even when navigation leaves the section.
-            await _engine.DetectAsync(tweaks, CancellationToken.None);
+            // Read-only detection is shared work: finish it even when navigation leaves the section,
+            // but never outlive the application window.
+            await _engine.DetectAsync(tweaks, _windowLifetimeCts.Token);
             _tweakCacheTime[cacheKey] = DateTime.UtcNow;
             if (token.IsCancellationRequested || generation != _navigationGeneration || _section != sectionKey) return;
             DispatcherQueue.TryEnqueue(() =>
@@ -1497,7 +2041,7 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         wmRead.Stop();
         LogService.Info("WINDOWS_MODERNIZER_READONLY_SMOKE_OK ms=" + wmRead.ElapsedMilliseconds +
             " ui=" + wm.UiBaselineConfigured + " search=" + wm.SearchCleanupConfigured +
-            " mtu=" + (wm.ActiveMtu?.ToString() ?? "n/a") + " firefoxRam=" + wm.FirefoxDynamicRamConfigured +
+            " mtu=" + (wm.ActiveMtu?.ToString() ?? "n/a") +
             " vendor=" + wm.VendorServicesTuned);
         if (wmRead.ElapsedMilliseconds > 100)
             throw new InvalidOperationException("WindowsModernizer snapshot hot-path exceeded 100 ms: " + wmRead.ElapsedMilliseconds + " ms");
@@ -1515,21 +2059,60 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
     }
 
 
+    private static List<UIElement> SnapshotChildren(StackPanel source)
+    {
+        int count = source.Children.Count;
+        var snapshot = new List<UIElement>(count);
+        for (int i = 0; i < count; i++)
+            snapshot.Add(source.Children[i]);
+        return snapshot;
+    }
+
+    private async Task CompleteDeferredServiceChromeAsync(int generation, CancellationToken token)
+    {
+        await Task.Delay(180, token).ConfigureAwait(false);
+        if (token.IsCancellationRequested || generation != _navigationGeneration || _section != "components" || _sub != "Služby")
+            return;
+
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "components" || _sub != "Služby") return;
+            BuildComponentsContextActions();
+            BuildWindowsModernizerVendorPanel(token);
+            CaptureComponentsPageCache("Služby");
+        });
+    }
+
+    private async Task CompleteDeferredComponentsSelectorAsync(string[] options, int generation, CancellationToken token)
+    {
+        await Task.Delay(60, token).ConfigureAwait(false);
+        if (token.IsCancellationRequested || generation != _navigationGeneration) return;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (token.IsCancellationRequested || generation != _navigationGeneration ||
+                _section != "components" || _sub != "Služby") return;
+            BuildSubSelector("components", options);
+        });
+    }
+
     private void BuildSubSelector(string section, string[] options)
     {
         SubSelectorHost.Visibility = Visibility.Visible;
         if (!_subSelectorCache.TryGetValue(section, out var buttons))
         {
-            buttons = options.Select(opt =>
+            buttons = new Button[options.Length];
+            for (int i = 0; i < options.Length; i++)
             {
+                string opt = options[i];
                 var button = new Button { Content = opt, Tag = opt };
                 ApplyPillButtonAppearance(button);
                 button.Click += delegate
                 {
                     SafeTaskService.Forget(NavigateSubSectionFromUiAsync(section, opt), "navigation", "Open sub-section " + opt);
                 };
-                return button;
-            }).ToArray();
+                buttons[i] = button;
+            }
             _subSelectorCache[section] = buttons;
         }
 
@@ -1565,48 +2148,62 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
 
     private void BuildClassicTweakCards(Panel host)
     {
-        foreach (IGrouping<string, TweakDefinition> group in _tweaks.GroupBy(t => t.Group))
+        var groups = new Dictionary<string, List<TweakDefinition>>();
+        var order = new List<string>();
+        foreach (TweakDefinition tweak in _tweaks)
         {
-            host.Children.Add(CreateClassicTweakGroupHeader(group.Key, group.Count()));
-            foreach (var tweak in group)
+            if (!groups.TryGetValue(tweak.Group, out List<TweakDefinition>? items))
+            {
+                items = new List<TweakDefinition>();
+                groups[tweak.Group] = items;
+                order.Add(tweak.Group);
+            }
+            items.Add(tweak);
+        }
+
+        foreach (string groupName in order)
+        {
+            List<TweakDefinition> items = groups[groupName];
+            host.Children.Add(CreateClassicTweakGroupHeader(groupName, items.Count));
+            foreach (TweakDefinition tweak in items)
                 host.Children.Add(CreateClassicTweakCard(tweak));
         }
     }
 
     private Border CreateClassicTweakGroupHeader(string groupName, int count)
     {
-        var headRow = new StackPanel
+        // Group name and count are separated for scanning; no legacy violet rail,
+        // uppercase wall of text or extra bordered card around each group.
+        var row = new Grid { ColumnSpacing = 10 };
+        row.ColumnDefinitions.Add(new ColumnDefinition());
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.Children.Add(new TextBlock
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 10,
+            Text = groupName,
+            FontSize = 13.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = TextPrimaryBrush(),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        });
+        var counter = new TextBlock
+        {
+            Text = $"{count} nastavení",
+            FontSize = 11,
+            Foreground = TextSecondaryBrush(),
             VerticalAlignment = VerticalAlignment.Center
         };
-        headRow.Children.Add(new Border
-        {
-            Width = 4,
-            Height = 20,
-            CornerRadius = new CornerRadius(2),
-            Background = ButtonVioletBrush(),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        headRow.Children.Add(new TextBlock
-        {
-            Text = $"{groupName.ToUpperInvariant()}   •   {count} TWEAKŮ",
-            FontSize = 13.5,
-            CharacterSpacing = 10,
-            FontWeight = FontWeights.Bold,
-            Foreground = TextPrimaryBrush(),
-            VerticalAlignment = VerticalAlignment.Center
-        });
+        Grid.SetColumn(counter, 1);
+        row.Children.Add(counter);
         return new Border
         {
-            Margin = new Thickness(0, 10, 0, 6),
-            Padding = new Thickness(11, 8, 11, 8),
-            CornerRadius = new CornerRadius(10),
-            BorderThickness = new Thickness(_darkTheme ? 1.2 : 1),
+            Tag = "tweak-group-heading",
+            Margin = new Thickness(0, 9, 0, 4),
+            Padding = new Thickness(5, 6, 5, 7),
+            BorderThickness = new Thickness(0, 0, 0, 1),
             BorderBrush = SectionBorderBrush(),
-            Background = SectionHeaderBackgroundBrush(),
-            Child = headRow
+            Background = null,
+            Child = row
         };
     }
 
@@ -1618,8 +2215,10 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
     }
 
 
+    // Headings may also be grid-backed after the UI rework. Count only
+    // actual tweak models, never arbitrary visual shapes or header containers.
     private static int CountClassicTweakCards(Panel? host) =>
-        host?.Children.OfType<Border>().Count(x => x.Child is Grid) ?? 0;
+        host?.Children.OfType<Border>().Count(x => x.Tag is TweakDefinition) ?? 0;
 
     private void Tweak_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -1645,7 +2244,12 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         TextBlock StateText,
         Border VerdictBadge,
         TextBlock VerdictText,
-        bool NeutralChrome = false);
+        bool NeutralChrome = false)
+    {
+        // Counts this card's actual user-toggle writebacks; unlike the global
+        // dirty-refresh flag, unrelated tweak detection cannot change it.
+        public int UserWritebacks { get; set; }
+    }
 
     private Border CreateTweakCard(TweakDefinition t)
     {
@@ -1656,19 +2260,34 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var iconBox = new Border { Width = UseCompactSectionChrome ? 34 : 42, Height = UseCompactSectionChrome ? 34 : 42, CornerRadius = new CornerRadius(8), Background = SurfaceAltBrush(), BorderThickness = new Thickness(0), Child = SectionIcon(t.Section, UseCompactSectionChrome ? 25 : 31), VerticalAlignment = VerticalAlignment.Center };
+        var iconBox = new Border { Width = UseCompactSectionChrome ? 34 : 42, Height = UseCompactSectionChrome ? 34 : 42, CornerRadius = new CornerRadius(8), Background = _darkTheme ? GlassSurfaceLowBrush() : SurfaceAltBrush(), BorderThickness = new Thickness(0), Child = SectionIcon(t.Section, UseCompactSectionChrome ? 25 : 31), VerticalAlignment = VerticalAlignment.Center };
         grid.Children.Add(iconBox);
-        var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-        var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        text.Children.Add(new TextBlock { Text = t.Name, FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center });
+        var text = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+        // Keep status, risk and restart markers aligned without pushing the
+        // whole tweak name off-screen on a narrower section viewport.
+        var titleRow = new Grid { ColumnSpacing = 8 };
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition());
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        titleRow.Children.Add(new TextBlock
+        {
+            Text = t.Name, FontSize = 14, FontWeight = FontWeights.SemiBold,
+            Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap,
+            MaxLines = 2, VerticalAlignment = VerticalAlignment.Center
+        });
+        var badges = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 5,
+            VerticalAlignment = VerticalAlignment.Center
+        };
         var uiState = TweakUiState(t);
         var stateText = uiState.Text;
         var stateBrush = uiState.Resource;
         var stateBadge = Badge(stateText, stateBrush);
-        titleRow.Children.Add(stateBadge);
+        badges.Children.Add(stateBadge);
         var verdict = Badge(policy.Verdict, policy.Verdict == "Recommended" ? "SpankySuccessBrush" : policy.Verdict == "Advanced" || policy.Verdict == "Needs attention" ? "SpankyWarningBrush" : "SpankyInfoBrush");
-        verdict.Tag = "policyVerdict"; titleRow.Children.Add(verdict);
-        if (t.RestartRequired) titleRow.Children.Add(Badge("Restart", "SpankyInfoBrush"));
+        verdict.Tag = "policyVerdict"; badges.Children.Add(verdict);
+        if (t.RestartRequired) badges.Children.Add(Badge("Restart", "SpankyInfoBrush"));
+        Grid.SetColumn(badges, 1); titleRow.Children.Add(badges);
         text.Children.Add(titleRow);
         text.Children.Add(new TextBlock { Text = t.Description, FontSize = UseCompactSectionChrome ? 12.5 : 12, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap, MaxLines = UseCompactSectionChrome ? 0 : 2, TextTrimming = UseCompactSectionChrome ? TextTrimming.None : TextTrimming.CharacterEllipsis, MaxWidth = 1100 });
         var meta = new TextBlock { Text = _tweakViewMode == TweakViewMode.Diagnostics || !t.IsLoaded ? policy.Detail : TweakVerificationMeta(t), FontSize = 10.8, Foreground = TextSecondaryBrush(), Tag = "meta", TextWrapping = TextWrapping.Wrap };
@@ -1676,9 +2295,33 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         Grid.SetColumn(text, 1); grid.Children.Add(text);
         var toggleState = new TextBlock { Text = t.Pending ? "ON" : "OFF", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = ClassicToggleStateBrush(t.Pending, neutralChrome), VerticalAlignment = VerticalAlignment.Center, Tag = "toggleState", Margin = new Thickness(0, 0, 3, 0) };
         Grid.SetColumn(toggleState, 2); grid.Children.Add(toggleState);
-        var toggle = new ToggleSwitch { IsOn = t.Pending, Tag = t, IsEnabled = policy.CanEdit, VerticalAlignment = VerticalAlignment.Center, OffContent = "", OnContent = "", MinWidth = 50 };
+        var toggle = new ToggleSwitch { IsOn = t.Pending, Tag = t, IsEnabled = policy.CanEdit && !t.IsBusy, VerticalAlignment = VerticalAlignment.Center, OffContent = "", OnContent = "", MinWidth = 50 };
+        NormalizeToggleAppearance(toggle);
         AutomationProperties.SetName(toggle, t.Name);
-        toggle.Toggled += delegate { toggleState.Text = toggle.IsOn ? "ON" : "OFF"; toggleState.Foreground = ClassicToggleStateBrush(toggle.IsOn, neutralChrome); var live = TweakPolicyService.Evaluate(t, _tweakViewMode); if (live.CanEdit && toggle.Tag is TweakDefinition { IsLoaded: not false } td) { td.Pending = toggle.IsOn; QueueDirtyStateRefresh(); } };
+        toggle.Toggled += delegate
+        {
+            var live = TweakPolicyService.Evaluate(t, _tweakViewMode);
+            bool editable = live.CanEdit && t.IsLoaded && !t.IsBusy;
+            if (!editable && toggle.IsOn != t.Pending)
+            {
+                // Do not let a denied or in-flight edit leave a false visual
+                // ON/OFF state. The second Toggled callback sees equality
+                // and does not write to the model.
+                toggle.IsOn = t.Pending;
+            }
+            else if (editable && t.Pending != toggle.IsOn)
+            {
+                t.Pending = toggle.IsOn;
+                if (grid.Tag is ClassicTweakCardRefs refs)
+                    refs.UserWritebacks++;
+                QueueDirtyStateRefresh();
+            }
+
+            string actual = t.Pending ? "ON" : "OFF";
+            if (!string.Equals(toggleState.Text, actual, StringComparison.Ordinal))
+                toggleState.Text = actual;
+            toggleState.Foreground = ClassicToggleStateBrush(t.Pending, neutralChrome);
+        };
         Grid.SetColumn(toggle, 3); grid.Children.Add(toggle);
         grid.Tag = new ClassicTweakCardRefs(
             toggle,
@@ -1689,7 +2332,7 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             verdict,
             (TextBlock)verdict.Child,
             neutralChrome);
-        var row = new Border { Tag = t, Background = UseCompactSectionChrome ? SurfaceAltBrush() : SectionCardBackgroundBrush(), BorderBrush = SectionBorderBrush(), BorderThickness = UseCompactSectionChrome ? new Thickness(0,0,0,1) : new Thickness(1), CornerRadius = new CornerRadius(0), Margin = new Thickness(0, 0, 0, UseCompactSectionChrome ? 0 : 7), Padding = UseCompactSectionChrome ? new Thickness(12,16,12,16) : new Thickness(14, 10, 14, 10), Child = grid };
+        var row = new Border { Tag = t, Background = UseCompactSectionChrome ? (_darkTheme ? GlassSurfaceLowBrush() : SurfaceAltBrush()) : SectionCardBackgroundBrush(), BorderBrush = SectionBorderBrush(), BorderThickness = UseCompactSectionChrome ? new Thickness(0,0,0,1) : new Thickness(1), CornerRadius = new CornerRadius(0), Margin = new Thickness(0, 0, 0, UseCompactSectionChrome ? 0 : 7), Padding = UseCompactSectionChrome ? new Thickness(12,16,12,16) : new Thickness(14, 10, 14, 10), Child = grid };
         if (!UseNeutralSectionChrome) AttachHoverMotion(row, 1.002f); ToolTipService.SetToolTip(row, policy.Detail);
         return row;
     }
@@ -1708,7 +2351,7 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             "SpankyInfoBrush" => NeutralBlackPalette.Info,
             _ => NeutralBlackPalette.Accent
         }) : UiBrush(resource);
-        badge.Background = neutral ? ThemeColor(10,10,10) : semantic;
+        badge.Background = neutral ? (_darkTheme ? GlassSurfaceLowBrush() : ThemeColor(245,245,245)) : semantic;
         if (badge.Child is TextBlock label)
             label.Foreground = neutral ? semantic : OnAccentTextBrush();
     }
@@ -1719,7 +2362,7 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         {
             CornerRadius = new CornerRadius(7.0), Opacity = 0.88,
             Padding = new Thickness(7.0, 3.0, 7.0, 3.0),
-            Child = new TextBlock { Text = text, FontSize = 10.0 }
+            Child = new TextBlock { Text = text, FontSize = 10.5 }
         };
         ApplyBadgeAppearance(badge, resource, UseNeutralSectionChrome);
         return badge;
@@ -1752,15 +2395,6 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             return;
         }
 
-        if (sectionKey == "browsers")
-        {
-            const string prefix = "browsers|";
-            string sub = cacheKey.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-                ? cacheKey[prefix.Length..]
-                : (_sub ?? "Firefox");
-            if (_browserPageCaches.ContainsKey(sub))
-                _browserPageRevisionStamp[sub] = stamp;
-        }
     }
 
     private void RefreshClassicTweakCard(Border item)
@@ -1826,19 +2460,26 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
 
         foreach (Border item in ContentStack.Children.OfType<Border>())
             RefreshClassicTweakCard(item);
-        if (_networkTweakHost != null)
+        // Detached cached pages are not visible, and touching their WinUI
+        // controls makes every System/Privacy toggle also refresh unrelated
+        // NIC, GPU and storage cards. Those sections refresh on cache attach
+        // via RefreshCardsIfTweakRevisionChanged.
+        if (_section == "network" && _networkTweakHost is { } networkHost &&
+            ContentStack.Children.Contains(networkHost))
         {
-            foreach (Border item in _networkTweakHost.Children.OfType<Border>())
+            foreach (Border item in networkHost.Children.OfType<Border>())
                 RefreshClassicTweakCard(item);
         }
-        if (_gpuTweakHost != null)
+        if (_section == "gpu" && _gpuTweakHost is { } gpuHost &&
+            ContentStack.Children.Contains(gpuHost))
         {
-            foreach (Border item in _gpuTweakHost.Children.OfType<Border>())
+            foreach (Border item in gpuHost.Children.OfType<Border>())
                 RefreshClassicTweakCard(item);
         }
-        if (_storageTweakHost != null)
+        if (_section == "storage" && _storageTweakHost is { } storageHost &&
+            ContentStack.Children.Contains(storageHost))
         {
-            foreach (Border item in _storageTweakHost.Children.OfType<Border>())
+            foreach (Border item in storageHost.Children.OfType<Border>())
                 RefreshClassicTweakCard(item);
         }
     }
@@ -1848,7 +2489,7 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         int num = _tweaks.Count((TweakDefinition x) => x.IsDirty);
         if (num <= 0)
         {
-            if (_actionBarInitialized)
+            if (_actionBarInitialized && ActionBar.Visibility != Visibility.Collapsed)
             {
                 ActionBar.Visibility = Visibility.Collapsed;
                 UpdateRowlessShellGeometry();
@@ -1857,22 +2498,68 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         }
 
         EnsureActionBarInitialized();
-        ActionBar.Visibility = Visibility.Visible;
-        UpdateRowlessShellGeometry();
-        DirtyText.Text = num == 1 ? "1 nevyřízená změna" : $"{num} nevyřízených změn";
+        // Most toggle edits leave the action bar visible. Recalculating the
+        // entire WinUI shell geometry on every row change causes unnecessary
+        // layout work; only a true visibility transition needs that update.
+        if (ActionBar.Visibility != Visibility.Visible)
+        {
+            ActionBar.Visibility = Visibility.Visible;
+            UpdateRowlessShellGeometry();
+        }
+        string countText = num == 1
+            ? "1 nevyřízená změna" : $"{num} nevyřízených změn";
+        if (!string.Equals(DirtyText.Text, countText, StringComparison.Ordinal))
+            DirtyText.Text = countText;
     }
+
+    // Guard the confirmation AND the actual Windows apply as one operation.
+    // The progress-dialog gate alone begins too late: two quick clicks
+    // could otherwise open duplicate confirmations for the same batch.
+    private int _tweakApplyInProgress;
 
     private void Apply_Click(object sender, RoutedEventArgs e) =>
         SafeTaskService.Forget(ApplyClickCoreAsync(), "tweaks", "Apply selected tweaks");
 
     private async Task ApplyClickCoreAsync()
     {
-        List<TweakDefinition> dirty = _tweaks.Where((TweakDefinition x) => x.IsDirty).ToList();
+        if (Interlocked.Exchange(ref _tweakApplyInProgress, 1) != 0)
+            return;
+        try
+        {
+        List<TweakDefinition> selectedCatalog = _tweaks;
+        int confirmationGeneration = _navigationGeneration;
+        var dirty = selectedCatalog.Where(x => x.IsDirty).ToList();
         if (dirty.Count == 0) return;
+        var originalSelection = dirty
+            .Select(x => (Tweak: x, x.Pending, x.Current)).ToArray();
+
+        // A confirmation may be open while a background Windows refresh or
+        // navigation changes the models. Never apply a DIFFERENT batch from
+        // the one the user reviewed.
+        bool SelectionStillCurrent() =>
+            confirmationGeneration == _navigationGeneration &&
+            ReferenceEquals(_tweaks, selectedCatalog) &&
+            selectedCatalog.Count(x => x.IsDirty) == originalSelection.Length &&
+            originalSelection.All(x =>
+                x.Tweak.IsLoaded && !x.Tweak.IsBusy && x.Tweak.IsDirty &&
+                x.Tweak.Pending == x.Pending && x.Tweak.Current == x.Current);
+
         if (!await ShowTweakApplyConfirmationAsync(dirty)) return;
-        if (dirty.Any((TweakDefinition x) => x.RestartRequired || x.Risk == TweakRisk.Advanced))
+        if (!SelectionStillCurrent())
+        {
+            ShowActionFeedback("Tweaky", ActionFeedbackKind.Failed,
+                "Výběr změn se mezitím změnil. Zkontroluj jej a potvrď znovu.");
+            return;
+        }
+        if (dirty.Any(x => x.RestartRequired || x.Risk == TweakRisk.Advanced))
         {
             await WindowsActions.EnsureRecentRestorePointAsync("Spankyho Optimizer - tweak batch");
+            if (!SelectionStillCurrent())
+            {
+                ShowActionFeedback("Tweaky", ActionFeedbackKind.Failed,
+                    "Stav změn se mezitím změnil. Potvrď aktuální výběr znovu.");
+                return;
+            }
         }
         var progressResult = await RunCancellableWithProgressAsync(
             "Aplikuji tweaky",
@@ -1883,23 +2570,50 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         if (!progressResult.Completed)
         {
             LogService.Info("tweaks", $"Global apply cancelled by user. requested={dirty.Count}");
-            await ReconcileCancelledApplyAsync(dirty, "global");
+            bool stateRechecked = await ReconcileCancelledApplyAsync(dirty, "global");
             RefreshCards(force: true);
             QueueDirtyStateRefresh();
+            if (!stateRechecked && confirmationGeneration == _navigationGeneration &&
+                ReferenceEquals(_tweaks, selectedCatalog))
+                ShowActionFeedback("Tweaky", ActionFeedbackKind.Failed,
+                    "Dávka byla přerušena, ale skutečný stav některých položek se nepodařilo ověřit.");
             return;
         }
         IReadOnlyList<string> readOnlyList = progressResult.Result;
-
+        Exception? finalReadBackError = null;
         try
         {
-            // Final source-of-truth pass. Never let the UI keep an optimistic Pending state
-            // after Apply; command/API tweaks are detected again from Windows immediately.
+            // Read the real Windows state after Apply, without discarding a
+            // NEW Pending choice staged while the native batch was in flight.
+            // DetectAsync reconciles an unchanged Pending with actual state;
+            // a newer dirty choice stays staged for the user's next Apply.
             var immediateReadBack = dirty.Where(x => !x.RestartRequired).ToArray();
             if (immediateReadBack.Length > 0)
+            {
                 await _engine.DetectAsync(immediateReadBack);
+                if (immediateReadBack.Any(x => !x.IsLoaded))
+                    finalReadBackError = new InvalidOperationException(
+                        "U některých změn nelze načíst skutečný stav Windows.");
+                else
+                {
+                    // Re-detection can succeed but still find that Windows
+                    // reverted a value after the engine's own verification.
+                    // Compare with the USER-CONFIRMED expected values, not
+                    // Pending (which a detect pass intentionally refreshes).
+                    var mismatches = originalSelection
+                        .Where(x => !x.Tweak.RestartRequired &&
+                                    x.Tweak.Current != x.Pending)
+                        .Select(x => x.Tweak.Name).Take(3).ToArray();
+                    if (mismatches.Length != 0)
+                        finalReadBackError = new InvalidOperationException(
+                            "Windows nepotvrdil požadované hodnoty: " +
+                            string.Join(", ", mismatches));
+                }
+            }
         }
         catch (Exception ex)
         {
+            finalReadBackError = ex;
             LogService.Error("tweaks", "Post-apply final detect failed", ex);
         }
 
@@ -1907,44 +2621,75 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         if (dirty.Any(x => x.Section == "memory")) InvalidateMemoryRecommendedPanel();
         if (dirty.Any(x => x.Section == "defender")) InvalidateDefenderPageCache();
         if (dirty.Any(x => x.Section == "components")) InvalidateComponentsPageCache();
-        if (dirty.Any(x => x.Section == "browsers")) InvalidateBrowserPageCache();
         if (dirty.Any(x => x.Section is "memory" or "system")) MemoryStateService.Invalidate();
         RefreshCards(force: true);
         QueueDirtyStateRefresh();
         if (readOnlyList.Count > 0)
         {
-            ShowActionFeedback("Tweaky", ActionFeedbackKind.Failed, string.Join(" • ", readOnlyList.Take(3)));
-            await ShowMessageAsync("Některé změny selhaly", string.Join(Environment.NewLine, readOnlyList.Take(8)));
+            ShowActionFeedback("Tweaky", ActionFeedbackKind.Failed, "Některé změny Windows po aplikaci nepotvrdil.");
+            await ShowTweakApplyFailureAsync(readOnlyList);
+            return;
+        }
+        if (finalReadBackError != null)
+        {
+            // A backend returning no errors is NOT proof of success when the
+            // independent native readback could not confirm actual state.
+            ShowActionFeedback("Tweaky", ActionFeedbackKind.Failed,
+                "Změny mohly proběhnout, ale jejich konečný stav nebyl ověřen.");
+            await ShowMessageAsync("Nelze potvrdit stav Windows",
+                "Kontrola po použití změn se nepodařila. " +
+                "Neopakuj aplikaci naslepo; nejprve znovu načti skutečný stav. " +
+                finalReadBackError.GetBaseException().Message);
             return;
         }
         bool restartRequired = dirty.Any((TweakDefinition x) => x.RestartRequired);
         ShowActionFeedback("Tweaky", restartRequired ? ActionFeedbackKind.RestartRequired : ActionFeedbackKind.Verified, $"{dirty.Count} změn bylo ověřeno.");
         await ShowMessageAsync("Hotovo", restartRequired ? "Změny byly aplikovány a ověřeny. Některé vyžadují restart Windows." : "Změny byly aplikovány a ověřeny.");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _tweakApplyInProgress, 0);
+        }
     }
 
-    private async Task ReconcileCancelledApplyAsync(IEnumerable<TweakDefinition> requested, string area)
+    private async Task<bool> ReconcileCancelledApplyAsync(IEnumerable<TweakDefinition> requested, string area)
     {
         var immediateReadBack = requested.Where(x => !x.RestartRequired).Distinct().ToArray();
-        if (immediateReadBack.Length == 0) return;
+        if (immediateReadBack.Length == 0) return true;
 
         using var reconcileCts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
         try
         {
+            // A cancelled batch needs factual Windows readback, not an
+            // implicit "Discard". Preserve any user-selected target still
+            // pending after the engine's best-effort rollback.
             await _engine.DetectAsync(immediateReadBack, reconcileCts.Token);
-            LogService.Info("tweaks", $"CANCEL_RECONCILE_OK area={area} count={immediateReadBack.Length}");
+            bool verified = immediateReadBack.All(x => x.IsLoaded);
+            if (verified)
+                LogService.Info("tweaks",
+                    $"CANCEL_RECONCILE_OK area={area} count={immediateReadBack.Length}");
+            else
+                LogService.Info("tweaks",
+                    $"CANCEL_RECONCILE_INCOMPLETE area={area} count={immediateReadBack.Length}");
+            return verified;
         }
         catch (OperationCanceledException)
         {
             LogService.Info("tweaks", $"CANCEL_RECONCILE_TIMEOUT area={area} count={immediateReadBack.Length}");
+            return false;
         }
         catch (Exception ex)
         {
             LogService.Error("tweaks", $"Cancelled apply reconcile failed area={area}", ex);
+            return false;
         }
     }
 
     private void Discard_Click(object sender, RoutedEventArgs e)
     {
+        // Do not reset Pending while a confirmed batch is being applied or
+        // post-apply native readback is reconciling those same definitions.
+        if (Volatile.Read(ref _tweakApplyInProgress) != 0) return;
         foreach (TweakDefinition tweak in _tweaks)
         {
             tweak.Pending = tweak.Current;
@@ -1958,41 +2703,52 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         await ShowStyledInfoAsync(title, text, "Zavřít");
     }
 
-    private Button QuickButton(string text, Func<Task> action)
+    private Button QuickButton(string text, Func<Task> action, Func<bool>? canExecute = null)
     {
         Button b = new Button { Content = text };
         ApplyPillButtonAppearance(b);
-        b.MinHeight = 35;
-        b.Padding = new Thickness(13, 6, 13, 6);
+        b.MinHeight = UseGlassChrome ? 36 : 35;
+        b.CornerRadius = new CornerRadius(UseGlassChrome ? 14 : 7);
+        b.Padding = new Thickness(UseGlassChrome ? 15 : 13, 6, UseGlassChrome ? 15 : 13, 6);
         b.FontSize = 12.5;
         if (!UseNeutralSectionChrome) AttachHoverMotion(b, 1.012f);
         int actionBusy = 0;
         b.Click += async delegate
         {
-            if (Interlocked.Exchange(ref actionBusy, 1) != 0)
-            {
-                LogService.Info("ui", $"QUICK_ACTION_DUPLICATE_BLOCKED text={text}");
-                return;
-            }
-
-            object normalContent = b.Content;
-            b.IsEnabled = false;
-            b.Content = "Pracuji\u2026";
             try
             {
-                await action();
+                if (Interlocked.Exchange(ref actionBusy, 1) != 0)
+                {
+                    LogService.Info("ui", $"QUICK_ACTION_DUPLICATE_BLOCKED text={text}");
+                    return;
+                }
+
+                object normalContent = b.Content;
+                // Keep focus while guarded async work runs; actionBusy blocks duplicate activation.
+                b.Content = "Pracuji\u2026";
+                try
+                {
+                    await action();
+                }
+                catch (Exception ex)
+                {
+                    LogService.Error($"Quick action failed: {text} | HRESULT=0x{ex.HResult:X8}", ex);
+                    ShowActionFeedback(text, ActionFeedbackKind.Failed, ex.Message);
+                    await ShowMessageAsync("Chyba", ex.Message);
+                }
+                finally
+                {
+                    b.Content = normalContent;
+                    b.IsEnabled = canExecute?.Invoke() ?? true;
+                    Interlocked.Exchange(ref actionBusy, 0);
+                }
             }
             catch (Exception ex)
             {
-                LogService.Error($"Quick action failed: {text} | HRESULT=0x{ex.HResult:X8}", ex);
-                ShowActionFeedback(text, ActionFeedbackKind.Failed, ex.Message);
-                await ShowMessageAsync("Chyba", ex.Message);
-            }
-            finally
-            {
-                b.Content = normalContent;
-                b.IsEnabled = true;
+                // An asynchronous event handler must never let an exception reach
+                // the WinUI dispatcher; a failed feedback dialog would otherwise crash.
                 Interlocked.Exchange(ref actionBusy, 0);
+                LogService.Error($"Quick action handler failed: {text} | HRESULT=0x{ex.HResult:X8}", ex);
             }
         };
         return b;
@@ -2137,14 +2893,16 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         }
         if (_gpuToolsQueued) return;
         _gpuToolsQueued = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        // A rejected low-priority enqueue must release the pending bit, or the
+        // GPU tools card could never be scheduled again in this session.
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             _gpuToolsQueued = false;
             if (token.IsCancellationRequested || _section != "gpu" || _gpuToolsCard != null) return;
             var sw = Stopwatch.StartNew();
             BuildGpuActions();
             LogService.Info("performance", $"GPU_TOOLS_DEFERRED ms={sw.ElapsedMilliseconds}");
-        });
+        })) _gpuToolsQueued = false;
     }
 
     private void BuildGpuActions()
@@ -2210,13 +2968,9 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         _networkDriverActionToken = token;
         if (_networkDriverCard != null && _networkRealtekSummary != null)
         {
-            ContentStack.Children.Add(_networkDriverCard);
-            var cachedTarget = _networkRealtekSummary;
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            {
-                if (!token.IsCancellationRequested && _section == "network")
-                    SafeTaskService.Forget(LoadDriverSummaryAsync(cachedTarget, token), "network", "Lazy Realtek summary");
-            });
+            if (!ContentStack.Children.Contains(_networkDriverCard))
+                AttachCachedElement(_networkDriverCard);
+            RefreshNetworkDriverSummaryIfExpanded();
             return Task.CompletedTask;
         }
 
@@ -2224,23 +2978,67 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         {
             if (token.IsCancellationRequested || _section != "network") return;
 
-            var summary = new TextBlock { Text = "Načítám stav Realtek adaptéru…", TextWrapping = TextWrapping.Wrap, FontSize = 13 };
+            var summary = new TextBlock { Text = "Rozbal pro načtení stavu ovladače síťové karty.", TextWrapping = TextWrapping.Wrap, FontSize = 13 };
             _networkRealtekSummary = summary;
             var stack = new StackPanel { Spacing = 8 };
             stack.Children.Add(summary);
+            stack.Children.Add(QuickButton("Obnovit stav", () =>
+            {
+                _networkDriverSummaryAt = default;
+                RefreshNetworkDriverSummaryIfExpanded();
+                return Task.CompletedTask;
+            }));
             stack.Children.Add(QuickButton("Zkontrolovat Windows Update", async delegate { await WindowsActions.RealtekScanAsync(_networkDriverActionToken); }));
             _networkDriverCard = BuildDashboardExpander(
                 "Driver síťové karty",
                 "Realtek • Windows Update • stav aktivního adaptéru",
                 stack);
             ContentStack.Children.Add(_networkDriverCard);
-            SafeTaskService.Forget(LoadDriverSummaryAsync(summary, token), "network", "Lazy Realtek summary");
+            if (_networkPageCache != null && !_networkPageCache.Contains(_networkDriverCard))
+                _networkPageCache.Add(_networkDriverCard);
+            if (_networkDriverCard.Child is Expander expander)
+                expander.Expanding += (_, _) =>
+                    DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                        RefreshNetworkDriverSummaryIfExpanded);
         });
         return Task.CompletedTask;
     }
 
+    // A collapsed driver card should not probe Windows Update / Realtek on every
+    // navigation. An expanded cached card refreshes at most once per 20 seconds,
+    // and a manual refresh remains available for immediate read-back.
+    private void RefreshNetworkDriverSummaryIfExpanded()
+    {
+        if (_section != "network" || _networkDriverCard?.Child is not Expander { IsExpanded: true } ||
+            _networkRealtekSummary is not { } target) return;
+        CancellationToken token = _loadCts?.Token ?? _windowLifetimeCts.Token;
+        if (token.IsCancellationRequested) return;
+        int generation = _navigationGeneration;
+        if (_networkDriverSummaryLoadingGeneration == generation ||
+            DateTime.UtcNow - _networkDriverSummaryAt < TimeSpan.FromSeconds(20)) return;
+
+        _networkDriverSummaryLoadingGeneration = generation;
+        SafeTaskService.Forget(RunReadbackAsync(), "network", "On-demand network driver readback");
+        async Task RunReadbackAsync()
+        {
+            try
+            {
+                await LoadDriverSummaryAsync(target, token);
+                if (!token.IsCancellationRequested && generation == _navigationGeneration &&
+                    _section == "network" && ReferenceEquals(_networkRealtekSummary, target))
+                    _networkDriverSummaryAt = DateTime.UtcNow;
+            }
+            finally
+            {
+                if (_networkDriverSummaryLoadingGeneration == generation)
+                    _networkDriverSummaryLoadingGeneration = -1;
+            }
+        }
+    }
+
     private async Task LoadDriverSummaryAsync(TextBlock target, CancellationToken token)
     {
+        int generation = _navigationGeneration;
         string text;
         Exception? error = null;
         try
@@ -2254,10 +3052,16 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
             text = "Realtek kontrolu se nepodařilo načíst: " + ex.Message;
         }
 
-        if (token.IsCancellationRequested || _section != "network") return;
+        if (token.IsCancellationRequested ||
+            generation != _navigationGeneration ||
+            _section != "network" ||
+            !ReferenceEquals(_networkRealtekSummary, target)) return;
         DispatcherQueue.TryEnqueue(() =>
         {
-            if (token.IsCancellationRequested || _section != "network") return;
+            if (token.IsCancellationRequested ||
+                generation != _navigationGeneration ||
+                _section != "network" ||
+                !ReferenceEquals(_networkRealtekSummary, target)) return;
             target.Text = text;
             target.Foreground = error == null ? TextSecondaryBrush() : WarningBrush();
             if (error != null)
@@ -2272,7 +3076,7 @@ Closed += (_, _) => { UiStateService.Save(new UiState(_section, _sub, "Manual"))
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         string tag = string.IsNullOrWhiteSpace(_themeSection) ? "system" : _themeSection;
-        var icon = new Border { Width = 50, Height = 50, CornerRadius = new CornerRadius(11), Background = SurfaceAltBrush(), BorderThickness = new Thickness(0), Child = SectionIcon(tag, 36), VerticalAlignment = VerticalAlignment.Center };
+        var icon = new Border { Width = 50, Height = 50, CornerRadius = new CornerRadius(11), Background = _darkTheme ? GlassSurfaceLowBrush() : SurfaceAltBrush(), BorderThickness = new Thickness(0), Child = SectionIcon(tag, 36), VerticalAlignment = VerticalAlignment.Center };
         if (!UseNeutralSectionChrome) AttachHoverMotion(icon, 1.025f); grid.Children.Add(icon);
         var text = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
         text.Children.Add(new TextBlock { Text = title, FontSize = 17.5, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap });

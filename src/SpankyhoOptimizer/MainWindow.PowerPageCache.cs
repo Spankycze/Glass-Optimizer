@@ -13,14 +13,38 @@ public sealed partial class MainWindow
     private DateTime _powerPageCacheAt;
     private bool _powerPageCacheAttached;
     private Microsoft.UI.Xaml.Controls.StackPanel? _powerActionsHost;
+    private Services.PowerPlanSnapshot? _powerActionsSnapshot;
+    private Microsoft.UI.Xaml.Controls.StackPanel? _powerSummaryHost;
+    private Services.PowerPlanSnapshot? _powerSummarySnapshot;
+    private DateTime _aiPowerControlsLastRefreshUtc;
+    private static readonly TimeSpan CachedAiPowerRefreshInterval = TimeSpan.FromSeconds(3);
+
+    private static bool ShouldRefreshCachedAiPowerControls(int existingChildren, DateTime lastRefreshUtc, DateTime nowUtc) =>
+        existingChildren == 0 || nowUtc - lastRefreshUtc >= CachedAiPowerRefreshInterval;
     private Microsoft.UI.Xaml.Controls.StackPanel? _powerRecommendedHost;
     private Services.PowerSettingState[]? _powerRecommendedSettings;
     private int _powerRecommendedRendered;
     private bool _powerRecommendedQueued;
+    private int _powerRecommendedQueuedGeneration = -1;
     private Microsoft.UI.Xaml.Controls.StackPanel? _powerAdvancedHost;
     private Services.PowerSettingState[]? _powerAdvancedSettings;
     private int _powerAdvancedRendered;
     private bool _powerAdvancedQueued;
+    private int _powerAdvancedQueuedGeneration = -1;
+
+    private bool IsPowerPageCacheFresh() =>
+        _powerPageCache is { Count: > 0 } &&
+        DateTime.UtcNow - _powerPageCacheAt <= PowerPageCacheTtl;
+
+    private bool CanParkPowerPageCache()
+    {
+        if (!IsPowerPageCacheFresh() || _powerPageCache!.Count != ContentStack.Children.Count)
+            return false;
+        for (int i = 0; i < _powerPageCache.Count; i++)
+            if (!ReferenceEquals(_powerPageCache[i], ContentStack.Children[i]))
+                return false;
+        return true;
+    }
 
     private bool TryAttachPowerPageCache(System.Threading.CancellationToken token)
     {
@@ -30,8 +54,18 @@ public sealed partial class MainWindow
 
         foreach (var element in _powerPageCache) AttachCachedElement(element);
         _powerPageCacheAttached = true;
-        if (_aiPowerControlsHost != null)
-            SafeTaskService.Forget(LoadAiPowerControlsAsync(_aiPowerControlsHost, _navigationGeneration, token),
+        int generation = _navigationGeneration;
+        if (_powerSummaryHost is { Children.Count: 0 } && _powerSummarySnapshot != null &&
+            _powerActionsHost != null)
+            SchedulePowerSummary(_powerSummaryHost, _powerSummarySnapshot, _powerActionsHost, token, generation);
+        if (_powerActionsHost is { Children.Count: 0 } && _powerActionsSnapshot != null)
+            SchedulePowerActions(_powerActionsHost, _powerActionsSnapshot, token, generation);
+        var aiHost = _aiPowerControlsHost;
+        // Reattaching the cached page should not launch 10+ file/registry probes
+        // per second during fast sidebar navigation. Never throttle a blank panel.
+        if (aiHost != null && aiHost.Parent != null &&
+            ShouldRefreshCachedAiPowerControls(aiHost.Children.Count, _aiPowerControlsLastRefreshUtc, DateTime.UtcNow))
+            SafeTaskService.Forget(LoadAiPowerControlsAsync(aiHost, generation, token),
                 "ai-runtime", "Refresh cached AI power controls");
         long attachMs = perf.ElapsedMilliseconds;
 
@@ -53,24 +87,42 @@ public sealed partial class MainWindow
 
     private void CapturePowerPageCache()
     {
-        _powerPageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _powerPageCache = SnapshotChildren(ContentStack);
         _powerPageCacheAt = DateTime.UtcNow;
         _powerPageCacheAttached = true;
     }
 
     private void InvalidatePowerPageCache()
     {
+        var pinned = _persistentPowerHost;
+        _persistentPowerHost = null;
+        if (pinned != null && !ReferenceEquals(pinned, ContentStack))
+        {
+            if (_contentLayerHost.Children.Contains(pinned))
+                _contentLayerHost.Children.Remove(pinned);
+            pinned.Children.Clear();
+        }
         _powerPageCache = null;
         _powerPageCacheAt = default;
         _powerPageCacheAttached = false;
         _powerActionsHost = null;
+        _powerActionsSnapshot = null;
+        _powerSummaryHost = null;
+        _powerSummarySnapshot = null;
+        _aiPowerControlsLastRefreshUtc = default;
+        _aiPowerDetailsSnapshotCache.Invalidate();
+        _aiPowerControlsRefreshState.RetireDisclosure();
+        _aiPowerControlsHost = null;
+        _aiPowerLiveView = null;
         _powerRecommendedHost = null;
         _powerRecommendedSettings = null;
         _powerRecommendedRendered = 0;
         _powerRecommendedQueued = false;
+        _powerRecommendedQueuedGeneration = -1;
         _powerAdvancedHost = null;
         _powerAdvancedSettings = null;
         _powerAdvancedRendered = 0;
         _powerAdvancedQueued = false;
+        _powerAdvancedQueuedGeneration = -1;
     }
 }

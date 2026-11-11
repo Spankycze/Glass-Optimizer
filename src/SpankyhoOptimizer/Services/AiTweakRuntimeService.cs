@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,10 +21,23 @@ public sealed record AiTweakRuntimeHealth(DateTime UpdatedUtc, bool Enabled, int
 
 public static class AiTweakRuntimePolicy
 {
+    // A stale tick must never start a registry write after the global AI or
+    // tweak scope is disabled. This does NOT prevent restoring owned writes.
+    internal static bool AllowsNewTweakWrite(AiSystemRuntimeConfig config) =>
+        config.Enabled && config.SelfOptimizationEnabled && config.TweaksEnabled;
+
+    // Shared literal safety denylist, evaluated for each catalog candidate.
+    // Keep original case-insensitive substring rules and decision order.
+    private static readonly string[] ProtectedRegistryFragments =
+    {
+        @"CurrentControlSet\Services", @"DeviceGuard", @"Windows Defender",
+        @"WindowsUpdate", @"PowerSchemes", @"\Winlogon", @"\Policies\System",
+        @"Tcpip", @"TCPIP6", @"Control\Class", @"Control\Storage", @"NetworkCards"
+    };
+
     // Recommended catalog policy, not a claim of measured/LLM performance improvements.
     public static string DeferredReason(TweakDefinition t)
     {
-        if (t.Section.Equals("browsers", StringComparison.OrdinalIgnoreCase)) return "Browser managed by RAMGuard";
         if (t.Id.StartsWith("sec.", StringComparison.OrdinalIgnoreCase))
             return "Security hardening is managed by AI Security Guard";
         if (t.Section.Equals("defender", StringComparison.OrdinalIgnoreCase))
@@ -41,11 +57,9 @@ public static class AiTweakRuntimePolicy
         if (t.Section is "defender" or "update" or "power")
             return "Security/update/device/power policy has a dedicated owner";
         string path = t.RegistryPath;
-        if (new[] { @"CurrentControlSet\Services", @"DeviceGuard", @"Windows Defender",
-            @"WindowsUpdate", @"PowerSchemes", @"\Winlogon", @"\Policies\System",
-            @"Tcpip", @"TCPIP6", @"Control\Class", @"Control\Storage", @"NetworkCards" }
-            .Any(x => path.Contains(x, StringComparison.OrdinalIgnoreCase)))
-            return "Critical or independently managed target";
+        foreach (string fragment in ProtectedRegistryFragments)
+            if (path.Contains(fragment, StringComparison.OrdinalIgnoreCase))
+                return "Critical or independently managed target";
         return string.Empty;
     }
 }
@@ -68,21 +82,32 @@ public sealed partial class AiTweakRuntimeService
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "SpankyhoOptimizer", "ai-tweak-ownership.json");
     private static readonly string HealthPath = Path.Combine(Path.GetDirectoryName(DefaultPath)!, "ai-tweak-health.json");
     private static readonly SemaphoreSlim DefaultGate = new(1, 1);
-    private static AiTweakRuntimeHealth? _cachedHealth;
+    private static readonly ObservedJsonSnapshotCache<AiTweakRuntimeHealth> HealthSnapshot = new(HealthPath);
     private readonly SemaphoreSlim _gate;
     private readonly Func<IEnumerable<TweakDefinition>> _catalog;
     private readonly IAiTweakRuntimeBackend _backend;
     private readonly string _path;
     private TweakDefinition[]? _definitions;
-    private readonly Dictionary<string, DateTime> _observed = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _observed = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, Ownership> _owned = new(StringComparer.OrdinalIgnoreCase);
+    private const int MaxOwnershipJournalBytes = 1024 * 1024;
+    private byte[]? _trustedJournalDigest;
+    private bool _trustedJournalKnown;
+    private static bool SameTweakId(string left, string right) =>
+        string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+
+    // Registry hives, paths and value names are case-insensitive on Windows.
+    // A casing-only catalog change must not orphan an AI-owned restoration,
+    // while any real target/value change remains blocked.
+    private static bool SameOwnedTarget(TweakDefinition tweak, string target) =>
+        string.Equals(Target(tweak), target, StringComparison.OrdinalIgnoreCase);
     private int _cursor, _restored;
     private DateTime _cooldown;
     private string _lastAction = "Catalog policy observation", _lastError = "";
     public AiTweakRuntimeHealth Health { get; private set; } = new(DateTime.MinValue, false, 0, 0, 0, 0, 0, 0, "", "", Array.Empty<AiTweakRuntimeItem>());
 
     public AiTweakRuntimeService() : this(
-        () => CatalogService.EnumerateTweakSources().Where(s => s.Section != "browsers")
+        () => CatalogService.EnumerateTweakSources()
             .SelectMany(s => s.Factory()).GroupBy(t => t.Id, StringComparer.OrdinalIgnoreCase).Select(g => g.First()),
         new RegistryBackend(), DefaultPath, feedbackRequired: true) { }
 
@@ -92,15 +117,17 @@ public sealed partial class AiTweakRuntimeService
         _gate = ownershipPath == DefaultPath ? DefaultGate : new SemaphoreSlim(1, 1);
     }
 
-    public static AiTweakRuntimeHealth? ReadHealth()
+    public static AiTweakRuntimeHealth? ReadHealth() => HealthSnapshot.TryRead();
+
+    private void RequireLiveTweakWriteScope()
     {
-        try
-        {
-            if (File.Exists(HealthPath))
-                _cachedHealth = JsonSerializer.Deserialize<AiTweakRuntimeHealth>(File.ReadAllText(HealthPath));
-        }
-        catch { }
-        return _cachedHealth;
+        // Fake/test backends use an isolated journal and explicit test config.
+        // Only the real Windows backend consults the current UI-owned config.
+        if (!_feedbackRequired || _path != DefaultPath) return;
+        if (!AiTweakRuntimePolicy.AllowsNewTweakWrite(
+                AiSystemResourceManagerService.LoadConfig()))
+            throw new InvalidOperationException(
+                "AI or registry-tweak automation was disabled before native write.");
     }
 
     public Task RestoreAllAsync(CancellationToken token = default) =>
@@ -118,12 +145,61 @@ public sealed partial class AiTweakRuntimeService
         try
         {
             using var ownershipLease = await AcquireOwnershipLeaseAsync(token).ConfigureAwait(false);
+            // A previous lease is a finished transaction. A different
+            // cooperating instance may have committed a newer trial journal
+            // before THIS lease was obtained, so its digest is not a valid
+            // starting point for this cycle. Load a fresh trusted snapshot
+            // under the new lease; keep strict checks within the cycle.
+            _trustedPerformanceJournalKnown = false;
+            _trustedPerformanceJournalDigest = null;
             // Both in-process gate and cross-process lease protect ownership+trial state.
-            if (File.Exists(_path))
-                _owned = JsonSerializer.Deserialize<Dictionary<string, Ownership>>(await File.ReadAllTextAsync(_path, token).ConfigureAwait(false))
-                    ?? new(StringComparer.OrdinalIgnoreCase);
+            // Capture the digest of the EXACT bytes validated by this tick;
+            // a non-compliant external writer may ignore our .lease entirely.
+            byte[]? journalBytes = await ReadOwnershipJournalBytesAsync(token).ConfigureAwait(false);
+            if (journalBytes != null)
+            {
+                // System tweak IDs are case-insensitive in the live catalog.
+                // JSON deserialization creates an ordinary case-sensitive
+                // dictionary, which can orphan a previously owned restore
+                // after a catalog casing change. Reject case-colliding keys
+                // rather than choosing either owner silently.
+                RejectDuplicateJournalJsonProperties(journalBytes);
+                var stored = JsonSerializer.Deserialize<Dictionary<string, Ownership>>(journalBytes)
+                    ?? throw new InvalidDataException("AI tweak ownership journal is null.");
+                // Never restore using a journal key that points to a
+                // different embedded owner. Otherwise a successful restore
+                // updates a NEW key while the original managed entry stays
+                // live and may be retried after restart.
+                foreach (var entry in stored)
+                    if (entry.Value is null ||
+                        string.IsNullOrWhiteSpace(entry.Key) ||
+                        string.IsNullOrWhiteSpace(entry.Value.Id) ||
+                        !SameTweakId(entry.Key, entry.Value.Id) ||
+                        (entry.Value.Managed &&
+                            (string.IsNullOrWhiteSpace(entry.Value.Target) ||
+                             string.IsNullOrWhiteSpace(entry.Value.BackupId) ||
+                             string.IsNullOrWhiteSpace(entry.Value.Original) ||
+                             string.IsNullOrWhiteSpace(entry.Value.Applied))))
+                        throw new InvalidDataException(
+                            "AI tweak ownership journal has invalid active owner identity or backup evidence.");
+                _owned = new Dictionary<string, Ownership>(stored, StringComparer.OrdinalIgnoreCase);
+            }
+            else if (_owned.Count != 0 || (_trustedJournalKnown && _trustedJournalDigest != null))
+            {
+                // A deleted journal invalidates earlier in-memory ownership.
+                // No restore or new native write may rely on an owner which
+                // is no longer durably recorded. A new process with no prior
+                // ownership may still initialize an empty journal normally.
+                throw new InvalidDataException(
+                    "AI tweak ownership journal disappeared during an active session.");
+            }
+            _trustedJournalDigest = journalBytes is null ? null : SHA256.HashData(journalBytes);
+            _trustedJournalKnown = true;
             var defs = _definitions ??= _catalog().ToArray();
-            bool enabled = config.Enabled && config.TweaksEnabled;
+            // The central self-optimization switch also controls whether
+            // new automatic registry tweaks are admitted. On AI-off we still
+            // enter the existing owned-value restoration branch below.
+            bool enabled = AiTweakRuntimePolicy.AllowsNewTweakWrite(config);
             if (_feedbackRequired && enabled)
                 await EvaluateMeasuredSafeAsync(config, defs, realIdle, load, gameActive, suppliedSample, token).ConfigureAwait(false);
             else if (!enabled)
@@ -133,7 +209,7 @@ public sealed partial class AiTweakRuntimeService
                 foreach (var row in _owned.Values.Where(x => x.Managed).ToArray())
                 {
                     token.ThrowIfCancellationRequested();
-                    var t = defs.FirstOrDefault(x => x.Id == row.Id && Target(x) == row.Target);
+                    var t = defs.FirstOrDefault(x => SameTweakId(x.Id, row.Id) && SameOwnedTarget(x, row.Target));
                     if (t == null) { _lastError = "Catalog target unavailable: " + row.Id; continue; }
                     try { await RestoreOwnedAsync(t, row, token).ConfigureAwait(false); }
                     catch (OperationCanceledException) { throw; }
@@ -154,7 +230,7 @@ public sealed partial class AiTweakRuntimeService
                     if (_owned.TryGetValue(t.Id, out var row))
                     {
                         if (row.Suppressed) continue;
-                        if (row.Target != Target(t)) { _lastError = "Catalog target changed: " + t.Id; continue; }
+                        if (!SameOwnedTarget(t, row.Target)) { _lastError = "Catalog target changed: " + t.Id; continue; }
                         if (row.Managed)
                         {
                             if (await _backend.CaptureAsync(t, token).ConfigureAwait(false) != row.Applied)
@@ -162,19 +238,38 @@ public sealed partial class AiTweakRuntimeService
                             continue;
                         }
                     }
-                    DateTime now = DateTime.UtcNow;
-                    if (!_observed.TryGetValue(t.Id, out var since)) _observed[t.Id] = since = now;
-                    if (now - since < TimeSpan.FromSeconds(Math.Clamp(config.ObservationSeconds, 0, 3600))) continue;
+                    DateTime now = DateTime.UtcNow; // journal record only
+                    long observationStamp = Stopwatch.GetTimestamp();
+                    if (!_observed.TryGetValue(t.Id, out var since))
+                        _observed[t.Id] = since = observationStamp;
+                    if (!AiTweakMonotonicTimingPolicy.HasElapsed(since, observationStamp,
+                        Stopwatch.Frequency, TimeSpan.FromSeconds(Math.Clamp(
+                            config.ObservationSeconds > 0 ? config.ObservationSeconds : 180, 0, 3600))))
+                        continue;
                     if (await _backend.IsEnabledAsync(t, token).ConfigureAwait(false)) continue; // never claim pre-existing manual settings
                     using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
                     budget.CancelAfter(TimeSpan.FromSeconds(20));
                     string original = await _backend.CaptureAsync(t, budget.Token).ConfigureAwait(false);
                     row = new(t.Id, Target(t), "ai." + t.Id + "." + Guid.NewGuid().ToString("N"),
                         original, _backend.ExpectedSignature(t), true, false, false, now, "Pending transaction");
+                    _owned.TryGetValue(t.Id, out var precedingOwner);
                     _owned[t.Id] = row;
-                    await PersistAsync(budget.Token).ConfigureAwait(false); // ownership BEFORE backend mutation
                     try
                     {
+                        await PersistAsync(budget.Token).ConfigureAwait(false); // ownership BEFORE backend mutation
+                    }
+                    catch
+                    {
+                        // No backend write was attempted. A failed ownership
+                        // journal cannot authorize an in-memory managed row.
+                        if (precedingOwner is null) _owned.Remove(t.Id);
+                        else _owned[t.Id] = precedingOwner;
+                        throw;
+                    }
+                    try
+                    {
+                        RequireLiveTweakWriteScope();
+                        await EnsureOwnershipJournalUnchangedAsync(budget.Token).ConfigureAwait(false);
                         await _backend.ApplyAsync(t, row.BackupId, budget.Token).ConfigureAwait(false);
                         if (await _backend.CaptureAsync(t, budget.Token).ConfigureAwait(false) != row.Applied)
                             throw new InvalidOperationException("AI tweak read-back failed: " + t.Id);
@@ -188,8 +283,20 @@ public sealed partial class AiTweakRuntimeService
                         try
                         {
                             string current = await _backend.CaptureAsync(t, rollback.Token).ConfigureAwait(false);
-                            if (current != row.Original)
+                            // AI only owns its exact applied signature. A
+                            // different value indicates a user/external write,
+                            // not an invitation to overwrite it on failure.
+                            if (current != row.Applied && current != row.Original)
+                            {
+                                await PreserveOverrideAsync(row, rollback.Token).ConfigureAwait(false);
+                                throw new InvalidOperationException(
+                                    "AI rollback skipped: externally changed tweak preserved");
+                            }
+                            if (current == row.Applied && current != row.Original)
+                            {
+                                await EnsureOwnershipJournalUnchangedAsync(rollback.Token).ConfigureAwait(false);
                                 await _backend.RestoreAsync(t, row.BackupId, row.Original, rollback.Token).ConfigureAwait(false);
+                            }
                             if (await _backend.CaptureAsync(t, rollback.Token).ConfigureAwait(false) != row.Original)
                                 throw new InvalidOperationException("Rollback read-back failed");
                             _owned[t.Id] = row with { Managed = false, Suppressed = true, Reason = "Apply failed; restored; manual review" };
@@ -279,7 +386,6 @@ public sealed partial class AiTweakRuntimeService
             }
             if (_path == DefaultPath)
             {
-                _cachedHealth = Health;
                 await AtomicFileService.WriteTextAsync(HealthPath, JsonSerializer.Serialize(Health), token).ConfigureAwait(false);
             }
         }
@@ -298,10 +404,25 @@ public sealed partial class AiTweakRuntimeService
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
         string current = await _backend.CaptureAsync(t, timeout.Token).ConfigureAwait(false);
-        if (current == row.Original) { _owned[row.Id] = row with { Managed = false, Reason = "Already original" }; }
+        if (_feedbackRequired && _performance.Trial != null)
+            await EnsurePerformanceJournalUnchangedAsync(timeout.Token).ConfigureAwait(false);
+        if (current == row.Original)
+        {
+            // The original is already present before OUR restore. This may be
+            // an external/manual reversal or crash recovery after an earlier
+            // native restore. Relinquish ownership and conservatively suppress
+            // future automatic reapplication instead of silently re-enabling.
+            _owned[row.Id] = row with
+            {
+                Managed = false, Suppressed = true, ManualOverride = true,
+                Reason = "Original already present; external change or recovered restore preserved"
+            };
+            _lastAction = "Preserved already-original value " + row.Id;
+        }
         else if (current != row.Applied) { await PreserveOverrideAsync(row, timeout.Token).ConfigureAwait(false); return; }
         else
         {
+            await EnsureOwnershipJournalUnchangedAsync(timeout.Token).ConfigureAwait(false);
             await _backend.RestoreAsync(t, row.BackupId, row.Original, timeout.Token).ConfigureAwait(false);
             if (await _backend.CaptureAsync(t, timeout.Token).ConfigureAwait(false) != row.Original)
                 throw new InvalidOperationException("AI restore read-back failed: " + t.Id);
@@ -311,7 +432,90 @@ public sealed partial class AiTweakRuntimeService
         await PersistAsync(timeout.Token).ConfigureAwait(false);
     }
     private static string Target(TweakDefinition t) => $"{t.RegistryHive}|{t.RegistryPath}|{t.RegistryValueName}|{t.RegistryEnabledValue}";
-    private Task PersistAsync(CancellationToken token) => AtomicFileService.WriteTextAsync(_path, JsonSerializer.Serialize(_owned), token);
+    private static void RejectDuplicateJournalJsonProperties(byte[] bytes)
+    {
+        using var document = JsonDocument.Parse(bytes);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("AI journal root must be a JSON object.");
+
+        // Dictionary deserialization silently keeps the last exact duplicate.
+        // Validate the raw JSON tree first so no ambiguous owner/backup fields
+        // are discarded before our ownership checks can inspect them.
+        static void Walk(JsonElement element, bool isRoot = false)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                // Root case aliases retain the established dictionary
+                // collision guard. An OWNERSHIP FIELD differs only in case
+                // must be rejected too, including across serializer versions.
+                var names = new HashSet<string>(
+                    isRoot ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (!names.Add(property.Name))
+                        throw new InvalidDataException(
+                            "AI journal contains duplicate JSON properties.");
+                    Walk(property.Value);
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in element.EnumerateArray()) Walk(item);
+            }
+        }
+
+        Walk(document.RootElement, isRoot: true);
+    }
+
+    private async Task<byte[]?> ReadOwnershipJournalBytesAsync(CancellationToken token)
+    {
+        try
+        {
+            await using var stream = new FileStream(_path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete, 8192, FileOptions.Asynchronous);
+            // A corrupted or hostile journal must never allocate unbounded RAM.
+            if (stream.Length > MaxOwnershipJournalBytes)
+                throw new InvalidDataException("AI tweak ownership journal exceeds safe size limit.");
+            using var buffer = new MemoryStream((int)stream.Length);
+            byte[] chunk = new byte[8192];
+            int read;
+            while ((read = await stream.ReadAsync(chunk, token).ConfigureAwait(false)) != 0)
+            {
+                if (buffer.Length + read > MaxOwnershipJournalBytes)
+                    throw new InvalidDataException("AI tweak ownership journal grew beyond safe size limit.");
+                buffer.Write(chunk, 0, read);
+            }
+            return buffer.ToArray();
+        }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+    }
+
+    private async Task EnsureOwnershipJournalUnchangedAsync(CancellationToken token)
+    {
+        if (!_trustedJournalKnown)
+            throw new IOException("AI tweak ownership journal has no validated snapshot.");
+        byte[]? current = await ReadOwnershipJournalBytesAsync(token).ConfigureAwait(false);
+        bool unchanged = _trustedJournalDigest is null
+            ? current is null
+            : current is not null &&
+              CryptographicOperations.FixedTimeEquals(
+                  _trustedJournalDigest, SHA256.HashData(current));
+        if (!unchanged)
+            throw new IOException(
+                "AI tweak ownership journal changed since validated lease read; refusing stale write.");
+    }
+
+    private async Task PersistAsync(CancellationToken token)
+    {
+        // Detect writers which ignore our exclusive cross-process .lease.
+        // Hash verification before replacement is optimistic, not filesystem CAS.
+        await EnsureOwnershipJournalUnchangedAsync(token).ConfigureAwait(false);
+        string json = JsonSerializer.Serialize(_owned);
+        await AtomicFileService.WriteTextAsync(_path, json, token).ConfigureAwait(false);
+        _trustedJournalDigest = SHA256.HashData(Encoding.UTF8.GetBytes(json));
+        _trustedJournalKnown = true;
+    }
 
     private sealed class RegistryBackend : IAiTweakRuntimeBackend
     {

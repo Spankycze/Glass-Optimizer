@@ -40,13 +40,34 @@ public static class SystemInfoService
         public ulong AvailExtendedVirtual;
     }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx status);
 
-    private static readonly object CacheLock = new();
+    // Native kernel32 physical-memory counters shared by Overview and Memory
+    // Tweaks. Avoid a separate Win32_OperatingSystem WMI query for a value the
+    // kernel supplies synchronously without WMI provider startup/COM traffic.
+    internal static bool TryReadPhysicalMemory(out double totalGb, out double availableGb)
+    {
+        totalGb = availableGb = 0;
+        var state = new MemoryStatusEx { Length = (uint)Marshal.SizeOf<MemoryStatusEx>() };
+        if (!GlobalMemoryStatusEx(ref state) || state.TotalPhys == 0)
+            return false;
+        totalGb = state.TotalPhys / 1073741824d;
+        availableGb = Math.Min(state.AvailPhys, state.TotalPhys) / 1073741824d;
+        return true;
+    }
+
+    // .NET 10 specialized lock avoids Monitor overhead on the high-frequency snapshot cache path.
+    private static readonly System.Threading.Lock CacheLock = new();
     private static readonly object HardwareIdentityLock = new();
     private static OverviewSnapshot? _cached;
+    // Atomic cache publication: callers must never observe a completed task
+    // paired with a different generation's timestamp. One object is published
+    // through a single volatile pointer on the lock-free Overview hot path.
+    private sealed record PublishedOverview(Task<OverviewSnapshot> Task, DateTime CapturedUtc);
+    private static PublishedOverview? _published;
     private static HardwareIdentity? _hardwareIdentity;
     private static DateTime _cachedAt;
     private static Task<OverviewSnapshot>? _flight;
@@ -62,18 +83,37 @@ public static class SystemInfoService
     private static readonly TimeSpan HardwareIdentityPersistentTtl = TimeSpan.FromDays(30);
     private static readonly TimeSpan SnapshotTtl = TimeSpan.FromMinutes(2);
 
+    // Reject future timestamps after a wall-clock rollback or resume.
+    internal static bool IsSnapshotFresh(DateTime cachedAt, DateTime nowUtc, TimeSpan ttl) =>
+        cachedAt != default && nowUtc >= cachedAt && nowUtc - cachedAt < ttl;
+
     public static OverviewSnapshot? TryGetFreshSnapshot()
     {
         lock (CacheLock)
-            return _cached != null && DateTime.UtcNow - _cachedAt < SnapshotTtl ? _cached : null;
+            return _cached != null && IsSnapshotFresh(_cachedAt, DateTime.UtcNow, SnapshotTtl) ? _cached : null;
     }
 
     public static Task<OverviewSnapshot> GetSnapshotAsync(bool forceRefresh = false)
     {
+        // Fast path: immutable completed snapshot task, published only after a successful build.
+        // Invalidation clears this reference before rebuilding the next generation.
+        if (!forceRefresh)
+        {
+            PublishedOverview? published = System.Threading.Volatile.Read(ref _published);
+            if (published != null &&
+                IsSnapshotFresh(published.CapturedUtc, DateTime.UtcNow, SnapshotTtl))
+                return published.Task;
+        }
         lock (CacheLock)
         {
-            if (!forceRefresh && _cached != null && DateTime.UtcNow - _cachedAt < SnapshotTtl)
-                return Task.FromResult(_cached);
+            if (!forceRefresh && _cached != null && IsSnapshotFresh(_cachedAt, DateTime.UtcNow, SnapshotTtl))
+            {
+                if (_published != null) return _published.Task;
+                // Only reachable for an older, still-valid locked snapshot.
+                var published = new PublishedOverview(Task.FromResult(_cached), _cachedAt);
+                System.Threading.Volatile.Write(ref _published, published);
+                return published.Task;
+            }
             if (!forceRefresh && _flight != null)
                 return _flight;
             if (forceRefresh)
@@ -83,6 +123,7 @@ public static class SystemInfoService
                 // Clearing it here made every ordinary force refresh pay persistent JSON/WMI identity cost.
                 _generation++;
                 _cached = null;
+                System.Threading.Volatile.Write(ref _published, null);
                 _cachedAt = default;
             }
 
@@ -96,6 +137,8 @@ public static class SystemInfoService
                     {
                         _cached = snapshot;
                         _cachedAt = DateTime.UtcNow;
+                        var published = new PublishedOverview(Task.FromResult(snapshot), _cachedAt);
+                        System.Threading.Volatile.Write(ref _published, published);
                     }
                 }
                 return snapshot;
@@ -117,6 +160,7 @@ public static class SystemInfoService
         {
             _generation++;
             _cached = null;
+            System.Threading.Volatile.Write(ref _published, null);
             _cachedAt = default;
             _flight = null;
         }
@@ -128,6 +172,7 @@ public static class SystemInfoService
         {
             _generation++;
             _cached = null;
+            System.Threading.Volatile.Write(ref _published, null);
             _cachedAt = default;
             _flight = null;
         }
@@ -224,11 +269,11 @@ public static class SystemInfoService
                 using var boardSearcher = new ManagementObjectSearcher(scope,
                     new ObjectQuery("SELECT Manufacturer,Product FROM Win32_BaseBoard"),
                     new System.Management.EnumerationOptions { Timeout = TimeSpan.FromSeconds(2), ReturnImmediately = false, Rewindable = false });
-                foreach (ManagementObject board in boardSearcher.Get())
-                {
-                    motherboard = FormatMotherboard(Convert.ToString(board["Manufacturer"]), Convert.ToString(board["Product"]));
-                    break;
-                }
+                var boardResults = boardSearcher.Get();
+                motherboard = WmiFirstRowScope.ReadFirst<ManagementObject, string>(
+                    boardResults, boardResults,
+                    board => FormatMotherboard(Convert.ToString(board["Manufacturer"]), Convert.ToString(board["Product"])),
+                    motherboard);
             }
             catch (Exception ex) { LogService.Error("hardware", "Baseboard identity probe failed", ex); }
 
@@ -238,15 +283,17 @@ public static class SystemInfoService
                 using var ramSearcher = new ManagementObjectSearcher(scope,
                     new ObjectQuery("SELECT Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed,SMBIOSMemoryType FROM Win32_PhysicalMemory"),
                     new System.Management.EnumerationOptions { Timeout = TimeSpan.FromSeconds(2), ReturnImmediately = false, Rewindable = false });
-                foreach (ManagementObject module in ramSearcher.Get())
+                using var ramResults = ramSearcher.Get();
+                foreach (ManagementObject module in ramResults)
                 {
-                    modules.Add(new RamModuleInfo(
-                        ToUInt64(module["Capacity"]),
-                        ToUInt32(module["Speed"]),
-                        ToUInt32(module["ConfiguredClockSpeed"]),
-                        ToUInt16(module["SMBIOSMemoryType"]),
-                        CleanText(Convert.ToString(module["Manufacturer"])),
-                        CleanText(Convert.ToString(module["PartNumber"]))));
+                    using (module)
+                        modules.Add(new RamModuleInfo(
+                            ToUInt64(module["Capacity"]),
+                            ToUInt32(module["Speed"]),
+                            ToUInt32(module["ConfiguredClockSpeed"]),
+                            ToUInt16(module["SMBIOSMemoryType"]),
+                            CleanText(Convert.ToString(module["Manufacturer"])),
+                            CleanText(Convert.ToString(module["PartNumber"]))));
                 }
                 if (modules.Count > 0) ramHardware = FormatRamHardware(modules);
             }
@@ -467,9 +514,9 @@ public static class SystemInfoService
         try
         {
             using var searcher = new ManagementObjectSearcher($"SELECT {prop} FROM {cls}");
-            return searcher.Get().Cast<ManagementObject>()
-                .Select(x => Convert.ToString(x[prop]))
-                .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? fallback;
+            var results = searcher.Get();
+            return WmiFirstNonEmptyScope.Read<ManagementObject>(
+                results, results, row => Convert.ToString(row[prop]), fallback);
         }
         catch { return fallback; }
     }

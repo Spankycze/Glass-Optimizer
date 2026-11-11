@@ -24,6 +24,26 @@ public sealed class AiPowerTransitionPolicyTests
             true, AiWorkloadClass.Interactive, 30, 45, 60));
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(-1)]
+    [InlineData(101)]
+    public void InvalidCpuMeasurementCannotDelaySignaledPerformanceDemand(double load)
+    {
+        Assert.Equal(3, AiPowerTransitionPolicy.PerformanceVoteGain(
+            true, AiWorkloadClass.Background, 80, load, null));
+        Assert.Equal(0, AiPowerTransitionPolicy.PerformanceVoteGain(
+            false, AiWorkloadClass.Background, 80, load, null));
+    }
+
+    [Fact]
+    public void NonFiniteConfidenceDoesNotGrantInteractiveBoost()
+    {
+        Assert.Equal(1, AiPowerTransitionPolicy.PerformanceVoteGain(
+            true, AiWorkloadClass.Interactive, double.NaN, 45, null));
+    }
+
     [Fact]
     public void NonInteractiveDemandAddsOnlyOneVote()
     {

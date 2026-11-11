@@ -13,6 +13,7 @@ namespace SpankyhoOptimizer;
 public sealed partial class MainWindow
 {
     private int _softwareUpdaterSessionId;
+    private readonly SemaphoreSlim _softwareUpdaterMutationGate = new(1, 1);
 
     private async Task ShowSoftwareManagerAsync(CancellationToken token)
     {
@@ -29,133 +30,27 @@ public sealed partial class MainWindow
 
     private async Task ShowSoftwareManagerCoreAsync(CancellationToken token, bool smokeOnly, int sessionId = 0, string returnSection = "apps")
     {
-        var root = new StackPanel { Spacing = 12 };
-        var status = new TextBlock { Text = "Načítám dostupné aktualizace…", Foreground = TextSecondaryBrush() };
-        var progress = new ProgressBar
-        {
-            Minimum = 0,
-            Maximum = 1,
-            Value = 0,
-            Height = 5,
-            Visibility = Visibility.Collapsed,
-            Foreground = TextSecondaryBrush(),
-            Background = SurfaceAltBrush()
-        };
-        var listHost = new StackPanel { Spacing = 7 };
-        var rows = new List<(CheckBox Box, WingetUpgradeItem Item)>();
-
-        var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var installId = new TextBox { PlaceholderText = "Winget package ID…", MinWidth = 280 };
-        var installButton = QuickButton("Instalovat ID", async () => await InstallWingetPackageAsync(installId.Text, status, token));
-        toolbar.Children.Add(installId);
-        toolbar.Children.Add(installButton);
-        root.Children.Add(toolbar);
-        root.Children.Add(status);
-        root.Children.Add(progress);
-        void PopulateRows(IReadOnlyList<WingetUpgradeItem> items, bool staleDisplay = false)
-        {
-            listHost.Children.Clear(); rows.Clear();
-            foreach (var item in items)
-            {
-                token.ThrowIfCancellationRequested();
-                var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(10, 8, 10, 8) };
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                row.ColumnDefinitions.Add(new ColumnDefinition());
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(190) });
-                var box = new CheckBox { IsChecked = true, VerticalAlignment = VerticalAlignment.Center };
-                var text = new StackPanel { Spacing = 2 };
-                text.Children.Add(new TextBlock { Text = item.Name, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
-                text.Children.Add(new TextBlock { Text = item.Id, FontSize = 11, Foreground = TextSecondaryBrush() });
-                var version = new TextBlock { Text = $"{item.InstalledVersion}  →  {item.AvailableVersion}", VerticalAlignment = VerticalAlignment.Center, Foreground = AccentBrush() };
-                Grid.SetColumn(box, 0); Grid.SetColumn(text, 1); Grid.SetColumn(version, 2);
-                row.Children.Add(box); row.Children.Add(text); row.Children.Add(version);
-                listHost.Children.Add(new Border { Background = SectionCardBackgroundBrush(), BorderBrush = SectionBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.15 : 1), CornerRadius = new CornerRadius(10), Child = row });
-                rows.Add((box, item));
-            }
-            string baseStatus = items.Count == 0 ? "Všechny Winget aplikace jsou aktuální." : $"Dostupné aktualizace: {items.Count}";
-            status.Text = staleDisplay ? baseStatus + " • ověřuji na pozadí…" : baseStatus;
-        }
-
-        async Task RefreshAsync(bool forceRefresh = false)
-        {
-            status.Text = "Kontroluji Winget aktualizace…";
-            var items = await WingetUpdateService.GetUpgradesAsync(token, forceRefresh);
-            PopulateRows(items);
-        }
-        async Task UpdateSelectedAsync()
-        {
-            var selected = rows.Where(x => x.Box.IsChecked == true).Select(x => x.Item).ToArray();
-            if (selected.Length == 0) { status.Text = "Není vybraná žádná aktualizace."; return; }
-            if (!await ShowStyledConfirmAsync($"Aktualizovat {selected.Length} aplikací?",
-                string.Join(Environment.NewLine, selected.Take(18).Select(x => $"• {x.Name} → {x.AvailableVersion}")),
-                "Aktualizovat", "Zrušit", "Winget")) return;
-
-            progress.Visibility = Visibility.Visible;
-            progress.Maximum = selected.Length; progress.Value = 0;
-            int ok = 0;
-            var failed = new List<string>();
-            foreach (var item in selected)
-            {
-                token.ThrowIfCancellationRequested();
-                status.Text = $"Aktualizuji {item.Name}…";
-                var result = await WingetUpdateService.UpgradeAsync(item.Id, token);
-                if (result.Success) ok++;
-                else
-                {
-                    failed.Add(item.Name);
-                    LogService.Error("Winget upgrade failed: " + item.Id + " " + result.StdErr + result.StdOut);
-                }
-                progress.Value++;
-            }
-            progress.Visibility = Visibility.Collapsed;
-            status.Text = failed.Count == 0
-                ? $"Hotovo: {ok}/{selected.Length} aktualizací úspěšně."
-                : $"Hotovo: {ok}/{selected.Length}. Selhalo: {failed.Count}.";
-            if (failed.Count > 0)
-                await ShowStyledInfoAsync("Winget — neúspěšné aktualizace", string.Join(Environment.NewLine, failed.Select(x => "• " + x)));
-            await RefreshAsync(true);
-        }
-
-        async Task UpdateAllAsync()
-        {
-            if (!await ShowStyledConfirmAsync("Aktualizovat všechny aplikace?", "Winget zpracuje všechny dostupné aktualizace.", "Update all", "Zrušit", "Software Manager")) return;
-            progress.Visibility = Visibility.Visible; progress.IsIndeterminate = true;
-            status.Text = "Winget aktualizuje všechny podporované aplikace…";
-            var result = await WingetUpdateService.UpgradeAllAsync(token);
-            progress.IsIndeterminate = false; progress.Visibility = Visibility.Collapsed;
-            status.Text = result.Success ? "Update all dokončen." : "Update all skončil s chybou.";
-            if (!result.Success) LogService.Error("Winget update all failed: " + result.StdErr + result.StdOut);
-            await RefreshAsync(true);
-        }
-
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(QuickButton("Obnovit", () => RefreshAsync(true)));
-        actions.Children.Add(QuickButton("Vybrat vše", () => { foreach (var row in rows) row.Box.IsChecked = true; return Task.CompletedTask; }));
-        actions.Children.Add(QuickButton("Zrušit výběr", () => { foreach (var row in rows) row.Box.IsChecked = false; return Task.CompletedTask; }));
-        actions.Children.Add(PrimaryQuickButton("Update selected", UpdateSelectedAsync));
-        actions.Children.Add(QuickButton("Update all", UpdateAllAsync));
-        root.Children.Add(actions);
-        root.Children.Add(listHost);
-
-        bool refreshStaleAfterRender = false;
-        string? displayedSignature = null;
+        // Build only the interface users actually see. The previous block
+        // constructed a second complete list and toolbar that were never
+        // attached to ContentStack, then blocked first paint on a Winget scan
+        // if no cached result existed.
         var displaySnapshot = WingetUpdateService.TryGetDisplayUpgrades();
-        if (displaySnapshot is { } display)
-        {
-            PopulateRows(display.Items, display.NeedsRefresh);
-            refreshStaleAfterRender = display.NeedsRefresh;
-            displayedSignature = string.Join("\n", display.Items
+        IReadOnlyList<WingetUpgradeItem> initialItems =
+            displaySnapshot?.Items ?? Array.Empty<WingetUpgradeItem>();
+        bool refreshStaleAfterRender = displaySnapshot == null ||
+                                       displaySnapshot.Value.NeedsRefresh;
+        string? displayedSignature = displaySnapshot == null ? null :
+            string.Join("\n", initialItems
                 .OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
-                .Select(x => x.Id + "|" + x.InstalledVersion + "|" + x.AvailableVersion + "|" + x.Source));
-        }
-        else
-        {
-            await RefreshAsync();
-        }
+                .Select(x => x.Id + "|" + x.InstalledVersion + "|" +
+                             x.AvailableVersion + "|" + x.Source));
 
         if (smokeOnly)
         {
-            LogService.Info("winget", $"SOFTWARE_UPDATER_SMOKE_OK rows={rows.Count} status={status.Text}");
+            if (displaySnapshot == null)
+                initialItems = await WingetUpdateService.GetUpgradesAsync(token);
+            LogService.Info("winget",
+                $"SOFTWARE_UPDATER_SMOKE_OK rows={initialItems.Count} cache={displaySnapshot != null}");
             return;
         }
 
@@ -178,74 +73,291 @@ public sealed partial class MainWindow
             "Software Updater",
             "Winget aktualizace s přesnými Installed → Available verzemi a per-app read-backem.",
             "WINGET",
-            rows.Count == 0 ? "Všechny aplikace jsou aktuální" : $"{rows.Count} aktualizací k dispozici",
+            refreshStaleAfterRender ? "Kontroluji aktualizace na pozadí…" :
+                initialItems.Count == 0 ? "Všechny aplikace jsou aktuální" : $"{initialItems.Count} aktualizací k dispozici",
             headerActions);
         LogService.Info("winget", "SOFTWARE_UPDATER_INLINE step=hero-created");
         ContentStack.Children.Add(hero);
         ContentStack.Children.Add(BuildDashboardMetricGrid(
-            BuildDashboardMetric("Aktualizace", rows.Count.ToString(), rows.Count == 0 ? "Vše aktuální" : "Dostupné upgrady", rows.Count == 0 ? "SpankySuccessBrush" : "SpankyWarningBrush"),
+            BuildDashboardMetric("Aktualizace", refreshStaleAfterRender ? "…" : initialItems.Count.ToString(),
+                refreshStaleAfterRender ? "Ověřuji aktualizace" : initialItems.Count == 0 ? "Vše aktuální" : "Dostupné upgrady",
+                refreshStaleAfterRender ? "SpankyInfoBrush" : initialItems.Count == 0 ? "SpankySuccessBrush" : "SpankyWarningBrush"),
             BuildDashboardMetric("Zdroj", "Winget", "Microsoft package manager"),
             BuildDashboardMetric("Výběr", "Per-app", "Update selected / all", "SpankySuccessBrush"),
             BuildDashboardMetric("Refresh", refreshStaleAfterRender ? "Ověřuji" : "Fresh", refreshStaleAfterRender ? "Stale cache → background check" : "Aktuální snapshot", refreshStaleAfterRender ? "SpankyWarningBrush" : "SpankySuccessBrush")));
         LogService.Info("winget", "SOFTWARE_UPDATER_INLINE step=hero-added");
         var safeRoot = new StackPanel { Spacing = 10 };
         var inlineSearch = new TextBox { PlaceholderText = "Filtrovat dostupné aktualizace…", MinWidth = 260 };
-        var inlineRows = new List<(FrameworkElement Element, WingetUpgradeItem Item)>();
-        var inlineStatus = new TextBlock { Text = status.Text, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap };
+        var inlineRows = new List<(FrameworkElement Element, CheckBox Choice, WingetUpgradeItem Item)>();
+        var inlineList = new StackPanel { Spacing = 8 };
+        Border? updaterSurface = null;
+        bool PageActive() => updaterSurface != null &&
+            ContentStack.Children.Contains(updaterSurface) &&
+            string.Equals(_section, returnSection, StringComparison.OrdinalIgnoreCase) &&
+            (sessionId == 0 || sessionId == Volatile.Read(ref _softwareUpdaterSessionId));
+        var inlineStatus = new TextBlock
+        {
+            Text = refreshStaleAfterRender ? "Kontroluji dostupné aktualizace na pozadí…" :
+                initialItems.Count == 0 ? "Všechny Winget aplikace jsou aktuální." : $"Dostupné aktualizace: {initialItems.Count}",
+            Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap
+        };
         safeRoot.Children.Add(inlineSearch);
         safeRoot.Children.Add(inlineStatus);
         var safeActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        safeActions.Children.Add(PrimaryQuickButton("Update all", async () =>
+        safeActions.Children.Add(QuickButton("Vybrat vše", () =>
         {
-            inlineStatus.Text = "Winget aktualizuje všechny podporované aplikace…";
-            var result = await WingetUpdateService.UpgradeAllAsync(CancellationToken.None);
-            inlineStatus.Text = result.Success ? "Update all dokončen." : "Update all skončil s chybou.";
-            ShowActionFeedback("Software Updater", result.Success ? ActionFeedbackKind.Verified : ActionFeedbackKind.Failed, inlineStatus.Text);
-            if (!result.Success) LogService.Error("Winget update all failed: " + result.StdErr + result.StdOut);
+            foreach (var row in inlineRows) row.Choice.IsChecked = true;
+            return Task.CompletedTask;
         }));
-        safeActions.Children.Add(QuickButton("Obnovit", () => ShowSoftwareManagerAsync(CancellationToken.None)));
-        safeRoot.Children.Add(safeActions);
-        foreach (var item in rows.Select(x => x.Item))
+        safeActions.Children.Add(QuickButton("Zrušit výběr", () =>
         {
+            foreach (var row in inlineRows) row.Choice.IsChecked = false;
+            return Task.CompletedTask;
+        }));
+        safeActions.Children.Add(PrimaryQuickButton("Aktualizovat vybrané", async () =>
+        {
+            var selected = inlineRows.Where(x => x.Choice.IsChecked == true)
+                .Select(x => x.Item).ToArray();
+            if (selected.Length == 0)
+            {
+                inlineStatus.Text = "Vyber alespoň jednu aplikaci.";
+                return;
+            }
+            if (!PageActive()) return;
+            if (!await ShowStyledConfirmAsync(
+                $"Aktualizovat {selected.Length} aplikací?",
+                string.Join(Environment.NewLine, selected.Take(18)
+                    .Select(x => "• " + x.Name + " → " + x.AvailableVersion)) +
+                "\nAktualizace mohou zavřít běžící aplikace. Neuložená práce může být ztracena.",
+                "Aktualizovat", "Zrušit", "Winget") || !PageActive()) return;
+            if (!await _softwareUpdaterMutationGate.WaitAsync(0))
+            {
+                inlineStatus.Text = "Jiná operace aktualizace už probíhá.";
+                return;
+            }
+            try
+            {
+                int ok = 0;
+                var failed = new List<string>();
+                foreach (var item in selected)
+                {
+                    inlineStatus.Text = $"Aktualizuji {item.Name} ({ok + failed.Count + 1}/{selected.Length})…";
+                    var result = await WingetUpdateService.UpgradeAsync(item.Id, _windowLifetimeCts.Token);
+                    if (result.Success) ok++;
+                    else
+                    {
+                        failed.Add(item.Name);
+                        LogService.Error("Winget upgrade failed: " + item.Id + " " + result.StdErr + result.StdOut);
+                    }
+                }
+                if (PageActive())
+                {
+                    inlineStatus.Text = $"Hotovo: {ok}/{selected.Length}; chyby: {failed.Count}.";
+                    if (failed.Count > 0)
+                        await ShowStyledInfoAsync("Neúspěšné aktualizace",
+                            string.Join(Environment.NewLine, failed));
+                }
+            }
+            finally { _softwareUpdaterMutationGate.Release(); }
+            if (PageActive())
+                await RefreshVisibleAsync(forceRefresh: true);
+        }));
+        safeActions.Children.Add(QuickButton("Aktualizovat vše", async () =>
+        {
+            if (!PageActive()) return;
+            if (!await ShowStyledConfirmAsync(
+                "Aktualizovat všechny podporované aplikace?",
+                "Winget může aktualizovat i právě spuštěné aplikace a některé z nich ukončit. Pokračovat?",
+                "Aktualizovat vše", "Zrušit", "Software Updater") || !PageActive()) return;
+            if (!await _softwareUpdaterMutationGate.WaitAsync(0))
+            {
+                inlineStatus.Text = "Jiná operace aktualizace už probíhá.";
+                return;
+            }
+            try
+            {
+                inlineStatus.Text = "Winget aktualizuje všechny podporované aplikace…";
+                var result = await WingetUpdateService.UpgradeAllAsync(_windowLifetimeCts.Token);
+                if (PageActive())
+                {
+                    inlineStatus.Text = result.Success ? "Aktualizace dokončeny." : "Aktualizace skončily s chybou.";
+                    ShowActionFeedback("Software Updater",
+                        result.Success ? ActionFeedbackKind.Verified : ActionFeedbackKind.Failed,
+                        inlineStatus.Text);
+                }
+                if (!result.Success)
+                    LogService.Error("Winget update all failed: " + result.StdErr + result.StdOut);
+            }
+            finally { _softwareUpdaterMutationGate.Release(); }
+            if (PageActive())
+                await RefreshVisibleAsync(forceRefresh: true);
+        }));
+        safeActions.Children.Add(QuickButton("Obnovit", () => RefreshVisibleAsync(true)));
+        safeRoot.Children.Add(safeActions);
+        var installToolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var installId = new TextBox { PlaceholderText = "ID balíčku Winget…", MinWidth = 200 };
+        installToolbar.Children.Add(installId);
+        installToolbar.Children.Add(QuickButton("Instalovat podle ID", async () =>
+        {
+            if (!PageActive()) return;
+            if (!await _softwareUpdaterMutationGate.WaitAsync(0))
+            {
+                inlineStatus.Text = "Jiná operace Winget právě probíhá.";
+                return;
+            }
+            try
+            {
+                await InstallWingetPackageAsync(
+                    installId.Text, inlineStatus, _windowLifetimeCts.Token, PageActive);
+            }
+            finally { _softwareUpdaterMutationGate.Release(); }
+            if (PageActive())
+                await RefreshVisibleAsync(forceRefresh: true);
+        }));
+        safeRoot.Children.Add(BuildDashboardExpander(
+            "Instalace podle ID", "Volitelné ruční instalování aplikací", installToolbar));
+        safeRoot.Children.Add(inlineList);
+        void RenderUpgradeRows(IReadOnlyList<WingetUpgradeItem> items)
+        {
+            // Rebuild only changed package rows. Preserve the user's explicit
+            // selection and search filter across background Winget refreshes.
+            var oldSelection = inlineRows
+                .GroupBy(x => x.Item.Id, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First().Choice.IsChecked == true,
+                    StringComparer.OrdinalIgnoreCase);
+            inlineRows.Clear();
+            inlineList.Children.Clear();
+            foreach (var item in items)
+            {
             var row = new StackPanel { Spacing = 3 };
+            var choice = new CheckBox { IsChecked = true, Content = "Vybrat pro aktualizaci" };
+            row.Children.Add(choice);
             row.Children.Add(new TextBlock { Text = item.Name, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
             row.Children.Add(new TextBlock { Text = item.Id + "  •  " + item.InstalledVersion + " → " + item.AvailableVersion, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap });
             var rowActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
             rowActions.Children.Add(QuickButton("Aktualizovat", async () =>
             {
-                inlineStatus.Text = "Aktualizuji " + item.Name + "…";
-                var result = await WingetUpdateService.UpgradeAsync(item.Id, CancellationToken.None);
-                inlineStatus.Text = result.Success ? item.Name + " aktualizován." : item.Name + " se nepodařilo aktualizovat.";
-                ShowActionFeedback(item.Name, result.Success ? ActionFeedbackKind.Verified : ActionFeedbackKind.Failed, inlineStatus.Text);
-                if (!result.Success) LogService.Error("Winget upgrade failed: " + item.Id + " " + result.StdErr + result.StdOut);
+                if (!PageActive()) return;
+                if (!await ShowStyledConfirmAsync(
+                    "Aktualizovat " + item.Name + "?",
+                    item.InstalledVersion + " → " + item.AvailableVersion +
+                    "\nBěžící aplikace může být během aktualizace ukončena.",
+                    "Aktualizovat", "Zrušit", "Winget") || !PageActive()) return;
+                if (!await _softwareUpdaterMutationGate.WaitAsync(0))
+                {
+                    inlineStatus.Text = "Jiná aktualizace právě probíhá.";
+                    return;
+                }
+                try
+                {
+                    inlineStatus.Text = "Aktualizuji " + item.Name + "…";
+                    var result = await WingetUpdateService.UpgradeAsync(item.Id, _windowLifetimeCts.Token);
+                    if (PageActive())
+                    {
+                        inlineStatus.Text = result.Success ? item.Name + " aktualizován." : item.Name + " se nepodařilo aktualizovat.";
+                        ShowActionFeedback(item.Name,
+                            result.Success ? ActionFeedbackKind.Verified : ActionFeedbackKind.Failed,
+                            inlineStatus.Text);
+                    }
+                    if (!result.Success)
+                        LogService.Error("Winget upgrade failed: " + item.Id + " " + result.StdErr + result.StdOut);
+                }
+                finally { _softwareUpdaterMutationGate.Release(); }
+                if (PageActive())
+                    await RefreshVisibleAsync(forceRefresh: true);
             }));
-            rowActions.Children.Add(QuickButton("Ignorovat", async () =>
-            {
-                var result = await WingetUpdateService.PinAsync(item.Id, CancellationToken.None);
-                inlineStatus.Text = result.Success ? item.Name + " připnutý — běžný Update all ho přeskočí." : "Winget pin selhal.";
-                ShowActionFeedback(item.Name, result.Success ? ActionFeedbackKind.Verified : ActionFeedbackKind.Failed, inlineStatus.Text);
-                if (!result.Success) LogService.Error("Winget pin failed: " + item.Id + " " + result.StdErr + result.StdOut);
-            }));
-            rowActions.Children.Add(QuickButton("Zrušit ignore", async () =>
-            {
-                var result = await WingetUpdateService.UnpinAsync(item.Id, CancellationToken.None);
-                inlineStatus.Text = result.Success ? item.Name + " už není připnutý." : "Winget unpin selhal.";
-                ShowActionFeedback(item.Name, result.Success ? ActionFeedbackKind.Verified : ActionFeedbackKind.Failed, inlineStatus.Text);
-                if (!result.Success) LogService.Error("Winget unpin failed: " + item.Id + " " + result.StdErr + result.StdOut);
-            }));
+            rowActions.Children.Add(QuickButton("Ignorovat", () =>
+                ChangePinAsync(item, pin: true)));
+            rowActions.Children.Add(QuickButton("Zrušit ignore", () =>
+                ChangePinAsync(item, pin: false)));
             row.Children.Add(rowActions);
             var card = new Border { Background = SectionCardBackgroundBrush(), BorderBrush = SectionBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.15 : 1), CornerRadius = new CornerRadius(10), Padding = new Thickness(10), Child = row };
-            safeRoot.Children.Add(card);
-            inlineRows.Add((card, item));
+            inlineList.Children.Add(card);
+            inlineRows.Add((card, choice, item));
+            if (oldSelection.TryGetValue(item.Id, out bool wasSelected))
+                choice.IsChecked = wasSelected;
+            }
+            ApplySearchFilter();
         }
-        inlineSearch.TextChanged += (_, _) =>
+        void ApplySearchFilter()
         {
             string q = inlineSearch.Text.Trim();
             foreach (var entry in inlineRows)
-                entry.Element.Visibility = q.Length == 0 || entry.Item.Name.Contains(q, StringComparison.CurrentCultureIgnoreCase) || entry.Item.Id.Contains(q, StringComparison.OrdinalIgnoreCase)
+                entry.Element.Visibility = q.Length == 0 ||
+                    entry.Item.Name.Contains(q, StringComparison.CurrentCultureIgnoreCase) ||
+                    entry.Item.Id.Contains(q, StringComparison.OrdinalIgnoreCase)
                     ? Visibility.Visible : Visibility.Collapsed;
-        };
-        var updaterSurface = new Border
+        }
+        inlineSearch.TextChanged += (_, _) => ApplySearchFilter();
+        RenderUpgradeRows(initialItems);
+
+        async Task RefreshVisibleAsync(bool forceRefresh)
+        {
+            if (!PageActive()) return;
+            if (_softwareUpdaterMutationGate.CurrentCount == 0)
+            {
+                inlineStatus.Text = "Počkej na dokončení aktualizací aplikací.";
+                return;
+            }
+            inlineStatus.Text = "Kontroluji dostupné aktualizace Winget…";
+            IReadOnlyList<WingetUpgradeItem> fresh =
+                await WingetUpdateService.GetUpgradesAsync(token, forceRefresh);
+            // Do not resurrect the Updater after the user navigated elsewhere.
+            if (token.IsCancellationRequested || !PageActive()) return;
+            string signature = string.Join("\n", fresh
+                .OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.Id + "|" + x.InstalledVersion + "|" +
+                             x.AvailableVersion + "|" + x.Source));
+            if (!string.Equals(displayedSignature, signature, StringComparison.Ordinal))
+            {
+                int previousCount = inlineRows.Count;
+                RenderUpgradeRows(fresh);
+                displayedSignature = signature;
+                LogService.Info("winget",
+                    $"WINGET_VISIBLE_ROWS_REFRESH before={previousCount} after={fresh.Count} " +
+                    $"filter={inlineSearch.Text.Length}");
+            }
+            inlineStatus.Text = fresh.Count == 0
+                ? "Všechny Winget aplikace jsou aktuální."
+                : $"Dostupné aktualizace: {fresh.Count}";
+        }
+
+        async Task ChangePinAsync(WingetUpgradeItem item, bool pin)
+        {
+            if (!PageActive()) return;
+            string verb = pin ? "Ignorovat aktualizaci" : "Zrušit ignorování";
+            if (!await ShowStyledConfirmAsync(
+                verb + "?",
+                item.Name + " (" + item.Id + ")" + Environment.NewLine +
+                (pin ? "Balíček bude přeskočen při běžné hromadné aktualizaci." :
+                       "Balíček se znovu zahrne do dostupných aktualizací."),
+                pin ? "Ignorovat" : "Zrušit ignore", "Zrušit", "Winget") || !PageActive())
+                return;
+            if (!await _softwareUpdaterMutationGate.WaitAsync(0))
+            {
+                inlineStatus.Text = "Jiná operace Winget právě probíhá.";
+                return;
+            }
+            try
+            {
+                var result = pin
+                    ? await WingetUpdateService.PinAsync(item.Id, _windowLifetimeCts.Token)
+                    : await WingetUpdateService.UnpinAsync(item.Id, _windowLifetimeCts.Token);
+                if (!result.Success)
+                    LogService.Error("Winget pin change failed: " + item.Id + " " +
+                                     result.StdErr + result.StdOut);
+                if (!PageActive()) return;
+                inlineStatus.Text = result.Success
+                    ? item.Name + (pin ? " bude ignorován." : " už nebude ignorován.")
+                    : "Winget změnu ignorování nedokončil.";
+                ShowActionFeedback(item.Name,
+                    result.Success ? ActionFeedbackKind.Verified : ActionFeedbackKind.Failed,
+                    inlineStatus.Text);
+            }
+            finally { _softwareUpdaterMutationGate.Release(); }
+        }
+
+        updaterSurface = new Border
         {
             Background = SectionCardBackgroundBrush(),
             BorderBrush = SectionBorderBrush(),
@@ -259,51 +371,67 @@ public sealed partial class MainWindow
             try
             {
                 await Task.Delay(350, token);
-                token.ThrowIfCancellationRequested();
-                if (sessionId != 0 && sessionId != Volatile.Read(ref _softwareUpdaterSessionId)) return;
-                if (!string.Equals(_section, returnSection, StringComparison.OrdinalIgnoreCase)) return;
-                var fresh = await WingetUpdateService.GetUpgradesAsync(token, forceRefresh: true);
-                token.ThrowIfCancellationRequested();
-                if (sessionId != 0 && sessionId != Volatile.Read(ref _softwareUpdaterSessionId)) return;
-                if (!string.Equals(_section, returnSection, StringComparison.OrdinalIgnoreCase)) return;
-
-                string freshSignature = string.Join("\n", fresh
-                    .OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
-                    .Select(x => x.Id + "|" + x.InstalledVersion + "|" + x.AvailableVersion + "|" + x.Source));
-                if (!string.Equals(displayedSignature, freshSignature, StringComparison.Ordinal))
-                {
-                    LogService.Info("winget", $"WINGET_STALE_REFRESH_CHANGED oldRows={rows.Count} newRows={fresh.Count}");
-                    await ShowSoftwareManagerCoreAsync(CancellationToken.None, smokeOnly: false, sessionId, returnSection);
-                    return;
-                }
-
-                inlineStatus.Text = fresh.Count == 0
-                    ? "Všechny Winget aplikace jsou aktuální."
-                    : $"Dostupné aktualizace: {fresh.Count}";
-                LogService.Info("winget", $"WINGET_STALE_REFRESH_UNCHANGED rows={fresh.Count}");
+                if (token.IsCancellationRequested || !PageActive()) return;
+                await RefreshVisibleAsync(forceRefresh: true);
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex) { LogService.Error("winget", "Deferred Winget stale refresh failed", ex); }
+            catch (Exception ex)
+            {
+                LogService.Error("winget", "Deferred Winget stale refresh failed", ex);
+                if (PageActive())
+                    inlineStatus.Text = "Kontrola aktualizací selhala. Použij Obnovit.";
+            }
+        }
+
+        // Dedicated read-only CLI smoke calls this core method with sessionId=0.
+        // Exercise the same real row renderer without any winget install/update.
+        if (sessionId == 0)
+        {
+            var fixture = new[]
+            {
+                new WingetUpgradeItem("Smoke Primary", "smoke.primary", "1.0", "2.0", "smoke"),
+                new WingetUpgradeItem("Smoke Secondary", "smoke.secondary", "1.0", "2.0", "smoke")
+            };
+            RenderUpgradeRows(fixture);
+            inlineRows[0].Choice.IsChecked = false;
+            inlineSearch.Text = "smoke.primary";
+            RenderUpgradeRows(new[]
+            {
+                fixture[0] with { AvailableVersion = "2.1" },
+                fixture[1]
+            });
+            if (inlineRows.Count != 2 ||
+                inlineRows[0].Choice.IsChecked != false ||
+                inlineRows[0].Element.Visibility != Visibility.Visible ||
+                inlineRows[1].Element.Visibility != Visibility.Collapsed)
+                throw new InvalidOperationException(
+                    "Software Updater lost selection/filter while refreshing package rows.");
+            inlineSearch.Text = "";
+            RenderUpgradeRows(initialItems);
+            LogService.Info("winget",
+                "SOFTWARE_UPDATER_SELECTION_REFRESH_SMOKE_OK selection=preserved filter=preserved");
         }
 
         LogService.Info("winget", "SOFTWARE_UPDATER_INLINE step=surface-created");
         ContentStack.Children.Add(updaterSurface);
-        LogService.Info("winget", $"SOFTWARE_UPDATER_INLINE_READY rows={rows.Count}");
+        LogService.Info("winget", $"SOFTWARE_UPDATER_INLINE_READY rows={initialItems.Count} deferredScan={refreshStaleAfterRender}");
         if (refreshStaleAfterRender)
             SafeTaskService.Forget(RefreshStaleDisplayAfterRenderAsync(), "winget", "Deferred stale Winget refresh");
     }
 
     internal async Task RunSoftwareUpdaterSmokeAsync()
-        => await ShowSoftwareManagerCoreAsync(CancellationToken.None, smokeOnly: true);
+        => await ShowSoftwareManagerCoreAsync(_windowLifetimeCts.Token, smokeOnly: true);
 
     internal async Task RunSoftwareUpdaterInlineSmokeAsync()
-        => await ShowSoftwareManagerCoreAsync(CancellationToken.None, smokeOnly: false);
+        => await ShowSoftwareManagerCoreAsync(_windowLifetimeCts.Token, smokeOnly: false);
 
-    private async Task InstallWingetPackageAsync(string id, TextBlock status, CancellationToken token)
+    private async Task InstallWingetPackageAsync(
+        string id, TextBlock status, CancellationToken token, Func<bool>? stillActive = null)
     {
         id = (id ?? string.Empty).Trim();
         if (id.Length == 0) { status.Text = "Zadej Winget package ID."; return; }
-        if (!await ShowStyledConfirmAsync("Instalovat aplikaci?", id, "Instalovat", "Zrušit", "Winget")) return;
+        if (!await ShowStyledConfirmAsync("Instalovat aplikaci?", id, "Instalovat", "Zrušit", "Winget") ||
+            (stillActive != null && !stillActive())) return;
         status.Text = "Instaluji " + id + "…";
         var result = await SpankyExtensionService.WingetInstallAsync(id, token);
         if (result.Success) WingetUpdateService.InvalidateStatus();

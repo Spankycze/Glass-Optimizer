@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -21,6 +22,13 @@ public sealed record DriverDownloadProgress(long Received, long? Total)
 public static class GpuDriverService
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(15) };
+    private static readonly HashSet<string> KnownGpuInstallerNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "setup", "setup64", "NVIDIA Installer", "NVIDIA Web Helper", "NVCleanstall"
+    };
+
+    internal static bool IsKnownGpuInstallerName(string? processName) =>
+        processName is not null && KnownGpuInstallerNames.Contains(processName);
     private static readonly object DetectionCacheLock = new();
     private static readonly object CimScopeLock = new();
     private static readonly SemaphoreSlim DetectionGate = new(1, 1);
@@ -28,6 +36,45 @@ public static class GpuDriverService
     private static DateTime _lastInstallerLaunchUtc;
     private static string _lastInstallerPath = string.Empty;
     private static Task<GpuDriverInfo?>? _persistentWarmFlight;
+    // Only a genuinely running disk read may be shared. A completed Task
+    // must never become a second cache with an unbounded lifetime.
+    private static Task<GpuDriverInfo?> ReuseOrStartPersistentWarmFlight(
+        Task<GpuDriverInfo?>? flight, Func<Task<GpuDriverInfo?>> start) =>
+        flight is { IsCompleted: false } ? flight : start();
+
+    internal static string RunGpuPersistentWarmFlightPolicySmoke()
+    {
+        int starts = 0;
+        var pending = new TaskCompletionSource<GpuDriverInfo?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<GpuDriverInfo?> Start()
+        {
+            starts++;
+            return pending.Task;
+        }
+        var shared = ReuseOrStartPersistentWarmFlight(null, Start);
+        if (!ReferenceEquals(shared, pending.Task) || starts != 1 ||
+            !ReferenceEquals(ReuseOrStartPersistentWarmFlight(shared, Start), shared) ||
+            starts != 1)
+            throw new InvalidOperationException("Concurrent GPU persisted reads were not deduplicated.");
+
+        pending.SetResult(null); // Missing cache must not stay cached forever.
+        Task<GpuDriverInfo?> Success() => Task.FromResult<GpuDriverInfo?>(
+            new GpuDriverInfo("Test GPU", "Test", "1", "1", null));
+        var recovered = ReuseOrStartPersistentWarmFlight(shared, Success);
+        if (ReferenceEquals(recovered, shared) || recovered.Result?.Name != "Test GPU")
+            throw new InvalidOperationException("Completed missing GPU flight was incorrectly reused.");
+        var newRead = ReuseOrStartPersistentWarmFlight(recovered, Start);
+        if (!ReferenceEquals(newRead, pending.Task) || starts != 2)
+            throw new InvalidOperationException("Completed successful GPU flight was incorrectly reused.");
+        var faulted = Task.FromException<GpuDriverInfo?>(new IOException("test only"));
+        if (ReferenceEquals(ReuseOrStartPersistentWarmFlight(faulted, Success), faulted))
+            throw new InvalidOperationException("Faulted GPU flight was incorrectly reused.");
+        var canceled = Task.FromCanceled<GpuDriverInfo?>(new CancellationToken(true));
+        if (ReferenceEquals(ReuseOrStartPersistentWarmFlight(canceled, Success), canceled))
+            throw new InvalidOperationException("Canceled GPU flight was incorrectly reused.");
+        return "GPU_PERSISTENT_FLIGHT_POLICY_SMOKE_OK concurrentDedup=true completedMissRefresh=true completedHitRefresh=true faultRetry=true cancelRetry=true diskUnchanged=true";
+    }
     private static ManagementScope? _cimv2Scope;
     private static GpuDriverInfo? _gpuCache;
     private static DateTime _gpuCacheAt;
@@ -42,25 +89,35 @@ public static class GpuDriverService
     {
         long generation = DetectionCacheGeneration;
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        Task<GpuDriverInfo?> flight;
         lock (DetectionCacheLock)
         {
             if (_gpuCache != null && DateTime.UtcNow - _gpuCacheAt < TimeSpan.FromMinutes(10))
                 return _gpuCache;
 
-            _persistentWarmFlight ??= Task.Run(() =>
-                PersistentHardwareCacheService.TryReadMachineStable<GpuDriverInfo>("gpu-primary", TimeSpan.FromDays(1), out var cached)
-                    ? cached
-                    : null);
+            // Expired memory state must force a fresh disk TTL check.
+            // Completed success/miss/fault flights cannot be reused forever.
+            // A still-running flight is shared across concurrent callers.
+            flight = _persistentWarmFlight = ReuseOrStartPersistentWarmFlight(
+                _persistentWarmFlight, () => Task.Run(() =>
+                    PersistentHardwareCacheService.TryReadMachineStable<GpuDriverInfo>("gpu-primary", TimeSpan.FromDays(1), out var cached)
+                        ? cached
+                        : null));
+            // Capture the owned Task in this same lock. Reading the shared
+            // field in a later lock can pick up another caller's new flight.
         }
-
-        Task<GpuDriverInfo?> flight;
-        lock (DetectionCacheLock) flight = _persistentWarmFlight!;
         var persisted = await flight.WaitAsync(token).ConfigureAwait(false);
 
-        if (generation != DetectionCacheGeneration) return null;
-        if (persisted != null)
+        lock (DetectionCacheLock)
         {
-            lock (DetectionCacheLock) { _gpuCache = persisted; _gpuCacheAt = DateTime.UtcNow; }
+            // PnP invalidation may arrive after the disk await and before
+            // publishing. The generation check and publication must be atomic.
+            if (generation != DetectionCacheGeneration) return null;
+            if (persisted != null)
+            {
+                _gpuCache = persisted;
+                _gpuCacheAt = DateTime.UtcNow;
+            }
         }
         LogService.Info("performance", $"GPU_PERSISTENT_CACHE_READ hit={persisted != null} ms={sw.ElapsedMilliseconds}");
         return persisted;
@@ -119,6 +176,7 @@ public static class GpuDriverService
 
                     foreach (ManagementObject item in results)
                     {
+                        using var ownedItem = item;
                         token.ThrowIfCancellationRequested();
                         string name = item["Name"]?.ToString() ?? "GPU";
                         string manufacturer = item["AdapterCompatibility"]?.ToString() ?? "Unknown";
@@ -146,9 +204,16 @@ public static class GpuDriverService
                     throw;
                 }
             }, token).ConfigureAwait(false);
-            if (result == null || generation != DetectionCacheGeneration) return null;
-            lock (DetectionCacheLock) { _gpuCache = result; _gpuCacheAt = DateTime.UtcNow; }
-            PersistentHardwareCacheService.WriteMachineStable("gpu-primary", result);
+            if (result == null) return null;
+            lock (DetectionCacheLock)
+            {
+                if (generation != DetectionCacheGeneration) return null;
+                // Commit both caches under the same lock that PnP invalidation
+                // uses, so an old scan cannot restore a removed cache file.
+                PersistentHardwareCacheService.WriteMachineStable("gpu-primary", result);
+                _gpuCache = result;
+                _gpuCacheAt = DateTime.UtcNow;
+            }
             return result;
         }
         finally { DetectionGate.Release(); }
@@ -179,14 +244,15 @@ public static class GpuDriverService
 
     public static void InvalidateDetectionCache()
     {
-        Interlocked.Increment(ref _detectionCacheGeneration);
         lock (DetectionCacheLock)
         {
+            Interlocked.Increment(ref _detectionCacheGeneration);
             _gpuCache = null;
             _gpuCacheAt = default;
             _persistentWarmFlight = null;
+            // Same critical section as scan publish and its disk commit.
+            PersistentHardwareCacheService.Remove("gpu-primary");
         }
-        PersistentHardwareCacheService.Remove("gpu-primary");
     }
 
     public static string NormalizeVersion(string vendor, string raw)
@@ -306,23 +372,21 @@ public static class GpuDriverService
 
     public static bool IsKnownGpuInstallerRunning()
     {
-        string[] installerProcessNames = { "setup", "setup64", "NVIDIA Installer", "NVIDIA Web Helper", "NVCleanstall" };
         try
         {
-            var processes = Process.GetProcesses();
-            try
+            return ProcessSnapshotCleanup.Inspect(() => Process.GetProcesses(), processes =>
             {
-                foreach (var process in processes)
+                foreach (Process process in processes)
                 {
-                    string name;
-                    try { name = process.ProcessName; }
-                    catch { continue; }
-                    if (installerProcessNames.Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase)))
-                        return true;
+                    try
+                    {
+                        if (IsKnownGpuInstallerName(process.ProcessName)) return true;
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException or
+                        System.ComponentModel.Win32Exception or NotSupportedException) { }
                 }
                 return false;
-            }
-            finally { foreach (var process in processes) process.Dispose(); }
+            });
         }
         catch { return false; }
     }
@@ -347,7 +411,7 @@ public static class GpuDriverService
             if (lines.Length == 0 || string.IsNullOrWhiteSpace(lines[0])) return null;
             if (IsKnownGpuInstallerRunning()) return lines[0].Trim();
             if (lines.Length > 1 && DateTime.TryParse(lines[1], null, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime markedUtc) &&
-                DateTime.UtcNow - markedUtc.ToUniversalTime() < TimeSpan.FromMinutes(2))
+                DateTime.UtcNow - markedUtc.ToUniversalTime() < TimeSpan.FromMinutes(10))
                 return lines[0].Trim();
             return null;
         }
@@ -398,7 +462,7 @@ public static class GpuDriverService
             }
 
             if (markedUtc != DateTime.MinValue &&
-                DateTime.UtcNow - markedUtc.ToUniversalTime() > TimeSpan.FromMinutes(2))
+                DateTime.UtcNow - markedUtc.ToUniversalTime() > TimeSpan.FromMinutes(10))
             {
                 LogService.Info("drivers", $"EXOSTENZA_INSTALL_NOT_CONFIRMED expected={version} actual={gpu.DisplayVersion}");
                 try { File.Delete(ExostenzaCleanupMarkerPath); } catch { }
@@ -454,7 +518,7 @@ public static class GpuDriverService
             // Give a freshly launched installer a grace window even if its process name is
             // not one of the known NVIDIA setup names. The marker stays persistent for retry.
             if (lines.Length > 1 && DateTime.TryParse(lines[1], null, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime markedUtc)
-                && DateTime.UtcNow - markedUtc.ToUniversalTime() < TimeSpan.FromMinutes(2))
+                && DateTime.UtcNow - markedUtc.ToUniversalTime() < TimeSpan.FromMinutes(10))
             {
                 LogService.Info("drivers", "Deferred Exostenza cleanup: marker grace period is still active.");
                 return;
@@ -527,6 +591,78 @@ public static class GpuDriverService
         throw new InvalidOperationException("Stažení ovladače selhalo po 3 pokusech.", last);
     }
 
+    // Keep the on-disk byte count paired to the offset sent in the Range
+    // request. Do not silently resume from a different .partial file.
+    private static (string Path, long Offset) ResolveResumeTarget(
+        string partial, string resolvedPartial, long requestedOffset)
+    {
+        // "partial" was measured before we sent Range: requestedOffset.
+        // Content-Disposition may specify a different extension, but a
+        // similarly named partial at that extension belongs to a different
+        // transfer and MUST NOT replace the file we actually requested.
+        // Keep the requested file until a complete download can be renamed
+        // to the resolved final filename.
+        _ = resolvedPartial;
+        return (partial, requestedOffset);
+    }
+
+    private static void VerifyPartialResponseRange(
+        System.Net.HttpStatusCode status,
+        System.Net.Http.Headers.ContentRangeHeaderValue? range,
+        long requestedOffset)
+    {
+        if (status != System.Net.HttpStatusCode.PartialContent) return;
+        // A 206 response cannot be appended unless it begins at the exact
+        // offset sent in the request, even if the server reports success.
+        if (range == null || !string.Equals(range.Unit, "bytes", StringComparison.OrdinalIgnoreCase) ||
+            range.From != requestedOffset ||
+            range.To == null || range.To < requestedOffset ||
+            (range.Length.HasValue && range.To >= range.Length.Value))
+            throw new InvalidDataException(
+                $"GPU driver resume rejected inconsistent HTTP Content-Range for offset {requestedOffset}.");
+    }
+
+    internal static string RunResumeIntegritySmoke()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "spanky-gpu-resume-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string source = Path.Combine(root, "driver.bin.partial");
+            string competing = Path.Combine(root, "driver.rar.partial");
+            File.WriteAllBytes(source, new byte[256]);
+            File.WriteAllBytes(competing, new byte[512]);
+            var chosen = ResolveResumeTarget(source, competing, requestedOffset: 256);
+            if (!string.Equals(chosen.Path, source, StringComparison.OrdinalIgnoreCase) ||
+                chosen.Offset != 256 ||
+                new FileInfo(competing).Length != 512 ||
+                new FileInfo(source).Length != 256)
+                throw new InvalidOperationException(
+                    "GPU resume reused a different partial than the HTTP Range request.");
+
+            bool wrongStartRejected = false;
+            try
+            {
+                VerifyPartialResponseRange(System.Net.HttpStatusCode.PartialContent,
+                    new System.Net.Http.Headers.ContentRangeHeaderValue(128, 255, 512), 256);
+            }
+            catch (InvalidDataException) { wrongStartRejected = true; }
+            if (!wrongStartRejected)
+                throw new InvalidOperationException(
+                    "GPU resume accepted a response whose Content-Range starts at the wrong byte.");
+
+            VerifyPartialResponseRange(System.Net.HttpStatusCode.PartialContent,
+                new System.Net.Http.Headers.ContentRangeHeaderValue(256, 511, 512), 256);
+            VerifyPartialResponseRange(System.Net.HttpStatusCode.OK, null, 256);
+            return "GPU_RESUME_INTEGRITY_SMOKE_OK competingPartialPreserved=true rangeMismatchRejected=true remoteCalls=0";
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
     private static async Task<string> DownloadAttemptAsync(string url, string basePath, IProgress<DriverDownloadProgress>? progress, CancellationToken token)
     {
         // The direct URL often has no extension while Google Drive supplies the real
@@ -594,29 +730,15 @@ public static class GpuDriverService
             existing = 0;
         }
         response.EnsureSuccessStatusCode();
+        VerifyPartialResponseRange(response.StatusCode, response.Content.Headers.ContentRange, existing);
         string headerName = response.Content.Headers.ContentDisposition?.FileNameStar ?? response.Content.Headers.ContentDisposition?.FileName ?? string.Empty;
         headerName = headerName.Trim('"');
         string ext = Path.GetExtension(headerName);
         string final = string.IsNullOrWhiteSpace(ext) ? basePath : Path.ChangeExtension(basePath, ext);
         string resolvedPartial = final + ".partial";
-        if (existing > 0 && !string.Equals(partial, resolvedPartial, StringComparison.OrdinalIgnoreCase))
-        {
-            if (File.Exists(resolvedPartial))
-            {
-                long resolvedLength = new FileInfo(resolvedPartial).Length;
-                if (resolvedLength >= existing) { partial = resolvedPartial; existing = resolvedLength; }
-            }
-            else
-            {
-                File.Move(partial, resolvedPartial);
-                partial = resolvedPartial;
-            }
-        }
-        else
-        {
-            partial = resolvedPartial;
-        }
-        if (existing > 0 && !File.Exists(partial)) existing = 0;
+        (partial, existing) = ResolveResumeTarget(partial, resolvedPartial, existing);
+        if (existing > 0 && !File.Exists(partial))
+            throw new IOException("GPU driver partial disappeared after HTTP Range request.");
         long? content = response.Content.Headers.ContentLength;
         long? total = content.HasValue ? existing + content.Value : null;
         // Close both response/input and the exclusive output handle before promoting
@@ -624,7 +746,16 @@ public static class GpuDriverService
         // with ERROR_SHARING_VIOLATION and then the next retry can hit HTTP 416.
         {
             await using var input = await response.Content.ReadAsStreamAsync(token);
-            await using var output = new FileStream(partial, existing > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 128, true);
+            await using var output = new FileStream(partial, existing > 0 ? FileMode.Open : FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 128, true);
+            if (existing > 0)
+            {
+                // An independent worker may have modified this file after the
+                // Range request. Check the exact size under an exclusive file
+                // handle; never append at a different offset.
+                if (output.Length != existing)
+                    throw new InvalidDataException("GPU driver partial length changed during HTTP resume.");
+                output.Position = existing;
+            }
             byte[] buffer = new byte[1024 * 128]; long received = existing;
             while (true)
             {

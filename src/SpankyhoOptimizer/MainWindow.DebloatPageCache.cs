@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.UI.Xaml;
@@ -21,7 +21,7 @@ public sealed partial class MainWindow
 
     private void CaptureDebloatPageCache()
     {
-        _debloatPageCache = ContentStack.Children.Cast<UIElement>().ToList();
+        _debloatPageCache = SnapshotChildren(ContentStack);
         _debloatPageCacheAt = DateTime.UtcNow;
     }
 

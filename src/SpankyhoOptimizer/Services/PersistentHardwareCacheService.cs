@@ -44,6 +44,9 @@ public static class PersistentHardwareCacheService
         });
     }
 
+    internal static bool IsValidCacheAge(TimeSpan age, TimeSpan maxAge) =>
+        age >= TimeSpan.Zero && age <= maxAge;
+
     public static bool TryRead<T>(string key, TimeSpan maxAge, out T? value)
     {
         value = default;
@@ -52,13 +55,39 @@ public static class PersistentHardwareCacheService
             string path = PathFor(key);
             if (!File.Exists(path)) return false;
             var envelope = JsonSerializer.Deserialize<CacheEnvelope<T>>(File.ReadAllText(path), JsonOptions);
-            if (envelope == null || DateTime.UtcNow - envelope.SavedUtc > maxAge) return false;
+            if (envelope == null || !IsValidCacheAge(DateTime.UtcNow - envelope.SavedUtc, maxAge)) return false;
             if (!string.Equals(envelope.Fingerprint, Fingerprint.Value, StringComparison.Ordinal)) return false;
             value = envelope.Value;
             return value != null;
         }
         catch { return false; }
     }
+    // A shared fixed ".tmp" name let the GUI and a RuntimeHost overwrite or
+    // move each other's in-flight payload for the same cache key. Unique
+    // sidecars keep each writer atomic across processes.
+    private static string NewTempPath(string path) =>
+        path + ".tmp." + Guid.NewGuid().ToString("N");
+
+    // Only reclaim sidecars that no live writer can still own.
+    private static void RemoveStaleTempSiblings(string path)
+    {
+        try
+        {
+            string? dir = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return;
+            foreach (string stale in Directory.EnumerateFiles(dir, Path.GetFileName(path) + ".tmp.*"))
+            {
+                try
+                {
+                    if (DateTime.UtcNow - File.GetLastWriteTimeUtc(stale) > TimeSpan.FromMinutes(10))
+                        File.Delete(stale);
+                }
+                catch { }
+            }
+        }
+        catch { }
+    }
+
     public static void Write<T>(string key, T value)
     {
         try
@@ -67,9 +96,14 @@ public static class PersistentHardwareCacheService
             {
                 Directory.CreateDirectory(CacheDir);
                 string path = PathFor(key);
-                string temp = path + ".tmp";
-                File.WriteAllText(temp, JsonSerializer.Serialize(new CacheEnvelope<T>(DateTime.UtcNow, Fingerprint.Value, value), JsonOptions));
-                File.Move(temp, path, true);
+                RemoveStaleTempSiblings(path);
+                string temp = NewTempPath(path);
+                try
+                {
+                    File.WriteAllText(temp, JsonSerializer.Serialize(new CacheEnvelope<T>(DateTime.UtcNow, Fingerprint.Value, value), JsonOptions));
+                    File.Move(temp, path, true);
+                }
+                finally { try { if (File.Exists(temp)) File.Delete(temp); } catch { } }
             }
         }
         catch (Exception ex) { LogService.Error("hardware-cache", "Persistent cache write failed: " + key, ex); }
@@ -82,7 +116,6 @@ public static class PersistentHardwareCacheService
     {
         value = default;
         age = TimeSpan.MaxValue;
-        var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             lock (Gate)
@@ -91,7 +124,7 @@ public static class PersistentHardwareCacheService
                     cached.ValueType == typeof(T))
                 {
                     age = DateTime.UtcNow - cached.SavedUtc;
-                    if (age <= maxAge &&
+                    if (IsValidCacheAge(age, maxAge) &&
                         string.Equals(cached.Fingerprint, MachineStableFingerprint.Value, StringComparison.Ordinal))
                     {
                         value = (T)cached.Value;
@@ -101,6 +134,9 @@ public static class PersistentHardwareCacheService
                 }
             }
 
+            // A hot memory-cache hit needs no Stopwatch allocation or file timing.
+            // Start measuring only on the cold disk fallback path.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             string path = PathFor(key);
             long pathMs = sw.ElapsedMilliseconds;
             if (!File.Exists(path)) return false;
@@ -118,7 +154,7 @@ public static class PersistentHardwareCacheService
                 long jsonMs = sw.ElapsedMilliseconds;
                 if (typed == null) return false;
                 age = DateTime.UtcNow - typed.SavedUtc;
-                if (age > maxAge) return false;
+                if (!IsValidCacheAge(age, maxAge)) return false;
 
                 string fingerprint = MachineStableFingerprint.Value;
                 long fingerprintMs = sw.ElapsedMilliseconds;
@@ -147,7 +183,7 @@ public static class PersistentHardwareCacheService
                 long jsonMs = sw.ElapsedMilliseconds;
                 if (cachedFingerprint == null || cachedValue == null) return false;
                 age = DateTime.UtcNow - savedUtc;
-                if (age > maxAge) return false;
+                if (!IsValidCacheAge(age, maxAge)) return false;
 
                 string fingerprint = MachineStableFingerprint.Value;
                 long fingerprintMs = sw.ElapsedMilliseconds;
@@ -165,7 +201,7 @@ public static class PersistentHardwareCacheService
             var envelope = JsonSerializer.Deserialize<CacheEnvelope<T>>(json, JsonOptions);
             if (envelope == null) return false;
             age = DateTime.UtcNow - envelope.SavedUtc;
-            if (age > maxAge) return false;
+            if (!IsValidCacheAge(age, maxAge)) return false;
 
             string genericFingerprint = MachineStableFingerprint.Value;
             if (!string.Equals(envelope.Fingerprint, genericFingerprint, StringComparison.Ordinal)) return false;
@@ -188,7 +224,8 @@ public static class PersistentHardwareCacheService
             {
                 Directory.CreateDirectory(CacheDir);
                 string path = PathFor(key);
-                string temp = path + ".tmp";
+                RemoveStaleTempSiblings(path);
+                string temp = NewTempPath(path);
                 DateTime savedUtc = DateTime.UtcNow;
                 string fingerprint = MachineStableFingerprint.Value;
                 string json = typeof(T) == typeof(string)
@@ -197,8 +234,12 @@ public static class PersistentHardwareCacheService
                         typeof(CacheEnvelope<string>),
                         HardwareCacheJsonContext.Default)
                     : JsonSerializer.Serialize(new CacheEnvelope<T>(savedUtc, fingerprint, value), JsonOptions);
-                File.WriteAllText(temp, json);
-                File.Move(temp, path, true);
+                try
+                {
+                    File.WriteAllText(temp, json);
+                    File.Move(temp, path, true);
+                }
+                finally { try { if (File.Exists(temp)) File.Delete(temp); } catch { } }
                 MachineStableMemory[key] = new MachineStableMemoryEntry(savedUtc, fingerprint, value!, typeof(T));
             }
         }
@@ -214,6 +255,19 @@ public static class PersistentHardwareCacheService
                 MachineStableMemory.Remove(key);
                 string path = PathFor(key);
                 if (File.Exists(path)) File.Delete(path);
+                // A crash between temp write and atomic replace can leave a
+                // stale sidecar; never accumulate orphaned cache files.
+                string legacyTemp = path + ".tmp";
+                if (File.Exists(legacyTemp)) File.Delete(legacyTemp);
+                try
+                {
+                    string? dir = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
+                        foreach (string sidecar in Directory.EnumerateFiles(
+                            dir, Path.GetFileName(path) + ".tmp.*"))
+                                File.Delete(sidecar);
+                }
+                catch { }
             }
         }
         catch (Exception ex) { LogService.Error("hardware-cache", "Persistent cache remove failed: " + key, ex); }
@@ -241,7 +295,29 @@ public static class PersistentHardwareCacheService
             if (TryReadMachineStable<string>(key, TimeSpan.FromMinutes(1), out _))
                 throw new InvalidOperationException("Removed machine-stable cache incorrectly survived through memory.");
 
-            LogService.Info("performance", $"MACHINE_STABLE_MEMORY_CACHE_SMOKE_OK memoryMs={memoryMs}");
+            // A crashed atomic replace can leave a unique sidecar; the next
+            // write reclaims only clearly stale ones and never a live writer's.
+            string path = PathFor(key);
+            string staleSidecar = path + ".tmp." + new string('c', 32);
+            string liveSidecar = path + ".tmp." + new string('d', 32);
+            File.WriteAllText(staleSidecar, "crashed-writer");
+            File.SetLastWriteTimeUtc(staleSidecar, DateTime.UtcNow.AddMinutes(-30));
+            File.WriteAllText(liveSidecar, "live-writer");
+            WriteMachineStable(key, "v3");
+            if (File.Exists(staleSidecar) || !File.Exists(liveSidecar))
+                throw new InvalidOperationException(
+                    "Hardware cache kept a crashed sidecar or removed a live writer's sidecar.");
+
+            // Remove must clear both the legacy fixed .tmp and every unique sidecar.
+            string legacySibling = path + ".tmp";
+            File.WriteAllText(legacySibling, "legacy-temp");
+            Remove(key);
+            if (File.Exists(legacySibling) || File.Exists(liveSidecar) || File.Exists(path))
+                throw new InvalidOperationException("Removed machine-stable cache left an orphaned temp sibling.");
+
+            LogService.Info("performance",
+                $"MACHINE_STABLE_MEMORY_CACHE_SMOKE_OK memoryMs={memoryMs} " +
+                "orphanTempCleaned=true liveSidecarPreserved=true uniqueSidecarWrites=true");
         }
         finally
         {
@@ -294,6 +370,50 @@ public static class PersistentHardwareCacheService
             return $"{machineGuid}|{Environment.OSVersion.Version.Build}";
         }
         catch { return Environment.OSVersion.Version.Build.ToString(); }
+    }
+
+    // Proves the machine-stable envelope contract (value, fingerprint binding,
+    // age validation, cleanup) on a disposable temp root. It NEVER removes or
+    // rewrites the real ProgramData cache that the running app shares.
+    internal static void RunIsolatedPersistenceSmoke()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(), "SpankyHardwareCacheSmoke-" + Guid.NewGuid().ToString("N"));
+        const string key = "__isolated-machine-stable-smoke";
+        try
+        {
+            Directory.CreateDirectory(root);
+            string path = Path.Combine(root, key + ".json");
+            var savedUtc = DateTime.UtcNow;
+            string json = JsonSerializer.Serialize(
+                new CacheEnvelope<string>(savedUtc, MachineStableFingerprint.Value, "v1"), JsonOptions);
+            File.WriteAllText(path, json);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var envelope = JsonSerializer.Deserialize<CacheEnvelope<string>>(
+                File.ReadAllText(path), JsonOptions);
+            long readMs = sw.ElapsedMilliseconds;
+            if (envelope == null ||
+                envelope.Value != "v1" ||
+                !string.Equals(envelope.Fingerprint, MachineStableFingerprint.Value, StringComparison.Ordinal) ||
+                !IsValidCacheAge(DateTime.UtcNow - envelope.SavedUtc, TimeSpan.FromMinutes(1)) ||
+                IsValidCacheAge(TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(1)) ||
+                readMs > 150)
+                throw new InvalidOperationException(
+                    "Isolated machine-stable cache round-trip/fingerprint/age contract failed.");
+
+            File.Delete(path);
+            if (File.Exists(path) || Directory.GetFiles(root).Length != 0)
+                throw new InvalidOperationException("Isolated machine-stable cache cleanup failed.");
+            LogService.Info("performance",
+                "PERSISTENT_HARDWARE_CACHE_ISOLATED_SMOKE_OK writeReadback=true " +
+                "fingerprintBound=true ageBound=true cleanup=true actualUserCacheTouched=false " +
+                "readMs=" + readMs.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
     }
 
     private static string PathFor(string key)

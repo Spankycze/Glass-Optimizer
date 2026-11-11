@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -34,6 +35,48 @@ public sealed record PsReadLineProfileOptions(
 public static class PowerShellCenterService
 {
     private static readonly SemaphoreSlim WinGetClientStatusGate = new(1, 1);
+    private static readonly SemaphoreSlim StatusRefreshGate = new(1, 1);
+    private static readonly object StatusCacheGate = new();
+    private static readonly TimeSpan StatusCacheTtl = TimeSpan.FromSeconds(45);
+    private static PowerShellCenterStatus? _statusCache;
+    private static DateTime _statusCacheAtUtc;
+    private static int _statusProcessLoads;
+    private static int _statusNativeLoads;
+    internal static int StatusNativeLoadsForDiagnostics => Volatile.Read(ref _statusNativeLoads);
+    private static int _historyCleanupRunning;
+    private static readonly SemaphoreSlim ModulesRefreshGate = new(1, 1);
+    private static IReadOnlyList<PowerShellModuleStatus>? _modulesCache;
+    private static DateTime _modulesCacheAtUtc;
+    private static int _cacheGeneration;
+    private static int _modulesProcessLoads;
+    internal static int ModulesProcessLoadsForDiagnostics => Volatile.Read(ref _modulesProcessLoads);
+    internal static int StatusProcessLoadsForDiagnostics => Volatile.Read(ref _statusProcessLoads);
+
+    internal static void InvalidateStatusCache()
+    {
+        lock (StatusCacheGate)
+        {
+            _statusCache = null;
+            _statusCacheAtUtc = default;
+            _modulesCache = null;
+            _modulesCacheAtUtc = default;
+            _cacheGeneration++;
+        }
+    }
+
+    private static IReadOnlyList<PowerShellModuleStatus>? GetCachedModules()
+    {
+        lock (StatusCacheGate)
+            return _modulesCache != null && DateTime.UtcNow - _modulesCacheAtUtc < StatusCacheTtl
+                ? _modulesCache : null;
+    }
+
+    private static PowerShellCenterStatus? GetCachedStatus()
+    {
+        lock (StatusCacheGate)
+            return _statusCache != null && DateTime.UtcNow - _statusCacheAtUtc < StatusCacheTtl
+                ? _statusCache : null;
+    }
     private static bool? _winGetClientAvailable;
     private static DateTime _winGetClientAvailableAtUtc;
     private static readonly TimeSpan WinGetClientAvailabilityTtl = TimeSpan.FromMinutes(10);
@@ -105,6 +148,109 @@ public static class PowerShellCenterService
 
     public static async Task<PowerShellCenterStatus> GetStatusAsync(CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
+        var cached = GetCachedStatus();
+        if (cached != null) return cached;
+        await StatusRefreshGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            cached = GetCachedStatus();
+            if (cached != null) return cached;
+            int generation;
+            lock (StatusCacheGate) generation = _cacheGeneration;
+            var status = await LoadStatusFreshAsync(token).ConfigureAwait(false);
+            lock (StatusCacheGate)
+            {
+                if (generation == _cacheGeneration)
+                {
+                    _statusCache = status;
+                    _statusCacheAtUtc = DateTime.UtcNow;
+                }
+            }
+            return status;
+        }
+        finally { StatusRefreshGate.Release(); }
+    }
+
+    private static async Task<PowerShellCenterStatus?> TryGetNativeStatusAsync(CancellationToken token)
+    {
+        // Only use the native fast path for a normal PS7 installation. Custom
+        // startup module paths and arbitrary script commands still use pwsh.
+        string exe = @"C:\Program Files\PowerShell\7\pwsh.exe";
+        if (!File.Exists(exe)) return null;
+        string? rawPaths = Environment.GetEnvironmentVariable("PSModulePath");
+        if (string.IsNullOrWhiteSpace(rawPaths)) return null;
+        string[] paths = rawPaths.Split(Path.PathSeparator, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (paths.Length == 0) return null;
+        string[] names = ["PSReadLine", "Microsoft.PowerShell.PSResourceGet", "PSScriptAnalyzer",
+            "Microsoft.WinGet.Client", "Terminal-Icons"];
+        string[] versions = new string[names.Length];
+        // Normalize and deduplicate module roots before enumerating them.
+        paths = paths.Select(Environment.ExpandEnvironmentVariables)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        for (int i = 0; i < names.Length; i++)
+        {
+            Version? best = null;
+            foreach (string root in paths)
+            {
+                token.ThrowIfCancellationRequested();
+                string directory = Path.Combine(root, names[i]);
+                if (!Directory.Exists(directory)) continue;
+                foreach (string child in Directory.EnumerateDirectories(directory))
+                {
+                    if (Version.TryParse(Path.GetFileName(child), out var version) &&
+                        File.Exists(Path.Combine(child, names[i] + ".psd1")) &&
+                        (best == null || version > best))
+                        best = version;
+                }
+                // An unversioned module may contain an arbitrary version, so use
+                // the existing PowerShell discovery fallback rather than guess.
+                string manifest = Path.Combine(directory, names[i] + ".psd1");
+                if (File.Exists(manifest))
+                {
+                    string data = await File.ReadAllTextAsync(manifest, token).ConfigureAwait(false);
+                    var match = System.Text.RegularExpressions.Regex.Match(data,
+                        @"(?im)^\s*ModuleVersion\s*=\s*'(?<version>\d+(?:\.\d+){1,3})'");
+                    if (!match.Success || !Version.TryParse(match.Groups["version"].Value, out var declaredVersion))
+                        return null;
+                    if (best == null || declaredVersion > best) best = declaredVersion;
+                }
+            }
+            versions[i] = best?.ToString() ?? "Missing";
+        }
+        // Oh My Posh version may differ from file product version or PATH shim.
+        // Keep the external discovery path when that executable is present.
+        string[] pathDirectories = (Environment.GetEnvironmentVariable("PATH") ?? "")
+            .Split(Path.PathSeparator, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        string? omp = pathDirectories.Concat(paths).Select(Environment.ExpandEnvironmentVariables)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Select(x => Path.Combine(x, "oh-my-posh.exe"))
+            .FirstOrDefault(File.Exists);
+        string ompVersion = "Missing";
+        if (omp != null)
+        {
+            var result = await ProcessRunner.RunAsync(omp, "version", TimeSpan.FromSeconds(8), token).ConfigureAwait(false);
+            if (!result.Success) return null;
+            ompVersion = result.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "Missing";
+        }
+        string versionString = FileVersionInfo.GetVersionInfo(exe).ProductVersion ?? "";
+        if (string.IsNullOrWhiteSpace(versionString)) return null;
+        return new PowerShellCenterStatus(versionString, versions[0], versions[1], versions[2],
+            versions[3], versions[4], ompVersion);
+    }
+
+    private static async Task<PowerShellCenterStatus> LoadStatusFreshAsync(CancellationToken token)
+    {
+        var elapsed = Stopwatch.StartNew();
+        // Native module discovery performs synchronous directory enumeration and
+        // manifest reads before its first await. Never run that cold I/O on the UI thread.
+        var native = await Task.Run(() => TryGetNativeStatusAsync(token), token).ConfigureAwait(false);
+        if (native != null)
+        {
+            Interlocked.Increment(ref _statusNativeLoads);
+            LogService.Info("performance", "POWERSHELL_CENTER_STATUS source=native pwshStarts=0 ms=" + elapsed.ElapsedMilliseconds);
+            return native;
+        }
+        Interlocked.Increment(ref _statusProcessLoads);
         const string script = """
 $ErrorActionPreference='SilentlyContinue'
 function Ver([string]$Name) {
@@ -134,6 +280,7 @@ if($c){
             token).ConfigureAwait(false);
         string[] p = text.Split('|');
         string At(int i) => i < p.Length && !string.IsNullOrWhiteSpace(p[i]) ? p[i].Trim() : "Missing";
+        LogService.Info("performance", "POWERSHELL_CENTER_STATUS source=pwsh pwshStarts=1 ms=" + elapsed.ElapsedMilliseconds);
         return new PowerShellCenterStatus(At(0), At(1), At(2), At(3), At(4), At(5), At(6));
     }
 
@@ -184,7 +331,7 @@ if($c){
         if (final.Length > 0) final += Environment.NewLine + Environment.NewLine;
         final += sb.ToString();
         File.WriteAllText(profile, final, new UTF8Encoding(false));
-        _ = Task.Run(NormalizePowerShellHistory);
+        ScheduleHistoryCleanupOnce();
     }
 
     public static void RemovePsReadLineProfileBlock()
@@ -206,6 +353,17 @@ if($c){
         return text.Remove(start, end - start);
     }
 
+    // Fast repeated profile edits should not queue multiple expensive history scans.
+    private static void ScheduleHistoryCleanupOnce()
+    {
+        if (Interlocked.CompareExchange(ref _historyCleanupRunning, 1, 0) != 0) return;
+        _ = Task.Run(() =>
+        {
+            try { NormalizePowerShellHistory(); }
+            finally { Volatile.Write(ref _historyCleanupRunning, 0); }
+        });
+    }
+
     private static void NormalizePowerShellHistory()
     {
         try
@@ -213,27 +371,56 @@ if($c){
             string path = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "Microsoft", "Windows", "PowerShell", "PSReadLine", "ConsoleHost_history.txt");
-            if (!File.Exists(path)) return;
-
-            var info = new FileInfo(path);
-            if (info.Length < 2 * 1024 * 1024) return;
-
-            string[] lines = File.ReadAllLines(path);
-            const int keep = 10000;
-            int start = Math.Max(0, lines.Length - keep);
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            var compact = new List<string>(keep);
-            for (int i = lines.Length - 1; i >= start; i--)
-            {
-                string line = lines[i];
-                if (string.IsNullOrWhiteSpace(line) || !seen.Add(line)) continue;
-                compact.Add(line);
-            }
-            compact.Reverse();
-            File.WriteAllLines(path, compact, new UTF8Encoding(false));
+            _ = CompactHistoryFile(path, 2 * 1024 * 1024);
         }
-        catch
+        catch (Exception ex)
         {
+            LogService.Info("powershell", "PowerShell history cleanup skipped: " + ex.Message);
+        }
+    }
+
+    // Streaming last-N ring (not File.ReadAllLines): memory consumption is
+    // independent of total history length. Replace the file atomically and
+    // only if PSReadLine has not appended new commands during compaction.
+    internal static int CompactHistoryFile(string path, long minimumBytes = 2 * 1024 * 1024)
+    {
+        if (!File.Exists(path)) return 0;
+        var before = new FileInfo(path);
+        if (before.Length < minimumBytes || before.Length > 512L * 1024 * 1024) return 0;
+        long length = before.Length;
+        DateTime timestamp = before.LastWriteTimeUtc;
+        const int keep = 10000;
+        var recent = new Queue<string>(keep);
+        foreach (string line in File.ReadLines(path))
+        {
+            if (recent.Count == keep) recent.Dequeue();
+            recent.Enqueue(line);
+        }
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var compact = new List<string>(keep);
+        foreach (string line in recent.Reverse())
+        {
+            if (string.IsNullOrWhiteSpace(line) || !seen.Add(line)) continue;
+            compact.Add(line);
+        }
+        compact.Reverse();
+
+        // Never rewrite a file modified while being read; PSReadLine may be
+        // appending from a running shell and its new commands must survive.
+        var current = new FileInfo(path);
+        if (current.Length != length || current.LastWriteTimeUtc != timestamp) return 0;
+        string temporary = path + ".spanky-" + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllLines(temporary, compact, new UTF8Encoding(false));
+            current.Refresh();
+            if (current.Length != length || current.LastWriteTimeUtc != timestamp) return 0;
+            File.Move(temporary, path, overwrite: true);
+            return compact.Count;
+        }
+        finally
+        {
+            try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
         }
     }
 
@@ -271,7 +458,9 @@ Import-Module Microsoft.PowerShell.PSResourceGet -Force
 $m=Get-Module Microsoft.PowerShell.PSResourceGet
 "PSResourceGet $($m.Version)"
 """;
-        return await RunPwshTextAsync(script, TimeSpan.FromMinutes(5), token).ConfigureAwait(false);
+        string result = await RunPwshTextAsync(script, TimeSpan.FromMinutes(5), token).ConfigureAwait(false);
+        InvalidateStatusCache();
+        return result;
     }
 
     public static async Task<string> InstallResourceAsync(string name, CancellationToken token = default)
@@ -289,6 +478,7 @@ $m=Get-Module Microsoft.PowerShell.PSResourceGet
         string result = await RunPwshTextAsync(script, TimeSpan.FromMinutes(8), token).ConfigureAwait(false);
         if (string.Equals(safe, "Microsoft.WinGet.Client", StringComparison.OrdinalIgnoreCase))
             InvalidateWinGetClientAvailabilityCache();
+        InvalidateStatusCache();
         return result;
     }
 
@@ -313,6 +503,7 @@ $m=Get-Module Microsoft.PowerShell.PSResourceGet
         string result = await RunPwshTextAsync(script, TimeSpan.FromMinutes(8), token).ConfigureAwait(false);
         if (string.Equals(safe, "Microsoft.WinGet.Client", StringComparison.OrdinalIgnoreCase))
             InvalidateWinGetClientAvailabilityCache();
+        InvalidateStatusCache();
         return result;
     }
 
@@ -324,6 +515,7 @@ $ErrorActionPreference='Stop'
 Import-Module Microsoft.PowerShell.PSResourceGet -ErrorAction Stop
 $names=@('PSReadLine','PSScriptAnalyzer','Terminal-Icons','Microsoft.WinGet.Client','PSFzf','posh-git')
 $out=@()
+$errors=@()
 foreach($name in $names){
   $m=Get-Module -ListAvailable -Name $name | Sort-Object Version -Descending | Select-Object -First 1
   if(-not $m){ continue }
@@ -338,18 +530,47 @@ foreach($name in $names){
     $n=Get-Module -ListAvailable -Name $name | Sort-Object Version -Descending | Select-Object -First 1
     $out += "$name $($n.Version)"
   } catch {
-    $out += "$name ERROR: $($_.Exception.Message)"
+    $errors += "$name ERROR: $($_.Exception.Message)"
   }
 }
+if($errors.Count){ throw ('Managed resource update failed: ' + ($errors -join '; ')) }
 $out -join [Environment]::NewLine
 """;
         string result = await RunPwshTextAsync(script, TimeSpan.FromMinutes(12), token).ConfigureAwait(false);
         InvalidateWinGetClientAvailabilityCache();
+        InvalidateStatusCache();
         return result;
     }
 
     public static async Task<IReadOnlyList<PowerShellModuleStatus>> GetManagedModulesAsync(CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
+        var cached = GetCachedModules();
+        if (cached != null) return cached;
+        await ModulesRefreshGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            cached = GetCachedModules();
+            if (cached != null) return cached;
+            int generation;
+            lock (StatusCacheGate) generation = _cacheGeneration;
+            var modules = await LoadManagedModulesFreshAsync(token).ConfigureAwait(false);
+            lock (StatusCacheGate)
+            {
+                if (generation == _cacheGeneration)
+                {
+                    _modulesCache = modules;
+                    _modulesCacheAtUtc = DateTime.UtcNow;
+                }
+            }
+            return modules;
+        }
+        finally { ModulesRefreshGate.Release(); }
+    }
+
+    private static async Task<IReadOnlyList<PowerShellModuleStatus>> LoadManagedModulesFreshAsync(CancellationToken token)
+    {
+        Interlocked.Increment(ref _modulesProcessLoads);
         const string script = """
 $names=@('PSReadLine','Microsoft.PowerShell.PSResourceGet','PSScriptAnalyzer','Microsoft.WinGet.Client','Terminal-Icons','PSFzf','posh-git')
 foreach($name in $names){

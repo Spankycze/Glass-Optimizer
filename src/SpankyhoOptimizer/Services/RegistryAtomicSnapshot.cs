@@ -41,13 +41,79 @@ internal sealed class RegistryAtomicSnapshot
         return snapshot;
     }
 
-    public bool TryRestore(TweakDefinition tweak)
+    // The batch snapshot is not unconditional permission to overwrite a
+    // value that another program changed while the operation was in flight.
+    // DWord ON is the only exact post-apply signature known to this engine.
+    // OFF may restore an arbitrary backed-up value; when ambiguous, preserve
+    // the current value and report a rollback conflict instead.
+    internal static bool MayRestoreOwnedValue(
+        bool originallyExisted, RegistryValueKind originalKind, object? originalValue,
+        bool currentlyExisted, RegistryValueKind currentKind, object? currentValue,
+        bool expectedEnabled, long? expectedDword) =>
+        MatchesValue(originallyExisted, originalKind, originalValue,
+            currentlyExisted, currentKind, currentValue) ||
+        (expectedEnabled && expectedDword.HasValue &&
+         currentlyExisted && currentKind == RegistryValueKind.DWord &&
+         currentValue is int currentDword &&
+         (currentDword == expectedDword.Value || (uint)currentDword == (uint)expectedDword.Value));
+
+    private static bool MatchesValue(
+        bool aExists, RegistryValueKind aKind, object? aValue,
+        bool bExists, RegistryValueKind bKind, object? bValue)
+    {
+        if (aExists != bExists) return false;
+        if (!aExists) return true;
+        if (aKind != bKind) return false;
+        return aValue switch
+        {
+            byte[] aBytes when bValue is byte[] bBytes => aBytes.SequenceEqual(bBytes),
+            string[] aStrings when bValue is string[] bStrings =>
+                aStrings.SequenceEqual(bStrings, StringComparer.Ordinal),
+            _ => Equals(aValue, bValue)
+        };
+    }
+
+    public bool TryRestore(TweakDefinition tweak, bool expectedEnabled)
     {
         if (!_entries.TryGetValue(tweak.Id, out var entry)) return false;
         using var root = RegistryKey.OpenBaseKey(entry.Hive, RegistryView.Registry64);
-        using var key = root.CreateSubKey(entry.Path, true);
-        if (!entry.Existed) key.DeleteValue(entry.Name, false);
-        else key.SetValue(entry.Name, Clone(entry.Value) ?? string.Empty, entry.Kind);
+        using var key = root.OpenSubKey(entry.Path, writable: true);
+        bool currentExists = key?.GetValueNames().Contains(
+            entry.Name, StringComparer.OrdinalIgnoreCase) == true;
+        RegistryValueKind currentKind = currentExists
+            ? key!.GetValueKind(entry.Name) : RegistryValueKind.None;
+        object? currentValue = currentExists
+            ? key!.GetValue(entry.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames)
+            : null;
+
+        if (!MayRestoreOwnedValue(entry.Existed, entry.Kind, entry.Value,
+                currentExists, currentKind, currentValue,
+                expectedEnabled, tweak.RegistryEnabledValue))
+            throw new InvalidOperationException(
+                "Registry hodnota byla externě změněna; rollback ji nepřepíše: " + tweak.Id);
+
+        if (MatchesValue(entry.Existed, entry.Kind, entry.Value,
+                currentExists, currentKind, currentValue))
+            return true; // Original already present: no registry mutation.
+
+        if (key is null || (entry.Existed && entry.Value is null))
+            throw new InvalidOperationException(
+                "Původní registry hodnotu nelze bezpečně obnovit: " + tweak.Id);
+
+        if (entry.Existed) key.SetValue(entry.Name, Clone(entry.Value)!, entry.Kind);
+        else key.DeleteValue(entry.Name, false);
+
+        bool restoredExists = key.GetValueNames().Contains(
+            entry.Name, StringComparer.OrdinalIgnoreCase);
+        RegistryValueKind restoredKind = restoredExists
+            ? key.GetValueKind(entry.Name) : RegistryValueKind.None;
+        object? restoredValue = restoredExists
+            ? key.GetValue(entry.Name, null, RegistryValueOptions.DoNotExpandEnvironmentNames)
+            : null;
+        if (!MatchesValue(entry.Existed, entry.Kind, entry.Value,
+                restoredExists, restoredKind, restoredValue))
+            throw new InvalidOperationException(
+                "Registry rollback nebyl potvrzen zpětným čtením: " + tweak.Id);
         return true;
     }
 

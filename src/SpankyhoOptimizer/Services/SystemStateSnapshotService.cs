@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -20,6 +20,10 @@ public static class SystemStateSnapshotService
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     public static async Task<string> CaptureAsync(CancellationToken token = default)
     {
+        UserFeatureProfile featureProfile = UserFeatureProfileService.Load();
+        if (featureProfile.IsUntrusted)
+            throw new InvalidOperationException(
+                "Snapshot nelze vytvořit: uložené používané funkce nejsou bezpečně čitelné.");
         Directory.CreateDirectory(Root); string id = DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6];
         string dir = Path.Combine(Root, id); Directory.CreateDirectory(dir);
         var tweaks = BuildAllTweaks(); await new TweakEngine().DetectAsync(tweaks, token);
@@ -33,7 +37,7 @@ public static class SystemStateSnapshotService
         var snap = new OptimizerSystemSnapshot(id, DateTimeOffset.Now, Environment.OSVersion.Version.Build,
             NativeCore.GetActivePowerScheme().ToString("D"), tweaks.Where(x => x.IsLoaded).Select(x => new SnapshotTweak(x.Id, x.Current)).ToArray(),
             (await servicesTask).Select(x => new SnapshotServiceState(x.Name, x.StartType)).ToArray(),
-            (await tasksTask).Select(x => new SnapshotTaskState(x.Path, x.Enabled)).ToArray(), UserFeatureProfileService.Load().KeepFeatures);
+            (await tasksTask).Select(x => new SnapshotTaskState(x.Path, x.Enabled)).ToArray(), featureProfile.KeepFeatures);
         string file = Path.Combine(dir, "snapshot.json"); await AtomicFileService.WriteTextAsync(file, JsonSerializer.Serialize(snap, Json), token); return file;
     }
     public static OptimizerSystemSnapshot[] List() => ListRecent(int.MaxValue);
@@ -112,7 +116,7 @@ public static class SystemStateSnapshotService
     }
     public static List<TweakDefinition> BuildAllTweaks()
     {
-        var src = new (string, string?)[] { ("system", null), ("gpu", null), ("memory", null), ("storage", null), ("network", null), ("ui", null), ("update", null), ("privacy", null), ("ai", null), ("defender", null), ("components", "Služby"), ("components", "Ovladače"), ("components", "Task Scheduler"), ("browsers", "Firefox"), ("browsers", "Chrome"), ("browsers", "Edge"), ("browsers", "Brave"), ("browsers", "Opera"), ("browsers", "Opera GX"), ("browsers", "Vivaldi") };
+        var src = new (string, string?)[] { ("system", null), ("gpu", null), ("memory", null), ("storage", null), ("network", null), ("ui", null), ("update", null), ("privacy", null), ("ai", null), ("defender", null), ("components", "Služby"), ("components", "Ovladače"), ("components", "Task Scheduler") };
         var map = new Dictionary<string, TweakDefinition>(StringComparer.OrdinalIgnoreCase); foreach (var x in src) foreach (var t in CatalogService.GetTweaks(x.Item1, x.Item2)) map.TryAdd(t.Id, t); return map.Values.ToList();
     }
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -132,6 +132,7 @@ public sealed partial class MainWindow
         if (_storageSnapshotShellHost != null) ScheduleStorageSnapshotShell(token);
         if (_storageActionsHost is { Children.Count: 0 } actionsHost) ScheduleStorageActions(actionsHost, token);
         if (_storageTweakHost != null) ScheduleStorageTweakCards(token);
+        ScheduleStorageOptimizationAdvisor(token);
         ScheduleStorageTools(token);
         long scheduleMs = sw.ElapsedMilliseconds - attachMs;
 
@@ -177,7 +178,8 @@ public sealed partial class MainWindow
         if (_storageTweakNextIndex >= rows.Length) return;
 
         _storageTweakQueuedGeneration = generation;
-        long totalMs = 0;
+        double totalMs = 0;
+        int slices = 0;
         void ReleaseQueueTicket()
         {
             if (_storageTweakQueuedGeneration == generation)
@@ -195,23 +197,29 @@ public sealed partial class MainWindow
                 }
 
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var row = rows[index];
-                if (row.FirstInGroup)
-                    host.Children.Add(CreateClassicTweakGroupHeader(row.Group, row.GroupCount));
-                host.Children.Add(CreateClassicTweakCard(row.Tweak));
-                _storageTweakNextIndex = index + 1;
-                long batchMs = sw.ElapsedMilliseconds;
-                totalMs += batchMs;
-                LogService.Info("performance",
-                    $"STORAGE_TWEAK_BATCH index={index} ms={batchMs} completed={_storageTweakNextIndex}/{rows.Length}");
-                if (_storageTweakNextIndex < rows.Length)
-                    QueueNext(_storageTweakNextIndex);
+                int next = index;
+                // Bound both duration and card count. Keep two rows per pass so
+                // a cancelled/superseded partial batch can resume safely.
+                do
+                {
+                    var row = rows[next++];
+                    if (row.FirstInGroup)
+                        host.Children.Add(CreateClassicTweakGroupHeader(row.Group, row.GroupCount));
+                    host.Children.Add(CreateClassicTweakCard(row.Tweak));
+                }
+                while (next < rows.Length && next - index < 2 && sw.Elapsed.TotalMilliseconds < 3);
+
+                _storageTweakNextIndex = next;
+                slices++;
+                totalMs += sw.Elapsed.TotalMilliseconds;
+                if (next < rows.Length)
+                    QueueNext(next);
                 else
                 {
                     ReleaseQueueTicket();
                     SchedulePageScrollPolicyRefresh();
                     LogService.Info("performance",
-                        $"STORAGE_TWEAKS_DEFERRED totalMs={totalMs} maxPerTick=batched count={rows.Length}");
+                        $"STORAGE_TWEAKS_DEFERRED totalMs={totalMs:F2} slices={slices} maxPerTick=2 count={rows.Length}");
                 }
             }))
                 ReleaseQueueTicket();
@@ -220,7 +228,7 @@ public sealed partial class MainWindow
     }
     private void CaptureStoragePageCache()
     {
-        _storagePageCache ??= ContentStack.Children.Cast<UIElement>().ToList();
+        _storagePageCache ??= SnapshotChildren(ContentStack);
         _storagePanelRefreshAt = DateTime.UtcNow;
         _storagePageCacheUsedAt = DateTime.UtcNow;
         _storagePageRevisionStamp = CurrentTweakRevisionStamp();
@@ -258,6 +266,8 @@ public sealed partial class MainWindow
         _storageActionsQueuedGeneration = 0;
         _storageToolsRow = null;
         _storageMaintenanceCard = null;
+        _storageOptimizationAdvisorCard = null;
+        _storageOptimizationAdvisorRefresh = null;
         _storageToolsQueuedGeneration = 0;
         _storageHealthBody = null;
         _storageAdvancedBody = null;
@@ -528,6 +538,31 @@ public sealed partial class MainWindow
         LogService.Info("performance", "STORAGE_CONTENT_RESUME_SMOKE_OK emptyCache=true partialCache=true controlsPreserved=true duplicates=false");
     }
 
+    internal async Task RunStorageStaleCacheNavigationSmokeAsync()
+    {
+        await ShowSectionAsync("storage");
+        for (int i = 0; i < 140 && _storagePageCache == null; i++)
+            await Task.Delay(25);
+        if (_storagePageCache == null || _storageTweakHost == null)
+            throw new InvalidOperationException("Storage cache did not reach a completed page.");
+        var existingHost = _storageTweakHost;
+        _tweakCacheTime["storage|"] = DateTime.UtcNow.AddSeconds(-95);
+        await ShowSectionAsync("settings");
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await ShowSectionAsync("storage");
+        stopwatch.Stop();
+        if (!ReferenceEquals(existingHost, _storageTweakHost))
+            throw new InvalidOperationException("Stale storage detection rebuilt cached UI instead of reusing it.");
+        for (int i = 0; i < 100 && (!_tweakCacheTime.TryGetValue("storage|", out var refreshed) ||
+                                      DateTime.UtcNow - refreshed > TimeSpan.FromSeconds(10)); i++)
+            await Task.Delay(25);
+        if (!_tweakCacheTime.TryGetValue("storage|", out var updated) ||
+            DateTime.UtcNow - updated > TimeSpan.FromSeconds(10))
+            throw new InvalidOperationException("Storage cached UI did not refresh stale tweak detection.");
+        LogService.Info("performance",
+            $"STORAGE_STALE_CACHE_NAV_SMOKE_OK wallMs={stopwatch.ElapsedMilliseconds} reattached=true refresh=true");
+    }
+
     private async Task RunStorageDeferredStateAfterSettleAsync(string cacheKey, TweakDefinition[] tweaks, bool detect, CancellationToken token, int generation)
     {
         try
@@ -545,9 +580,28 @@ public sealed partial class MainWindow
         long detectMs = 0, refreshMs = 0, recommendedMs = 0, captureMs = 0;
         try
         {
+            TweakDefinition[] immediate;
+            TweakDefinition[] lazy;
+            if (tweaks.Length == 0)
+            {
+                immediate = Array.Empty<TweakDefinition>();
+                lazy = Array.Empty<TweakDefinition>();
+            }
+            else
+            {
+                var immediateList = new List<TweakDefinition>(tweaks.Length);
+                var lazyList = new List<TweakDefinition>();
+                foreach (TweakDefinition tweak in tweaks)
+                {
+                    if (tweak.LazyDetect) lazyList.Add(tweak);
+                    else immediateList.Add(tweak);
+                }
+                immediate = immediateList.ToArray();
+                lazy = lazyList.ToArray();
+            }
+
             if (detect)
             {
-                var immediate = tweaks.Where(x => !x.LazyDetect).ToArray();
                 if (immediate.Length > 0)
                     await _engine.DetectAsync(immediate, token);
                 _tweakCacheTime[cacheKey] = DateTime.UtcNow;
@@ -567,7 +621,6 @@ public sealed partial class MainWindow
             if (!token.IsCancellationRequested && _section == "storage") CaptureStoragePageCache();
             captureMs = perf.ElapsedMilliseconds - captureStart;
 
-            var lazy = tweaks.Where(x => x.LazyDetect).ToArray();
             if (lazy.Length > 0)
                 SafeTaskService.Forget(
                     DetectLazyTweaksAfterSettleAsync("storage", lazy, token, _navigationGeneration),

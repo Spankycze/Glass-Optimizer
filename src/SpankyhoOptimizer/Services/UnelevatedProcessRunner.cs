@@ -26,15 +26,37 @@ public static class UnelevatedProcessRunner
         }
         finally { try { File.Delete(log); } catch { } }
     }
+    private static IntPtr OpenExplorerSessionToken()
+    {
+        int sessionId;
+        using (Process current = Process.GetCurrentProcess())
+            sessionId = current.SessionId;
+
+        return ProcessSnapshotCleanup.Inspect(
+            () => Process.GetProcessesByName("explorer"), explorers =>
+            {
+                foreach (Process explorer in explorers)
+                {
+                    int explorerSession;
+                    try { explorerSession = explorer.SessionId; }
+                    catch (InvalidOperationException) { continue; }
+                    if (explorerSession != sessionId) continue;
+                    if (!OpenProcessToken(explorer.Handle,
+                            TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY,
+                            out IntPtr sourceToken))
+                        throw new InvalidOperationException($"OpenProcessToken selhal: {Marshal.GetLastWin32Error()}.");
+                    return sourceToken;
+                }
+                throw new InvalidOperationException("Explorer.exe běžného uživatele nebyl nalezen.");
+            });
+    }
+
     private static async Task<ProcessResult> RunCommandAsync(string command, string log, TimeSpan timeout,
         CancellationToken token, Action<string>? onOutput)
     {
-        using Process explorer = Process.GetProcessesByName("explorer")
-            .FirstOrDefault(p => p.SessionId == Process.GetCurrentProcess().SessionId)
-            ?? throw new InvalidOperationException("Explorer.exe běžného uživatele nebyl nalezen.");
-
-        if (!OpenProcessToken(explorer.Handle, TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY, out IntPtr sourceToken))
-            throw new InvalidOperationException($"OpenProcessToken selhal: {Marshal.GetLastWin32Error()}.");
+        // Acquire the token while every explorer Process wrapper is still alive;
+        // close all wrappers before launching the child process.
+        IntPtr sourceToken = OpenExplorerSessionToken();
         try
         {
             if (!DuplicateTokenEx(sourceToken, MAXIMUM_ALLOWED, IntPtr.Zero, 2, 1, out IntPtr userToken))
@@ -66,7 +88,7 @@ public static class UnelevatedProcessRunner
                 token.ThrowIfCancellationRequested();
                 if (started.Elapsed > timeout)
                 {
-                    TerminateProcess(pi.hProcess, 1460);
+                    StopProcessTree(pi, 1460);
                     throw new TimeoutException($"Proces běžného uživatele překročil timeout {timeout.TotalSeconds:0}s.");
                 }
 
@@ -76,30 +98,48 @@ public static class UnelevatedProcessRunner
                 if (wait != WAIT_TIMEOUT) throw new InvalidOperationException($"WaitForSingleObject selhal: {Marshal.GetLastWin32Error()}.");
                 await Task.Delay(80, token).ConfigureAwait(false);
             }
-            ReadNewLines(log, ref seenLines, output, onOutput);
+            ReadNewLines(log, ref seenLines, output, onOutput, includePartial: true);
             if (!GetExitCodeProcess(pi.hProcess, out uint exit)) exit = 1;
             return new ProcessResult(unchecked((int)exit), output.ToString(), string.Empty);
         }
         catch (OperationCanceledException)
         {
-            try { TerminateProcess(pi.hProcess, 1223); } catch { }
+            StopProcessTree(pi, 1223);
             throw;
         }
         finally { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
     }
 
-    private static void ReadNewLines(string log, ref int seenLines, StringBuilder output, Action<string>? onOutput)
+    private static void StopProcessTree(PROCESS_INFORMATION pi, uint exitCode)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(unchecked((int)pi.dwProcessId));
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+        catch { }
+        // Retain the native handle fallback for access failures or process-exit races.
+        try { TerminateProcess(pi.hProcess, exitCode); } catch { }
+        uint wait = WaitForSingleObject(pi.hProcess, 2000);
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT)
+            LogService.Error("process", $"WaitForSingleObject failed after process termination: code=0x{wait:X8}.");
+    }
+
+    private static void ReadNewLines(string log, ref int seenLines, StringBuilder output, Action<string>? onOutput, bool includePartial = false)
     {
         try
         {
             if (!File.Exists(log)) return;
-            string[] lines = File.ReadAllLines(log);
-            for (int i = seenLines; i < lines.Length; i++)
+            string text = File.ReadAllText(log);
+            string[] lines = text.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
+            int completeLines = lines.Length - 1;
+            if (includePartial && lines[^1].Length > 0) completeLines++;
+            for (int i = seenLines; i < completeLines; i++)
             {
                 string line = lines[i]; output.AppendLine(line);
                 try { onOutput?.Invoke(line); } catch { }
             }
-            seenLines = lines.Length;
+            seenLines = completeLines;
         }
         catch (IOException) { }
     }
@@ -114,17 +154,24 @@ public static class UnelevatedProcessRunner
     [StructLayout(LayoutKind.Sequential)]
     private struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public uint dwProcessId, dwThreadId; }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool DuplicateTokenEx(IntPtr existingToken, uint desiredAccess, IntPtr tokenAttributes,
         int impersonationLevel, int tokenType, out IntPtr newToken);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string? applicationName,
         string commandLine, uint creationFlags, IntPtr environment, string? currentDirectory,
         ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(IntPtr handle);
 }

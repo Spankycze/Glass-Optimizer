@@ -18,10 +18,10 @@
                     
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Dark">
-                    <SolidColorBrush x:Key="SpankyRowSurfaceBrush" Color="#FF0B0E17"/>
-                    <SolidColorBrush x:Key="SpankyRowBorderBrush" Color="#FF282D3D"/>
-                    <SolidColorBrush x:Key="SpankyRowAccentSurfaceBrush" Color="#FF101D33"/>
-                    <SolidColorBrush x:Key="SpankyRowBadgeSurfaceBrush" Color="#FF252B3C"/>
+                    <SolidColorBrush x:Key="SpankyRowSurfaceBrush" Color="#141D2634"/>
+                    <SolidColorBrush x:Key="SpankyRowBorderBrush" Color="#467EA6C8"/>
+                    <SolidColorBrush x:Key="SpankyRowAccentSurfaceBrush" Color="#2A47305A"/>
+                    <SolidColorBrush x:Key="SpankyRowBadgeSurfaceBrush" Color="#343B2C48"/>
                     
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
@@ -52,9 +52,9 @@
             <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPressed" Color="#FFFFFFFF"/>
             <SolidColorBrush x:Key="ToggleSwitchKnobFillOnDisabled" Color="#99FFFFFF"/>
             <SolidColorBrush x:Key="ToggleSwitchKnobStrokeOn" Color="#00FFFFFF"/>
-            <SolidColorBrush x:Key="ToggleSwitchFillOff" Color="#FF1B2333"/>
-            <SolidColorBrush x:Key="ToggleSwitchFillOffPointerOver" Color="#FF222D40"/>
-            <SolidColorBrush x:Key="ToggleSwitchFillOffPressed" Color="#FF18202E"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOff" Color="#60384C62"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOffPointerOver" Color="#74465D76"/>
+            <SolidColorBrush x:Key="ToggleSwitchFillOffPressed" Color="#88405468"/>
             <SolidColorBrush x:Key="ToggleSwitchFillOffDisabled" Color="#661B2333"/>
             <SolidColorBrush x:Key="ToggleSwitchStrokeOff" Color="#FF56657A"/>
             <SolidColorBrush x:Key="ToggleSwitchStrokeOffPointerOver" Color="#FF71829A"/>
@@ -84,53 +84,7 @@
             <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="{StaticResource AccentFillColorSecondary}"/>
             <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="{StaticResource AccentFillColorTertiary}"/>
             <SolidColorBrush x:Key="AccentFillColorDisabledBrush" Color="{StaticResource AccentFillColorDisabled}"/>
-            <Style TargetType="ToggleSwitch">
-                <Setter Property="AutomationProperties.Name" Value="Přepínač nastavení"/>
-                <Setter Property="MinWidth" Value="42"/>
-                <Setter Property="MinHeight" Value="22"/>
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="ToggleSwitch">
-                            <Grid MinWidth="42" MinHeight="22">
-                                <VisualStateManager.VisualStateGroups>
-                                    <VisualStateGroup x:Name="CommonStates">
-                                        <VisualState x:Name="Normal"/>
-                                        <VisualState x:Name="PointerOver"/>
-                                        <VisualState x:Name="Pressed"/>
-                                        <VisualState x:Name="Disabled"/>
-                                    </VisualStateGroup>
-                                    <VisualStateGroup x:Name="ToggleStates">
-                                        <VisualState x:Name="Off">
-                                            <VisualState.Setters>
-                                                <Setter Target="SpankyThumbTransform.X" Value="0"/>
-                                                <Setter Target="SpankyTrack.Background" Value="{StaticResource ToggleSwitchFillOff}"/>
-                                                <Setter Target="SpankyTrack.BorderBrush" Value="{StaticResource ToggleSwitchStrokeOff}"/>
-                                            </VisualState.Setters>
-                                        </VisualState>
-                                        <VisualState x:Name="On">
-                                            <VisualState.Setters>
-                                                <Setter Target="SpankyThumbTransform.X" Value="20"/>
-                                                <Setter Target="SpankyTrack.Background" Value="{StaticResource ToggleSwitchFillOn}"/>
-                                                <Setter Target="SpankyTrack.BorderBrush" Value="{StaticResource ToggleSwitchStrokeOn}"/>
-                                            </VisualState.Setters>
-                                        </VisualState>
-                                    </VisualStateGroup>
-                                </VisualStateManager.VisualStateGroups>
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                    <Border x:Name="SpankyTrack" Width="42" Height="22" CornerRadius="11" Background="{StaticResource ToggleSwitchFillOff}" BorderBrush="{StaticResource ToggleSwitchStrokeOff}" BorderThickness="1" VerticalAlignment="Center">
-                                        <Border Width="16" Height="16" CornerRadius="8" Background="#FFFFFFFF" HorizontalAlignment="Left" Margin="3,0">
-                                            <Border.RenderTransform><TranslateTransform x:Name="SpankyThumbTransform"/></Border.RenderTransform>
-                                        </Border>
-                                    </Border>
-                                    <ContentPresenter Grid.Column="1" Content="{TemplateBinding OnContent}" VerticalAlignment="Center"/>
-                                </Grid>
-                            </Grid>
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-
+            <!-- Native WinUI ToggleSwitch template keeps real click/keyboard/accessibility behavior. Custom colors remain in resources above. -->
             <DataTemplate x:Key="StartupRowTemplateV209">
                 <Border Margin="0" Padding="12,16" CornerRadius="0" Background="{ThemeResource SpankyRowSurfaceBrush}" BorderBrush="{ThemeResource SpankyRowBorderBrush}" BorderThickness="0,0,0,1">
                     <Grid ColumnSpacing="11">
@@ -147,7 +101,16 @@
                         </StackPanel>
                         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                             <TextBlock Text="{Binding StateText}" FontSize="10.2" Opacity=".72" VerticalAlignment="Center"/>
-                            <ToggleSwitch IsOn="{Binding Enabled,Mode=TwoWay}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="{Binding Name}" OffContent="" OnContent="" MinWidth="50"/>
+                            <Button Content="&#xE74D;" FontFamily="Segoe Fluent Icons" FontSize="13"
+                                    Width="30" Height="30" Padding="0" CornerRadius="6"
+                                    Background="Transparent" BorderThickness="0"
+                                    Command="{Binding DeleteCommand}"
+                                    IsEnabled="{Binding CanDelete}"
+                                    Visibility="{Binding DeleteVisibility}"
+                                    ToolTipService.ToolTip="Odstranit ze spuštění"
+                                    AutomationProperties.Name="{Binding Name}"
+                                    VerticalAlignment="Center"/>
+                            <ToggleSwitch IsOn="{Binding Enabled,Mode=TwoWay}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="{Binding Name}" OffContent="" OnContent="" MinWidth="50" MinHeight="32" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -178,7 +141,7 @@
                                 <TextBlock Text="{Binding ProtectionText}" FontSize="8.5" FontWeight="SemiBold"/>
                             </Border>
                         </StackPanel>
-                        <ToggleSwitch Grid.Column="3" IsOn="{Binding Enabled,Mode=TwoWay}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="{Binding Name}" OffContent="" OnContent="" VerticalAlignment="Center"/>
+                        <ToggleSwitch Grid.Column="3" IsOn="{Binding Enabled,Mode=TwoWay}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="{Binding Name}" OffContent="" OnContent="" MinWidth="50" MinHeight="32" VerticalAlignment="Center"/>
                     </Grid>
                 </Border>
             </DataTemplate>
@@ -205,13 +168,7 @@
                             </StackPanel>
                             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
                                 
-                                <ToggleSwitch IsOn="{Binding DisplayPending,Mode=TwoWay}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="{Binding DisplayName}" AutomationProperties.HelpText="{Binding RowDetail}" ToolTipService.ToolTip="{Binding PolicyDetail}" OnContent="" OffContent="" MinWidth="0" Padding="0" Margin="6,0,0,0" VerticalAlignment="Center"><ToggleSwitch.Resources>
-                                    <LinearGradientBrush x:Key="ToggleSwitchFillOn" StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#FF88D8FF" Offset="0"/><GradientStop Color="#FF339EED" Offset="1"/></LinearGradientBrush>
-                                    <SolidColorBrush x:Key="ToggleSwitchStrokeOn" Color="#FFBDE8FF"/>
-                                    <SolidColorBrush x:Key="ToggleSwitchFillOff" Color="#885C7087"/>
-                                    <SolidColorBrush x:Key="ToggleSwitchStrokeOff" Color="#99CFDDEB"/>
-                                    <SolidColorBrush x:Key="ToggleSwitchKnobFillOff" Color="#FFF1F6FF"/>
-                                </ToggleSwitch.Resources><ToggleSwitch.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></ToggleSwitch.RenderTransform></ToggleSwitch>
+                                <ToggleSwitch IsOn="{Binding DisplayPending,Mode=TwoWay}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="{Binding DisplayName}" AutomationProperties.HelpText="{Binding RowDetail}" ToolTipService.ToolTip="{Binding PolicyDetail}" OnContent="" OffContent="" MinWidth="50" MinHeight="32" Margin="6,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Grid>
                     </Border>

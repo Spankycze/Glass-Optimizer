@@ -1,0 +1,4 @@
+WinUtilServicePolicy.json contains only the existing four supported Recommended service definitions derived from ChrisTitusTech/winutil config/tweaks.json, commit 07ccd8e2e755a706f31569808b31f5b77acad6a9.
+Copyright (c) 2022 CT Tech Group LLC. MIT license: Licenses/WinUtil-MIT.txt.
+Native missing-service error semantics track upstream fix #5140. No upstream PowerShell code is executed by the source updater. SharedAccess and script/registry directives are deliberately outside this adapter's scope.
+Other upstream behavior changes require review and a new Optimizer build; updating declarative policy data is not equivalent to upgrading all WinUtil logic.

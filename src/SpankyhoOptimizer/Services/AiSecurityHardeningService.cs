@@ -44,22 +44,13 @@ public sealed class AiSecurityHardeningService
     private static readonly string StatePath = Path.Combine(Root, "ai-security-ownership.json");
     private static readonly string HealthPath = Path.Combine(Root, "ai-security-health.json");
     private static readonly SemaphoreSlim Gate = new(1, 1);
-    private static AiSecurityHardeningHealth? _cachedHealth;
+    private static readonly ObservedJsonSnapshotCache<AiSecurityHardeningHealth> HealthSnapshot = new(HealthPath);
     private Dictionary<string, Ownership> _owned = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _nextAuditUtc;
     private string _lastAction = "Security guard observing";
     private string _lastError = "";
 
-    public static AiSecurityHardeningHealth? ReadHealth()
-    {
-        try
-        {
-            if (File.Exists(HealthPath))
-                _cachedHealth = JsonSerializer.Deserialize<AiSecurityHardeningHealth>(File.ReadAllText(HealthPath));
-        }
-        catch { }
-        return _cachedHealth;
-    }
+    public static AiSecurityHardeningHealth? ReadHealth() => HealthSnapshot.TryRead();
 
     public Task RestoreAllAsync(CancellationToken token = default) => TickAsync(false, token);
 
@@ -211,7 +202,6 @@ public sealed class AiSecurityHardeningService
         var health = new AiSecurityHardeningHealth(DateTime.UtcNow, enabled, Targets.Length, compliant,
             _owned.Values.Count(x => x.Managed), _owned.Values.Sum(x => x.ManualOverrides),
             _lastAction, _lastError);
-        _cachedHealth = health;
         await AtomicFileService.WriteTextAsync(HealthPath, JsonSerializer.Serialize(health), token).ConfigureAwait(false);
     }
 

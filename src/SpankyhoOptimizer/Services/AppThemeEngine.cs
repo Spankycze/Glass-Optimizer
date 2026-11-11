@@ -31,7 +31,15 @@ public static class AppThemeEngine
         new(99,161,212), new(8,17,24), new(99,161,212), new(99,161,212),
         new(7,7,7), new(2,2,2), new(54,92,122),
         new(112,184,140), new(221,176,88), new(99,161,212),
-        new(8,8,8), new(5,5,5), new(0,0,0));
+         new(8,8,8), new(5,5,5), new(0,0,0));
+
+    private static readonly AppThemePalette SolidDark = new(
+        new(242,242,242), new(176,176,176),
+        new(12,16,22), new(20,26,34), new(9,13,18), new(38,48,61),
+        new(99,161,212), new(18,31,43), new(99,161,212), new(99,161,212),
+        new(22,29,38), new(14,22,31), new(54,92,122),
+        new(112,184,140), new(221,176,88), new(99,161,212),
+        new(20,28,38), new(24,34,46), new(29,40,53));
 
     private static readonly AppThemePalette MidnightBlue = new(
         new(241,246,252), new(149,165,184),
@@ -81,6 +89,7 @@ public static class AppThemeEngine
         return preference switch
         {
             AppThemePreference.MidnightBlue => MidnightBlue,
+            AppThemePreference.SolidDark => SolidDark,
             AppThemePreference.PurpleAccent => PurpleAccent,
             AppThemePreference.CyanTech => CyanTech,
             AppThemePreference.RedPerformance => RedPerformance,
@@ -92,7 +101,8 @@ public static class AppThemeEngine
     {
         AppThemePreference.System => "Podle systému",
         AppThemePreference.Light => "White / Light",
-        AppThemePreference.Dark => "Graphite Dark",
+            AppThemePreference.Dark => "Graphite Dark",
+            AppThemePreference.SolidDark => "Solid Dark",
         AppThemePreference.MidnightBlue => "Midnight Blue",
         AppThemePreference.PurpleAccent => "Purple Accent",
         AppThemePreference.CyanTech => "Cyan Tech",
