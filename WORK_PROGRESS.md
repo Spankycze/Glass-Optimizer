@@ -1,5 +1,8 @@
-## 17.6.0 — aktivní stav, 11. 11. 2026
-Tray dvojklik posílá existující `FanTrayAction.OpenFans`; odstraněno blokující úvodní povýšení ikony, aby proběhl startup handshake. Fallback dohledání instalované hlavní aplikace otevírá existující Lian Li sekci. `build-release.ps1` připravuje release `17.6.0`.
+## 17.8.0 — aktivní stav, 11. 11. 2026
+Odstraněna automatická herní GPU priorita včetně služby, politiky, UI přepínače a smoke vazeb. Zachováno read-only sledování Windows `GPU Priority`, ostatní AI funkce, restore ochrany a čtyři AC hodnoty `Never`.
+
+## 17.7.0 — aktivní stav, 11. 11. 2026
+Tray dvojklik posílá existující `FanTrayAction.OpenFans`; akce otevírá hlavní aplikaci na výchozím Přehledu. Odstraněno blokující úvodní povýšení ikony a zachován fallback dohledání instalované hlavní aplikace.
 
 ## 17.4.0 — aktivní stav, 11. 11. 2026
 Čtyři kompaktní živé panely, průhledné grafy, malé ikony hardwaru, skleněná řada rychlých akcí a sjednocené systémové karty. Zachované údaje, statistiky, síť, historie změn a okno bez barevného rámování.

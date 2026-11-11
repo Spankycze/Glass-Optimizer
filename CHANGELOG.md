@@ -1,8 +1,14 @@
 # Changelog
 
-## 17.6.0
+## 17.8.0
 
-- Fixed tray double-click activation so it opens the Lian Li fan section through the existing single-instance handoff.
+- Removed automatic game GPU priority and its runtime policy, service, UI toggle and smoke coverage.
+- Preserved read-only Windows `GPU Priority` monitoring and all other guarded AI workload behavior.
+- Preserved rollback protection and the four AC `Never` power-plan values.
+
+## 17.7.0
+
+- Fixed tray double-click activation so it opens the main application Overview through the existing single-instance handoff.
 - Hardened fallback resolution of the installed main application path when the tray agent runs outside the application directory.
 
 ## 17.5.0
