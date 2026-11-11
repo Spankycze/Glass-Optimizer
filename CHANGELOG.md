@@ -1,5 +1,24 @@
 # Changelog
 
+## 17.4.0
+
+- Refined the Overview into compact glass panels with live hardware values and charts.
+- Improved shared glass surfaces, navigation visuals, popup interiors and sidebar icon clarity.
+- Hardened progress-operation cleanup, cancellation and stale-result handling.
+- Preserved guarded Windows changes, rollback behavior and the four AC `Never` power-plan values.
+
+## 17.3.0
+
+- Continued reliability, lifecycle and release validation improvements.
+
+## 17.2.0
+
+- Improved UI navigation, page caching, lifecycle handling and runtime smoke coverage.
+- Hardened adaptive power, telemetry, AI workload and measured optimization paths with safer read-back and recovery behavior.
+- Improved Fan Agent, tray popup, hardware telemetry, startup and worker reliability.
+- Removed obsolete runtime, voice and legacy UI components while preserving supported features and rollback safety.
+- Preserved the power-plan safety guard for the AC `Never` values.
+
 ## 17.0.0
 
 - Updated the application major version to `17.0.0`.
