@@ -1,5 +1,16 @@
 # Changelog
 
+## 17.4.0
+
+- Refined the Overview into compact glass panels with live hardware values and charts.
+- Improved shared glass surfaces, navigation visuals, popup interiors and sidebar icon clarity.
+- Hardened progress-operation cleanup, cancellation and stale-result handling.
+- Preserved guarded Windows changes, rollback behavior and the four AC `Never` power-plan values.
+
+## 17.3.0
+
+- Continued reliability, lifecycle and release validation improvements.
+
 ## 17.2.0
 
 - Improved UI navigation, page caching, lifecycle handling and runtime smoke coverage.
