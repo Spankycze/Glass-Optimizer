@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.0.0"><img src="https://img.shields.io/badge/verified_release-17.0.0-19c7d8?style=for-the-badge" alt="Verified release 17.0.0"></a>
+  <a href="https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.7.0"><img src="https://img.shields.io/badge/verified_release-17.7.0-19c7d8?style=for-the-badge" alt="Verified release 17.7.0"></a>
   <a href="https://github.com/Spankycze/Glass-Optimizer/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-English-7c5cff?style=for-the-badge" alt="English changelog"></a>
   <a href="https://github.com/Spankycze/Glass-Optimizer/releases"><img src="https://img.shields.io/github/downloads/Spankycze/Glass-Optimizer/total?style=for-the-badge&label=downloads" alt="GitHub downloads"></a>
 </p>
@@ -18,7 +18,7 @@ Glass Optimizer brings frequently used Windows controls into one compact desktop
 
 ## Verified release
 
-[Download Glass Optimizer 17.0.0](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.0.0)
+[Download Glass Optimizer 17.7.0](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.7.0)
 
 The release provides the verified Compact installer, its SHA-256 checksum and the release changelog. The application can check official GitHub releases in the background approximately every five hours. Downloaded installers are verified before the existing elevated installation flow starts.
 
@@ -101,4 +101,4 @@ Glass Optimizer targets supported Windows desktop environments. Some internal in
 
 ## License and release notes
 
-See the [17.0.0 release](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.0.0) for the verified installer and checksum. See [`CHANGELOG.md`](CHANGELOG.md) for the English release history.
+See the [17.7.0 release](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.7.0) for the verified installer and checksum. See [`CHANGELOG.md`](CHANGELOG.md) for the English release history.
