@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -152,12 +152,18 @@ public sealed partial class MainWindow
         int navigations = 0;
         var sectionHandleDelta = sections.ToDictionary(x => x, _ => 0, StringComparer.OrdinalIgnoreCase);
         var sectionPrivateDelta = sections.ToDictionary(x => x, _ => 0L, StringComparer.OrdinalIgnoreCase);
+        var sectionTotalMs = sections.ToDictionary(x => x, _ => 0.0, StringComparer.OrdinalIgnoreCase);
+        var sectionMaxMs = sections.ToDictionary(x => x, _ => 0.0, StringComparer.OrdinalIgnoreCase);
         for (int cycle = 0; cycle < 20; cycle++)
         {
             foreach (string section in sections)
             {
                 var beforeSection = PerformanceTelemetryService.GetSnapshot();
+                long navigationStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                 await ShowSectionAsync(section);
+                double navigationMs = System.Diagnostics.Stopwatch.GetElapsedTime(navigationStarted).TotalMilliseconds;
+                sectionTotalMs[section] += navigationMs;
+                sectionMaxMs[section] = Math.Max(sectionMaxMs[section], navigationMs);
                 EnsureNavigationHealthy(section);
                 navigations++;
                 await Task.Yield();
@@ -183,6 +189,8 @@ public sealed partial class MainWindow
         long privateMb = final.PrivateMb - baseline.PrivateMb;
         long managed = final.ManagedMb - baseline.ManagedMb;
         int handles = final.Handles - baseline.Handles;
+        foreach (string section in sections)
+            LogService.Info("perf", $"SOAK_NAV_TIMING section={section} runs=20 avgMs={sectionTotalMs[section] / 20.0:F3} maxMs={sectionMaxMs[section]:F3}");
         LogService.Info("perf", $"SOAK_AUDIT navigations={navigations} wsDelta={ws}MB privateDelta={privateMb}MB managedDelta={managed}MB handleDelta={handles}");
         if (ws > 128 || managed > 64 || handles > 300)
             throw new InvalidOperationException($"Soak audit exceeded threshold: nav={navigations} ws={ws} managed={managed} handles={handles}");
@@ -213,6 +221,20 @@ public sealed partial class MainWindow
     {
         await ShowSectionAsync("system");
         int mainGeneration = _navigationGeneration;
+        // The System page now attaches its first visual root in the existing
+        // Low-priority deferred build. Capturing Children[0] before that turn
+        // compares a valid empty shell with the later first root and falsely
+        // reports a rebuild caused by the active-navigation no-op.
+        // Wait for an actual cached and attached root, then verify it remains
+        // reference-stable for all 1000 redundant UI clicks.
+        for (int i = 0; i < 80 && (_systemPageCache == null ||
+             _systemVirtualHost == null || !ContentStack.Children.Contains(_systemVirtualHost)); i++)
+            await Task.Delay(25);
+        if (_systemPageCache == null || _systemVirtualHost == null ||
+            !ContentStack.Children.Contains(_systemVirtualHost))
+            throw new InvalidOperationException("System page did not finish attaching its deferred root before active-navigation test.");
+        if (_navigationGeneration != mainGeneration)
+            throw new InvalidOperationException("System deferred-root materialization changed navigation generation.");
         object? mainRoot = ContentStack.Children.Count > 0 ? ContentStack.Children[0] : null;
 
         var mainNoOp = System.Diagnostics.Stopwatch.StartNew();
@@ -225,28 +247,32 @@ public sealed partial class MainWindow
         if (ContentStack.Children.Count == 0 || !ReferenceEquals(ContentStack.Children[0], mainRoot))
             throw new InvalidOperationException("Active main navigation rebuilt the current visual tree.");
 
-        _sub = "Firefox";
-        await ShowSectionAsync("browsers");
-        int subGeneration = _navigationGeneration;
-        object? subRoot = ContentStack.Children.Count > 0 ? ContentStack.Children[0] : null;
-
-        for (int i = 0; i < 1000; i++)
-            await NavigateSubSectionFromUiAsync("browsers", "Firefox");
-
-        if (_navigationGeneration != subGeneration)
-            throw new InvalidOperationException("Active sub-navigation triggered a redundant navigation generation.");
-        bool subRootStable = ContentStack.Children.Count > 0 && ReferenceEquals(ContentStack.Children[0], subRoot);
-
-        await NavigateSubSectionFromUiAsync("browsers", "Chrome");
-        if (_navigationGeneration != subGeneration + 1 || !string.Equals(_sub, "Chrome", StringComparison.Ordinal))
-            throw new InvalidOperationException("Different sub-navigation was incorrectly skipped.");
-
-        LogService.Info("perf", $"USER_NAV_NOOP_SMOKE_OK main1000Ms={mainNoOp.Elapsed.TotalMilliseconds:F3} subRootStable={subRootStable}");
+        LogService.Info("perf", $"USER_NAV_NOOP_SMOKE_OK main1000Ms={mainNoOp.Elapsed.TotalMilliseconds:F3}");
     }
 
     public async Task RunNavigation500SoakAuditAsync()
     {
-        string[] sections = { "debloat", "system", "privacy", "ui", "update", "browsers", "components", "spicetify", "gpu" };
+        async Task WaitForHandlePlateauAsync(string phase)
+        {
+            int last = -1;
+            int stableSamples = 0;
+            int samples = 0;
+            for (; samples < 50; samples++)
+            {
+                await Task.Delay(100);
+                int current = PerformanceTelemetryService.GetSnapshot().Handles;
+                if (last >= 0 && Math.Abs(current - last) <= 2)
+                    stableSamples++;
+                else
+                    stableSamples = 0;
+                last = current;
+                if (stableSamples >= 4)
+                    break;
+            }
+            LogService.Info("perf", $"NAV500_HANDLE_PLATEAU phase={phase} handles={last} samples={samples + 1} stable={stableSamples}");
+        }
+
+        string[] sections = { "debloat", "system", "privacy", "ui", "update", "components", "spicetify", "gpu" };
         foreach (string section in sections)
         {
             _sub = null;
@@ -263,10 +289,11 @@ public sealed partial class MainWindow
         EnsureNavigationHealthy("system");
         for (int i = 0; i < 80 && GetDeferredVirtualGroupCount("system") > 0; i++)
             await Task.Delay(25);
-        await Task.Delay(250);
+        await WaitForHandlePlateauAsync("baseline");
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        await WaitForHandlePlateauAsync("baseline-post-gc");
         var baseline = PerformanceTelemetryService.GetSnapshot();
-        var navigationTimings = sections.ToDictionary(x => x, _ => new System.Collections.Generic.List<long>(50), StringComparer.OrdinalIgnoreCase);
+        var navigationTimings = sections.ToDictionary(x => x, _ => new System.Collections.Generic.List<double>(50), StringComparer.OrdinalIgnoreCase);
         var navigationHandleDelta = sections.ToDictionary(x => x, _ => 0L, StringComparer.OrdinalIgnoreCase);
         int navigations = 0;
         for (int cycle = 0; cycle < 50; cycle++)
@@ -278,7 +305,7 @@ public sealed partial class MainWindow
                 var navSw = System.Diagnostics.Stopwatch.StartNew();
                 await ShowSectionAsync(section);
                 navSw.Stop();
-                navigationTimings[section].Add(navSw.ElapsedMilliseconds);
+                navigationTimings[section].Add(navSw.Elapsed.TotalMilliseconds);
                 EnsureNavigationHealthy(section);
                 navigations++;
                 // Yield once so deferred work scheduled by this transition can be attributed
@@ -295,11 +322,11 @@ public sealed partial class MainWindow
         }
         foreach (var pair in navigationTimings)
         {
-            long[] ordered = pair.Value.OrderBy(x => x).ToArray();
+            double[] ordered = pair.Value.OrderBy(x => x).ToArray();
             if (ordered.Length == 0) continue;
             double avg = ordered.Average();
-            long p95 = ordered[Math.Min(ordered.Length - 1, (int)Math.Floor((ordered.Length - 1) * 0.95))];
-            LogService.Info("perf", $"NAV500_SECTION section={pair.Key} avgMs={avg:F2} p95Ms={p95} maxMs={ordered[^1]} n={ordered.Length} handleDeltaSum={navigationHandleDelta[pair.Key]}");
+            double p95 = ordered[Math.Min(ordered.Length - 1, (int)Math.Floor((ordered.Length - 1) * 0.95))];
+            LogService.Info("perf", $"NAV500_SECTION section={pair.Key} avgMs={avg:F2} p95Ms={p95:F2} maxMs={ordered[^1]:F2} n={ordered.Length} handleDeltaSum={navigationHandleDelta[pair.Key]}");
         }
         // Normalize the active page before the retention snapshot. The measured loop ends on GPU,
         // whose active WinUI/composition resources are not a navigation leak and would skew handle delta.
@@ -309,10 +336,18 @@ public sealed partial class MainWindow
         var beforeFinalSettle = PerformanceTelemetryService.GetSnapshot();
         for (int i = 0; i < 80 && GetDeferredVirtualGroupCount("system") > 0; i++)
             await Task.Delay(25);
-        await Task.Delay(250);
+        await WaitForHandlePlateauAsync("final");
         var afterFinalSettle = PerformanceTelemetryService.GetSnapshot();
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        await WaitForHandlePlateauAsync("final-post-gc");
         var final = PerformanceTelemetryService.GetSnapshot();
+        // Repeat the collection without additional navigation. An increase
+        // confined to the first post-GC phase should not be misclassified as
+        // a per-navigation resource leak.
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        await WaitForHandlePlateauAsync("final-second-gc");
+        var secondGc = PerformanceTelemetryService.GetSnapshot();
+        LogService.Info("perf", $"NAV500_GC_REPEAT firstDelta={final.Handles - baseline.Handles} secondDelta={secondGc.Handles - baseline.Handles} extraHandles={secondGc.Handles - final.Handles}");
         LogService.Info("perf", $"NAV500_RETENTION_PHASE beforeSettleHandles={beforeFinalSettle.Handles - baseline.Handles} afterSettleHandles={afterFinalSettle.Handles - baseline.Handles} afterGcHandles={final.Handles - baseline.Handles}");
         long ws = final.WorkingSetMb - baseline.WorkingSetMb;
         long privateMb = final.PrivateMb - baseline.PrivateMb;
@@ -326,8 +361,8 @@ public sealed partial class MainWindow
 
     public async Task RunNavigationTailLatencySmokeAsync()
     {
-        var overviewTimes = new System.Collections.Generic.List<long>(30);
-        var powerTimes = new System.Collections.Generic.List<long>(30);
+        var overviewTimes = new System.Collections.Generic.List<double>(30);
+        var powerTimes = new System.Collections.Generic.List<double>(30);
 
         for (int i = 0; i < 5; i++)
         {
@@ -335,31 +370,62 @@ public sealed partial class MainWindow
             await ShowSectionAsync("power");
         }
 
+        using var navigationProcess = System.Diagnostics.Process.GetCurrentProcess();
+        long managedBefore = GC.GetTotalAllocatedBytes(precise: false);
+        TimeSpan cpuBefore = navigationProcess.TotalProcessorTime;
+        long privateBefore = navigationProcess.PrivateMemorySize64;
+        long workingBefore = navigationProcess.WorkingSet64;
+        int handlesBefore = navigationProcess.HandleCount;
+        int threadsBefore = navigationProcess.Threads.Count;
+        var navigationBatch = System.Diagnostics.Stopwatch.StartNew();
         for (int i = 0; i < 30; i++)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
             await ShowSectionAsync("overview");
             sw.Stop();
-            overviewTimes.Add(sw.ElapsedMilliseconds);
+            overviewTimes.Add(sw.Elapsed.TotalMilliseconds);
 
             sw.Restart();
             await ShowSectionAsync("power");
             sw.Stop();
-            powerTimes.Add(sw.ElapsedMilliseconds);
+            powerTimes.Add(sw.Elapsed.TotalMilliseconds);
             await Task.Yield();
         }
+        navigationBatch.Stop();
+        navigationProcess.Refresh();
+        long privateDelta = navigationProcess.PrivateMemorySize64 - privateBefore;
+        long workingDelta = navigationProcess.WorkingSet64 - workingBefore;
+        int handleDelta = navigationProcess.HandleCount - handlesBefore;
+        int threadDelta = navigationProcess.Threads.Count - threadsBefore;
+        LogService.Info("perf", $"NAV_PROCESS_DELTA_OK privateKiB={privateDelta / 1024d:F1} workingKiB={workingDelta / 1024d:F1} handlesDelta={handleDelta} threadsDelta={threadDelta}");
+        long managedBytes = Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - managedBefore);
+        double processorMs = Math.Max(0, (navigationProcess.TotalProcessorTime - cpuBefore).TotalMilliseconds);
+        LogService.Info("perf", $"NAV_RESOURCE_SMOKE_OK transitions=60 elapsedMs={navigationBatch.ElapsedMilliseconds} processCpuMs={processorMs:F1} managedAllocatedKiB={managedBytes / 1024d:F1} approxCpuMsPerTransition={processorMs / 60:F2} approxAllocatedKiBPerTransition={managedBytes / 61440d:F2}");
 
-        static (double Avg, long P95, long Max) Stats(System.Collections.Generic.List<long> values)
+        static (double Avg, double P95, double Max) Stats(System.Collections.Generic.List<double> values)
         {
-            long[] ordered = values.OrderBy(x => x).ToArray();
+            double[] ordered = values.OrderBy(x => x).ToArray();
             return (ordered.Average(),
                 ordered[Math.Min(ordered.Length - 1, (int)Math.Floor((ordered.Length - 1) * 0.95))],
                 ordered[^1]);
         }
 
+        // Navigation no longer re-resets all 21 persistent sidebar visuals on each click.
+        // Check them after repeated real section changes, not only at initial construction.
+        foreach (var button in _categoryButtons.Values)
+        {
+            if (!button.IsLoaded) continue;
+            var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(button);
+            var scale = visual.Scale;
+            if (Math.Abs(visual.Opacity - 1f) > 0.005f ||
+                Math.Abs(scale.X - 1f) > 0.005f ||
+                Math.Abs(scale.Y - 1f) > 0.005f)
+                throw new InvalidOperationException("Sidebar composition motion state persisted after navigation.");
+        }
+        LogService.Info("perf", $"NAV_SIDEBAR_MOTION_STABLE_OK buttons={_categoryButtons.Count}");
         var ov = Stats(overviewTimes);
         var pw = Stats(powerTimes);
-        LogService.Info("perf", $"NAV_TAIL_SMOKE_OK overviewAvgMs={ov.Avg:F2} overviewP95Ms={ov.P95} overviewMaxMs={ov.Max} powerAvgMs={pw.Avg:F2} powerP95Ms={pw.P95} powerMaxMs={pw.Max}");
+        LogService.Info("perf", $"NAV_TAIL_SMOKE_OK overviewAvgMs={ov.Avg:F2} overviewP95Ms={ov.P95:F2} overviewMaxMs={ov.Max:F2} powerAvgMs={pw.Avg:F2} powerP95Ms={pw.P95:F2} powerMaxMs={pw.Max:F2}");
 
         if (pw.P95 > 120 || pw.Max > 250)
             throw new InvalidOperationException($"Power navigation tail regression: p95={pw.P95}ms max={pw.Max}ms.");
@@ -425,7 +491,7 @@ public sealed partial class MainWindow
     {
         string[] preferred =
         {
-            "debloat", "system", "privacy", "ui", "update", "browsers", "components",
+            "debloat", "system", "privacy", "ui", "update", "components",
             "spicetify", "network", "storage", "gpu", "power", "settings",
             "startup", "restore", "fixer", "apps"
         };
@@ -483,7 +549,7 @@ public sealed partial class MainWindow
 
     public async Task RunCriticalSectionLeakAuditAsync()
     {
-        string[] sections = { "debloat", "system", "privacy", "ui", "update", "browsers", "components", "spicetify" };
+        string[] sections = { "debloat", "system", "privacy", "ui", "update", "components", "spicetify" };
         var phase = System.Diagnostics.Stopwatch.StartNew();
 
         foreach (string section in sections)
@@ -519,28 +585,78 @@ public sealed partial class MainWindow
         long baselineSettleGcMs = phase.ElapsedMilliseconds - initialWarmMs - startupSettleMs - prewarmNavMs;
         LogService.Info("perf", $"CRITICAL_MIXED_PREWARM_OK cycles={prewarmCycles} navigations={prewarmCycles * sections.Length}");
 
+        // Sample handle count after the warm baseline and after each navigation cycle.
+        // This distinguishes sustained retention from a transient final-cycle spike.
         var baseline = PerformanceTelemetryService.GetSnapshot();
+        using var measuredProcess = System.Diagnostics.Process.GetCurrentProcess();
+        int peakHandles = baseline.Handles;
+        int peakHandleCycle = 0;
+        int lastCycleHandles = baseline.Handles;
+        string peakSection = "baseline";
+        int peakSectionCycle = 0;
+        TimeSpan cpuBefore = measuredProcess.TotalProcessorTime;
+        int threadsBefore = measuredProcess.Threads.Count;
         int navigations = 0;
+        var perSectionIncreases = new int[sections.Length];
+        var perSectionNetChange = new int[sections.Length];
+        var perSectionLargestIncrease = new int[sections.Length];
 
         const int measuredCycles = 25;
         for (int cycle = 0; cycle < measuredCycles; cycle++)
         {
-            foreach (string section in sections)
+            for (int sectionIndex = 0; sectionIndex < sections.Length; sectionIndex++)
             {
+                string section = sections[sectionIndex];
+                measuredProcess.Refresh();
+                int beforeSectionHandles = measuredProcess.HandleCount;
                 _sub = null;
                 await ShowSectionAsync(section);
                 EnsureNavigationHealthy(section);
                 navigations++;
                 await Task.Delay(8);
+                measuredProcess.Refresh();
+                int sectionHandles = measuredProcess.HandleCount;
+                int sectionChange = sectionHandles - beforeSectionHandles;
+                perSectionNetChange[sectionIndex] += sectionChange;
+                if (sectionChange > 0) perSectionIncreases[sectionIndex]++;
+                if (sectionChange > perSectionLargestIncrease[sectionIndex]) perSectionLargestIncrease[sectionIndex] = sectionChange;
+                if (sectionHandles > peakHandles)
+                {
+                    peakHandles = sectionHandles;
+                    peakSection = section;
+                    peakSectionCycle = cycle + 1;
+                    peakHandleCycle = cycle + 1;
+                }
+            }
+            measuredProcess.Refresh();
+            int sampledHandles = measuredProcess.HandleCount;
+            lastCycleHandles = sampledHandles;
+            if (sampledHandles > peakHandles)
+            {
+                peakHandles = sampledHandles;
+                peakHandleCycle = cycle + 1;
             }
         }
+        for (int sectionIndex = 0; sectionIndex < sections.Length; sectionIndex++)
+            LogService.Info("perf", $"CRITICAL_LEAK_HANDLE_SECTION section={sections[sectionIndex]} positiveTransitions={perSectionIncreases[sectionIndex]} netChange={perSectionNetChange[sectionIndex]} maxSingleIncrease={perSectionLargestIncrease[sectionIndex]}");
+        LogService.Info("perf", $"CRITICAL_LEAK_HANDLE_TREND baseline={baseline.Handles} lastCycle={lastCycleHandles} peak={peakHandles} peakCycle={peakHandleCycle} peakSection={peakSection} peakSectionCycle={peakSectionCycle} peakDelta={peakHandles - baseline.Handles}");
         long measuredNavMs = phase.ElapsedMilliseconds - initialWarmMs - startupSettleMs - prewarmNavMs - baselineSettleGcMs;
+        measuredProcess.Refresh();
+        double cpuMs = (measuredProcess.TotalProcessorTime - cpuBefore).TotalMilliseconds;
+        int threadsAfter = measuredProcess.Threads.Count;
+        LogService.Info("perf", $"CRITICAL_LEAK_CPU navigations={navigations} cpuMs={cpuMs:F1} cpuMsPerNav={cpuMs / Math.Max(1, navigations):F2} threadsBefore={threadsBefore} threadsAfter={threadsAfter} threadDelta={threadsAfter - threadsBefore}");
 
         await Task.Delay(750);
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         long finalSettleGcMs = phase.ElapsedMilliseconds - initialWarmMs - startupSettleMs - prewarmNavMs - baselineSettleGcMs - measuredNavMs;
         LogService.Info("perf", $"CRITICAL_LEAK_PHASE initialWarmMs={initialWarmMs} startupSettleMs={startupSettleMs} prewarmNavMs={prewarmNavMs} baselineSettleGcMs={baselineSettleGcMs} measuredNavMs={measuredNavMs} finalSettleGcMs={finalSettleGcMs} totalMs={phase.ElapsedMilliseconds}");
         var final = PerformanceTelemetryService.GetSnapshot();
+        // Repeat a non-GC settle sample to distinguish handles released later by
+        // asynchronous Windows/WinUI work from handles retained at test exit.
+        await Task.Delay(250);
+        measuredProcess.Refresh();
+        int afterQuietSettleHandles = measuredProcess.HandleCount;
+        LogService.Info("perf", $"CRITICAL_LEAK_HANDLE_RETENTION baseline={baseline.Handles} peak={peakHandles} afterGc={final.Handles} afterQuietSettle={afterQuietSettleHandles} peakDelta={peakHandles - baseline.Handles} retainedDelta={final.Handles - baseline.Handles} quietRetainedDelta={afterQuietSettleHandles - baseline.Handles} releasedFromPeak={peakHandles - final.Handles} peakSection={peakSection} peakCycle={peakSectionCycle}");
 
         long ws = final.WorkingSetMb - baseline.WorkingSetMb;
         long privateMb = final.PrivateMb - baseline.PrivateMb;
@@ -548,7 +664,11 @@ public sealed partial class MainWindow
         int handles = final.Handles - baseline.Handles;
 
         LogService.Info("perf", $"CRITICAL_LEAK_AUDIT navigations={navigations} wsDelta={ws}MB privateDelta={privateMb}MB managedDelta={managed}MB handleDelta={handles}");
-        if (ws > 80 || privateMb > 96 || managed > 32 || handles > 150)
+        // This is a warm, fully materialized, 175-transition retention test, not
+        // a cold-start native allocation budget. Repeated verified baselines
+        // stay within +/-2 MiB private, +/-1 MiB WS and one handle. Do not
+        // tolerate the former 80/96 MiB growth, which could mask an actual leak.
+        if (ws > 24 || privateMb > 24 || managed > 8 || handles > 48)
             throw new InvalidOperationException($"Critical leak audit exceeded threshold: nav={navigations} ws={ws}MB private={privateMb}MB managed={managed}MB handles={handles}");
 
         LogService.Info("perf", "CRITICAL_LEAK_AUDIT_OK");

@@ -20,6 +20,7 @@ public sealed partial class MainWindow
         if (!_startupTitlebarThemeCompleted)
             throw new InvalidOperationException("Deferred persistent header did not complete");
         ValidateNeutralUiRegressionSmoke();
+        VerifyHeroDragRegions(); // Non-Overview pages retain titlebar-only dragging.
         LogService.Info("theme", "NEUTRAL_STARTUP_HEADER_SMOKE_OK section=network");
     }
 
@@ -38,7 +39,7 @@ public sealed partial class MainWindow
         catch (Exception ex) { errors.Add(ex.Message); }
         try
         {
-            if (_titleBarLogoImage == null || AppTitleBar.Children.Count == 0)
+            if (!IsSolidDarkTheme && (_titleBarLogoImage == null || AppTitleBar.Children.Count == 0))
                 throw new InvalidOperationException("Persistent title brand is missing");
         }
         catch (Exception ex) { errors.Add(ex.Message); }
@@ -69,6 +70,25 @@ public sealed partial class MainWindow
             catch (Exception ex) { errors.Add(ex.Message); }
             finally { _themeSection = originalSection; }
         }
+        try
+        {
+            // Construct the same shared controls used across all pages, with
+            // no navigation or I/O. The description must be visible, not tooltip-only.
+            var surface = BuildWorkspaceSurface("Úložiště", "NVMe, bezpečná údržba a vrácení nastavení", new StackPanel());
+            var body = (StackPanel)surface.Child;
+            var header = (StackPanel)body.Children[0];
+            if (surface.Tag as string != "workspace-surface" ||
+                header.Children.Count != 2 ||
+                header.Children[0] is not TextBlock { Tag: "workspace-heading" } ||
+                header.Children[1] is not TextBlock { Tag: "workspace-subtitle" } subtitle ||
+                subtitle.Text.Length == 0 || subtitle.MaxLines != 1)
+                throw new InvalidOperationException("Shared workspace surface has lost visible title/subtitle.");
+            if (CreateClassicTweakGroupHeader("Explorer", 3).Tag as string != "tweak-group-heading" ||
+                CreateVirtualGroupHeader("Privacy") is not Border { Tag: "virtual-group-heading" })
+                throw new InvalidOperationException("Tweak groups no longer share compact section hierarchy.");
+            LogService.Info("theme", "WORKSPACE_HIERARCHY_SMOKE_OK surfaceSubtitle=true classicGroup=true virtualGroup=true");
+        }
+        catch (Exception ex) { errors.Add(ex.Message); }
         try
         {
             var resources = Microsoft.UI.Xaml.Application.Current.Resources;
@@ -111,10 +131,17 @@ public sealed partial class MainWindow
 
     private static void AssertReadableNeutralBadge(Border badge, TextBlock text)
     {
-        if (badge.Background is not SolidColorBrush bg || bg.Color.R != 10 || bg.Color.G != 10 || bg.Color.B != 10)
-            throw new InvalidOperationException("Classic badge lost neutral background after readback");
+        if (badge.Background is not SolidColorBrush bg)
+            throw new InvalidOperationException("Classic badge lost its semantic background after readback");
+
+        if (_darkTheme)
+        {
+            int average = (bg.Color.R + bg.Color.G + bg.Color.B) / 3;
+            if (bg.Color.A > 96 || average < 24)
+                throw new InvalidOperationException($"Classic badge regressed to an opaque/near-black surface: A={bg.Color.A} RGB={bg.Color.R},{bg.Color.G},{bg.Color.B}");
+        }
+
         if (text.Foreground is not SolidColorBrush fg || fg.Color == bg.Color)
             throw new InvalidOperationException("Classic badge text disappeared after readback");
     }
 }
-

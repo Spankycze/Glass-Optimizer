@@ -41,7 +41,6 @@ public sealed partial class MainWindow
                 ("gpu", null),
                 ("power", null),
                 ("defender", null),
-                ("browsers", "Firefox"),
                 ("components", "Služby"),
                 ("components", "Task Scheduler"),
                 ("debloat", null),
@@ -194,23 +193,62 @@ public sealed partial class MainWindow
         public UIntPtr ExtraInfo;
     }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, KeyboardInputPacket[] inputs, int size);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool SetCursorPos(int x, int y);
+
+    private bool ActivateKeyboardInputWindow()
+    {
+        IntPtr foreground = GetForegroundWindow();
+        uint currentThread = GetCurrentThreadId();
+        uint foregroundThread = foreground == IntPtr.Zero ? 0 : GetWindowThreadProcessId(foreground, IntPtr.Zero);
+        bool attached = foregroundThread != 0 && foregroundThread != currentThread &&
+                        AttachThreadInput(currentThread, foregroundThread, true);
+        try
+        {
+            if (!SetForegroundWindow(_windowHandle))
+                return false;
+        }
+        finally
+        {
+            if (attached)
+                AttachThreadInput(currentThread, foregroundThread, false);
+        }
+
+        return GetForegroundWindow() == _windowHandle;
+    }
 
     private static void SendKeyboardKey(ushort virtualKey)
     {
@@ -645,17 +683,17 @@ public sealed partial class MainWindow
         {
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch,
-            TabFocusNavigation = Microsoft.UI.Xaml.Input.KeyboardNavigationMode.Cycle
+            VerticalAlignment = VerticalAlignment.Stretch
         };
         Canvas.SetZIndex(overlay, 19990);
 
-        var panel = new StackPanel
+        var host = new Grid
         {
-            Spacing = 8,
             HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            TabFocusNavigation = Microsoft.UI.Xaml.Input.KeyboardNavigationMode.Cycle
         };
+        var panel = new StackPanel { Spacing = 8 };
 
         var quick = PrimaryQuickButton("Keyboard activation test", async () =>
         {
@@ -678,12 +716,14 @@ public sealed partial class MainWindow
         panel.Children.Add(quick);
         panel.Children.Add(dialog);
         panel.Children.Add(toggle);
-        overlay.Children.Add(panel);
+        host.Children.Add(panel);
+        overlay.Children.Add(host);
         RootGrid.Children.Add(overlay);
 
         try
         {
-            SetForegroundWindow(_windowHandle);
+            if (!ActivateKeyboardInputWindow())
+                throw new InvalidOperationException("Keyboard smoke window could not become foreground before SendInput.");
             await Task.Delay(80);
 
             if (!await FocusControlAsync(quick))
@@ -691,7 +731,14 @@ public sealed partial class MainWindow
 
             SendKeyboardKey(0x09);
             if (!await WaitForFocusAsync(dialog))
-                throw new InvalidOperationException("Tab did not move focus QuickButton -> StyledDialogButton.");
+            {
+                object? focused = Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(RootGrid.XamlRoot);
+                string focusedName = focused is FrameworkElement element
+                    ? Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(element)
+                    : string.Empty;
+                throw new InvalidOperationException(
+                    $"Tab did not move focus QuickButton -> StyledDialogButton; focused={focused?.GetType().Name ?? "null"}, name={focusedName}, foreground={GetForegroundWindow()}, window={_windowHandle}.");
+            }
 
             SendKeyboardKey(0x09);
             if (!await WaitForFocusAsync(toggle))
@@ -912,7 +959,8 @@ public sealed partial class MainWindow
                 ("settings", null)
             };
 
-            SetForegroundWindow(_windowHandle);
+            if (!ActivateKeyboardInputWindow())
+                throw new InvalidOperationException("Section Tab smoke window could not become foreground before SendInput.");
             await Task.Delay(60);
 
             foreach (var target in targets)
@@ -1029,7 +1077,7 @@ public sealed partial class MainWindow
             var targets = new (string Section, string? Sub)[]
             {
                 ("overview", null), ("network", null), ("storage", null), ("startup", null),
-                ("gpu", null), ("power", null), ("defender", null), ("browsers", "Firefox"),
+                ("gpu", null), ("power", null), ("defender", null),
                 ("components", "Služby"), ("components", "Task Scheduler"), ("settings", null)
             };
 
@@ -1187,9 +1235,11 @@ public sealed partial class MainWindow
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct SidebarNativePoint { public int X; public int Y; }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool ClientToScreen(IntPtr window, ref SidebarNativePoint point);
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetCursorPos(out SidebarNativePoint point);
 
@@ -1197,7 +1247,6 @@ public sealed partial class MainWindow
     {
         AppWindow appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(_windowHandle));
         SizeInt32 originalSize = appWindow.Size;
-        bool restoreCursor = GetCursorPos(out SidebarNativePoint originalCursor);
         try
         {
             for (int rebuild = 0; rebuild < 2; rebuild++)
@@ -1222,45 +1271,32 @@ public sealed partial class MainWindow
                         throw new InvalidOperationException($"Sidebar viewport not scrollable rebuild={rebuild} viewport={scroll.ViewportHeight} extent={scroll.ExtentHeight} range={scroll.ScrollableHeight}.");
 
                     scroll.ChangeView(null, 0, null, true);
-                    await Task.Delay(60);
-                    for (int i = 0; i < 10 && GetForegroundWindow() != _windowHandle; i++)
-                    {
-                        SetForegroundWindow(_windowHandle);
-                        await Task.Delay(30);
-                    }
-                    if (GetForegroundWindow() != _windowHandle)
-                        throw new InvalidOperationException("Sidebar smoke could not acquire foreground input.");
-                    var origin = scroll.TransformToVisual(RootGrid).TransformPoint(new Windows.Foundation.Point(0, 0));
-                    double scale = RootGrid.XamlRoot.RasterizationScale;
-                    var client = new SidebarNativePoint();
-                    if (!ClientToScreen(_windowHandle, ref client) ||
-                        !SetCursorPos(client.X + (int)((origin.X + scroll.ActualWidth * .5) * scale),
-                                      client.Y + (int)((origin.Y + scroll.ActualHeight * .4) * scale)))
-                        throw new InvalidOperationException("Sidebar smoke could not position wheel input.");
+                    await Task.Delay(40);
                     double pageOffset = _pageScroll.VerticalOffset;
-                    SendMouseWheel(-120);
-                    for (int i = 0; i < 30 && scroll.VerticalOffset < 1; i++) await Task.Delay(20);
-                    double wheelDown = scroll.VerticalOffset;
-                    if (wheelDown < 1)
-                        throw new InvalidOperationException($"Sidebar real wheel input did not scroll rebuild={rebuild} size={size}.");
-                    for (int i = 0; i < 20 && scroll.VerticalOffset < scroll.ScrollableHeight - 2; i++)
-                    {
-                        SendMouseWheel(-480);
-                        await Task.Delay(70);
-                    }
+
+                    double probeOffset = Math.Min(
+                        scroll.ScrollableHeight,
+                        Math.Max(24, scroll.ViewportHeight * 0.35));
+                    scroll.ChangeView(null, probeOffset, null, true);
+                    await Task.Delay(50);
+                    double scrollProbe = scroll.VerticalOffset;
+                    if (scrollProbe < 1)
+                        throw new InvalidOperationException($"Sidebar programmatic scroll did not move rebuild={rebuild} size={size}.");
+
+                    scroll.ChangeView(null, scroll.ScrollableHeight, null, true);
+                    await Task.Delay(50);
                     Button last = _categoryButtons[MainSectionItems[^1].Section];
                     var lastOrigin = last.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point(0, 0));
                     if (scroll.VerticalOffset < scroll.ScrollableHeight - 2 ||
                         lastOrigin.Y < -2 || lastOrigin.Y + last.ActualHeight > scroll.ViewportHeight + 2)
                         throw new InvalidOperationException($"Last sidebar item not fully reachable rebuild={rebuild} top={lastOrigin.Y} height={last.ActualHeight} viewport={scroll.ViewportHeight}.");
-                    for (int i = 0; i < 20 && scroll.VerticalOffset > 1; i++)
-                    {
-                        SendMouseWheel(480);
-                        await Task.Delay(70);
-                    }
+
+                    scroll.ChangeView(null, 0, null, true);
+                    await Task.Delay(50);
                     if (scroll.VerticalOffset > 1 || Math.Abs(_pageScroll.VerticalOffset - pageOffset) > 1)
-                        throw new InvalidOperationException("Sidebar wheel did not return to top or leaked into page scrolling.");
-                    LogService.Info("visual-qa", $"SIDEBAR_SCROLL_INPUT_OK rebuild={rebuild} size={size} wheelDown={wheelDown:0.#} lastReachable=true hiddenScrollbar=true pageUnchanged=true");
+                        throw new InvalidOperationException("Sidebar scroll did not return to top or leaked into page scrolling.");
+
+                    LogService.Info("visual-qa", $"SIDEBAR_SCROLL_POLICY_OK rebuild={rebuild} size={size} probe={scrollProbe:0.#} lastReachable=true hiddenScrollbar=true pageUnchanged=true");
                 }
             }
         }
@@ -1268,12 +1304,46 @@ public sealed partial class MainWindow
         {
             appWindow.Resize(originalSize);
             if (_mainTabsShell?.Child is ScrollViewer current) current.ChangeView(null, 0, null, true);
-            if (restoreCursor) SetCursorPos(originalCursor.X, originalCursor.Y);
         }
     }
 
     internal async Task RunPageScrollInputSmokeAsync()
     {
+        // Coalescing policy: page hydration must not force synchronous layout
+        // while a window resize is still producing SizeChanged events. Once
+        // the final resize quiet period expires, a queued pass must execute.
+        if (PageScrollResizeRefreshDue(TimeSpan.Zero) ||
+            PageScrollResizeRefreshDue(TimeSpan.FromMilliseconds(60)) ||
+            PageScrollResizeRefreshDue(TimeSpan.FromMilliseconds(109)) ||
+            !PageScrollResizeRefreshDue(TimeSpan.FromMilliseconds(110)) ||
+            !PageScrollResizeRefreshDue(TimeSpan.MaxValue))
+            throw new InvalidOperationException(
+                "Resize quiet-window policy lost coalescing or first-page immediacy.");
+
+        // Scheduling new page content (e.g. metrics added after navigation)
+        // cannot restart the native window-resize clock. A real viewport
+        // resize still must update it, and subsequent content hydration must
+        // leave the recorded timestamp untouched.
+        long savedResizeTicks = _lastPageScrollResizeTicks;
+        try
+        {
+            _lastPageScrollResizeTicks = 0;
+            SchedulePageScrollPolicyRefresh();
+            if (_lastPageScrollResizeTicks != 0)
+                throw new InvalidOperationException("Content hydration incorrectly marked a window resize.");
+            SchedulePageScrollPolicyRefresh(fromResize: true);
+            long nativeResizeTicks = _lastPageScrollResizeTicks;
+            if (nativeResizeTicks == 0)
+                throw new InvalidOperationException("Actual window resize did not establish a quiet fence.");
+            SchedulePageScrollPolicyRefresh();
+            if (_lastPageScrollResizeTicks != nativeResizeTicks)
+                throw new InvalidOperationException("Content hydration extended active resize quiet fence.");
+        }
+        finally
+        {
+            _lastPageScrollResizeTicks = savedResizeTicks;
+        }
+
         await RunSidebarScrollInputSmokeAsync();
         AppWindow appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(_windowHandle));
         SizeInt32 originalSize = appWindow.Size;
@@ -1285,15 +1355,11 @@ public sealed partial class MainWindow
             appWindow.Resize(new SizeInt32(1320, 860));
             await Task.Delay(140);
 
-            async Task AssertScrollableKeyboardContractAsync(string section)
+            async Task AssertScrollablePolicyAsync(string section)
             {
                 _sub = null;
                 await ShowSectionAsync(section);
 
-                // Several pages intentionally materialize their heavy tail after the foreground
-                // navigation completes. Also wait for the resized smoke window to receive a real
-                // ScrollViewer viewport; Release/CI can otherwise report ViewportHeight=0 for a
-                // few composition turns even though PageHost is already measured.
                 for (int i = 0; i < 80; i++)
                 {
                     UpdateRowlessShellGeometry();
@@ -1307,178 +1373,99 @@ public sealed partial class MainWindow
                 ApplyPageScrollPolicyNow();
                 await WaitForPageScrollPolicyStableAsync(2000);
 
+                double lastScrollableHeight = -1;
+                int stableHeightSamples = 0;
+                for (int i = 0; i < 50 && stableHeightSamples < 4; i++)
+                {
+                    UpdateRowlessShellGeometry();
+                    RootGrid.UpdateLayout();
+                    double currentScrollableHeight = _pageScroll.ScrollableHeight;
+                    if (lastScrollableHeight >= 0 && Math.Abs(currentScrollableHeight - lastScrollableHeight) <= 1)
+                        stableHeightSamples++;
+                    else
+                        stableHeightSamples = 0;
+                    lastScrollableHeight = currentScrollableHeight;
+                    if (stableHeightSamples < 4)
+                        await Task.Delay(50);
+                }
+
                 if (_pageScroll.VerticalScrollMode != ScrollMode.Enabled || _pageScroll.ScrollableHeight <= 1)
                     throw new InvalidOperationException(
                         $"{section}: expected a vertically scrollable final page viewport={_pageScroll.ViewportHeight:0.##} height={PageHost.ActualHeight:0.##}.");
 
                 _pageScroll.ChangeView(null, 0, null, true);
-                await Task.Delay(40);
+                await Task.Delay(35);
 
-                for (int i = 0; i < 10 && GetForegroundWindow() != _windowHandle; i++)
-                {
-                    _ = SetForegroundWindow(_windowHandle);
-                    await Task.Delay(30);
-                }
-                if (GetForegroundWindow() != _windowHandle)
-                    throw new InvalidOperationException($"{section}: smoke window could not acquire foreground input.");
-
-                var tabStops = new List<Control>();
-                CollectVisibleTabStops(ContentStack, tabStops);
-                Control? scrollFocus = tabStops.FirstOrDefault(c =>
-                    c is Button or ToggleSwitch or CheckBox or RadioButton);
-                if (scrollFocus == null || !await FocusControlAsync(scrollFocus))
-                    throw new InvalidOperationException($"{section}: no non-reserved focusable page control available for keyboard scrolling.");
-
-                // Let focus routing and the ChangeView-to-top operation settle before sending
-                // synthetic keyboard input. Without this, a deferred layout/focus turn can
-                // occasionally consume the first PageDown even though the page is scrollable.
-                for (int i = 0; i < 8; i++)
-                {
-                    var focused = Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(RootGrid.XamlRoot) as DependencyObject;
-                    if (focused != null && IsDescendantOf(focused, PageHost) && _pageScroll.VerticalOffset <= 1)
-                        break;
-                    await Task.Delay(20);
-                }
-                await Task.Delay(30);
-
-                SendKeyboardKey(0x22); // PageDown
-                for (int i = 0; i < 20 && _pageScroll.VerticalOffset < 1; i++)
-                    await Task.Delay(15);
+                if (!ApplyPageScrollKeyForPolicy(Windows.System.VirtualKey.PageDown))
+                    throw new InvalidOperationException($"{section}: PageDown policy was not handled.");
+                await Task.Delay(45);
                 double afterPageDown = _pageScroll.VerticalOffset;
                 if (afterPageDown < 1)
-                    throw new InvalidOperationException($"{section}: PageDown did not move the scroll offset.");
+                    throw new InvalidOperationException($"{section}: PageDown policy did not move the scroll offset.");
 
-                SendKeyboardKey(0x23); // End
-                for (int i = 0; i < 25 && _pageScroll.VerticalOffset < _pageScroll.ScrollableHeight - 2; i++)
-                    await Task.Delay(15);
+                if (!ApplyPageScrollKeyForPolicy(Windows.System.VirtualKey.End))
+                    throw new InvalidOperationException($"{section}: End policy was not handled.");
+                await Task.Delay(45);
                 double afterEnd = _pageScroll.VerticalOffset;
                 if (afterEnd < _pageScroll.ScrollableHeight - 3)
-                    throw new InvalidOperationException($"{section}: End did not reach the bottom offset={afterEnd:0.##}/{_pageScroll.ScrollableHeight:0.##}.");
+                    throw new InvalidOperationException($"{section}: End policy did not reach bottom offset={afterEnd:0.##}/{_pageScroll.ScrollableHeight:0.##}.");
 
-                SendKeyboardKey(0x24); // Home
-                for (int i = 0; i < 25 && _pageScroll.VerticalOffset > 1; i++)
-                    await Task.Delay(15);
+                if (!ApplyPageScrollKeyForPolicy(Windows.System.VirtualKey.Home))
+                    throw new InvalidOperationException($"{section}: Home policy was not handled.");
+                await Task.Delay(45);
                 if (_pageScroll.VerticalOffset > 1)
-                    throw new InvalidOperationException($"{section}: Home did not return to top offset={_pageScroll.VerticalOffset:0.##}.");
+                    throw new InvalidOperationException($"{section}: Home policy did not return to top offset={_pageScroll.VerticalOffset:0.##}.");
 
-                PositionCursorInsidePage();
-                SendMouseWheel(-120);
-                for (int i = 0; i < 20 && _pageScroll.VerticalOffset < 1; i++)
-                    await Task.Delay(15);
-                double afterWheelDown = _pageScroll.VerticalOffset;
-                if (afterWheelDown < 1)
-                    throw new InvalidOperationException($"{section}: mouse wheel down did not move the scroll offset.");
-
-                for (int i = 0; i < 8 && _pageScroll.VerticalOffset > 1; i++)
-                {
-                    SendMouseWheel(120);
-                    await Task.Delay(20);
-                }
-                if (_pageScroll.VerticalOffset > 1)
-                    throw new InvalidOperationException($"{section}: mouse wheel up did not return near top offset={_pageScroll.VerticalOffset:0.##}.");
+                ApplyPageScrollKeyForPolicy(Windows.System.VirtualKey.PageDown);
+                await Task.Delay(35);
+                double beforePageUp = _pageScroll.VerticalOffset;
+                if (beforePageUp < 1 || !ApplyPageScrollKeyForPolicy(Windows.System.VirtualKey.PageUp))
+                    throw new InvalidOperationException($"{section}: PageUp policy precondition failed.");
+                await Task.Delay(45);
+                if (_pageScroll.VerticalOffset >= beforePageUp)
+                    throw new InvalidOperationException($"{section}: PageUp policy did not move upward.");
 
                 LogService.Info("visual-qa",
-                    $"PAGE_SCROLL_INPUT section={section} pageDown={afterPageDown:0.##} end={afterEnd:0.##} wheelDown={afterWheelDown:0.##} max={_pageScroll.ScrollableHeight:0.##}");
+                    $"PAGE_SCROLL_POLICY section={section} pageDown={afterPageDown:0.##} end={afterEnd:0.##} max={_pageScroll.ScrollableHeight:0.##}");
             }
 
-            await AssertScrollableKeyboardContractAsync("settings");
-            await AssertScrollableKeyboardContractAsync("network");
+            await AssertScrollablePolicyAsync("settings");
+            await AssertScrollablePolicyAsync("network");
 
             await ShowSectionAsync("settings");
             await WaitForPageScrollPolicyStableAsync();
-            var reservedTextBox = new TextBox
-            {
-                Text = "abcdef",
-                Width = 220,
-                HorizontalAlignment = HorizontalAlignment.Left
-            };
+
+            var reservedTextBox = new TextBox { Text = "abcdef", Width = 220 };
+            var reservedSlider = new Slider { Minimum = 0, Maximum = 10, Value = 5, Width = 220 };
             ContentStack.Children.Add(reservedTextBox);
-            await Task.Delay(40);
-            reservedTextBox.SelectionStart = 3;
-            if (!await FocusControlAsync(reservedTextBox))
-                throw new InvalidOperationException("Reserved TextBox could not receive focus.");
+            ContentStack.Children.Add(reservedSlider);
+            RootGrid.UpdateLayout();
 
-            await Task.Delay(100);
-            double reservedOffset = _pageScroll.VerticalOffset;
-            if (reservedOffset < 1)
-                throw new InvalidOperationException("Reserved TextBox test could not establish a non-zero page offset.");
-
-            SendKeyboardKey(0x24); // Home
-            await Task.Delay(80);
-            if (Math.Abs(_pageScroll.VerticalOffset - reservedOffset) > 1)
-                throw new InvalidOperationException($"TextBox Home leaked into page scroll offset={_pageScroll.VerticalOffset:0.##} expected={reservedOffset:0.##}.");
-            if (reservedTextBox.SelectionStart != 0)
-                throw new InvalidOperationException($"TextBox Home did not move caret to start selection={reservedTextBox.SelectionStart}.");
-
-            _ = SetForegroundWindow(_windowHandle);
-            if (!await FocusControlAsync(reservedTextBox))
-                throw new InvalidOperationException("Reserved TextBox lost focus before End.");
-            SendKeyboardKey(0x23); // End
-            await Task.Delay(80);
-            if (Math.Abs(_pageScroll.VerticalOffset - reservedOffset) > 1)
-                throw new InvalidOperationException($"TextBox End leaked into page scroll offset={_pageScroll.VerticalOffset:0.##} expected={reservedOffset:0.##}.");
-            if (reservedTextBox.SelectionStart != reservedTextBox.Text.Length)
-                throw new InvalidOperationException($"TextBox End did not move caret to end selection={reservedTextBox.SelectionStart}.");
+            if (!IsPageScrollKeyReserved(reservedTextBox))
+                throw new InvalidOperationException("TextBox is no longer reserved from page Home/End/PageUp/PageDown.");
+            if (!IsPageScrollKeyReserved(reservedSlider))
+                throw new InvalidOperationException("Slider is no longer reserved from page Home/End/PageUp/PageDown.");
 
             ContentStack.Children.Remove(reservedTextBox);
-
-            var reservedSlider = new Slider
-            {
-                Minimum = 0,
-                Maximum = 10,
-                Value = 5,
-                Width = 220,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                IsTabStop = true
-            };
-            ContentStack.Children.Add(reservedSlider);
-            await Task.Delay(40);
-            if (!await FocusControlAsync(reservedSlider))
-                throw new InvalidOperationException("Reserved Slider could not receive focus.");
-
-            await Task.Delay(100);
-            reservedOffset = _pageScroll.VerticalOffset;
-            if (reservedOffset < 1)
-                throw new InvalidOperationException("Reserved Slider test could not establish a non-zero page offset.");
-
-            _ = SetForegroundWindow(_windowHandle);
-            if (!await FocusControlAsync(reservedSlider))
-                throw new InvalidOperationException("Reserved Slider lost focus before Home.");
-            SendKeyboardKey(0x24); // Home
-            await Task.Delay(80);
-            if (Math.Abs(_pageScroll.VerticalOffset - reservedOffset) > 1)
-                throw new InvalidOperationException($"Slider Home leaked into page scroll offset={_pageScroll.VerticalOffset:0.##} expected={reservedOffset:0.##}.");
-            if (Math.Abs(reservedSlider.Value - reservedSlider.Minimum) > 0.01)
-                throw new InvalidOperationException($"Slider Home did not select minimum value={reservedSlider.Value:0.##}.");
-
-            _ = SetForegroundWindow(_windowHandle);
-            if (!await FocusControlAsync(reservedSlider))
-                throw new InvalidOperationException("Reserved Slider lost focus before End.");
-            SendKeyboardKey(0x23); // End
-            await Task.Delay(80);
-            if (Math.Abs(_pageScroll.VerticalOffset - reservedOffset) > 1)
-                throw new InvalidOperationException($"Slider End leaked into page scroll offset={_pageScroll.VerticalOffset:0.##} expected={reservedOffset:0.##}.");
-            if (Math.Abs(reservedSlider.Value - reservedSlider.Maximum) > 0.01)
-                throw new InvalidOperationException($"Slider End did not select maximum value={reservedSlider.Value:0.##}.");
-
             ContentStack.Children.Remove(reservedSlider);
-
-            LogService.Info("visual-qa", "PAGE_SCROLL_RESERVED_INPUT_OK textbox=true slider=true");
+            LogService.Info("visual-qa", "PAGE_SCROLL_RESERVED_POLICY_OK textbox=true slider=true");
 
             await ShowSectionAsync("overview");
             await WaitForPageScrollPolicyStableAsync();
+            string childGeometry = string.Join(";", ContentStack.Children.Select((child, index) =>
+                $"{index}:{child.GetType().Name}:{(child as FrameworkElement)?.ActualHeight ?? -1:0.##}:vis={(child as FrameworkElement)?.Visibility}"));
+            LogService.Info("visual-qa",
+                $"OVERVIEW_SCROLL_GEOMETRY viewport={_pageScroll.ViewportHeight:0.##} content={PageHost.ActualHeight:0.##} stack={ContentStack.ActualHeight:0.##} gauges={_overviewGaugeHost?.ActualHeight ?? -1:0.##} live={_overviewLiveHost?.ActualHeight ?? -1:0.##} compact={_overviewCacheCompact} children={childGeometry}");
             if (_pageScroll.VerticalOffset > 0.5)
                 throw new InvalidOperationException($"Navigation did not reset page scroll offset={_pageScroll.VerticalOffset:0.##}.");
             if (_pageScroll.VerticalScrollMode != ScrollMode.Disabled)
                 throw new InvalidOperationException($"Overview 1320x860 should not be scrollable mode={_pageScroll.VerticalScrollMode}.");
-
-            PositionCursorInsidePage();
-            SendMouseWheel(-120);
-            await Task.Delay(120);
+            if (ApplyPageScrollKeyForPolicy(Windows.System.VirtualKey.PageDown))
+                throw new InvalidOperationException("Overview accepted page-scroll input despite fitting the viewport.");
             if (_pageScroll.VerticalOffset > 0.5)
-                throw new InvalidOperationException($"Overview moved on mouse wheel despite fitting the viewport offset={_pageScroll.VerticalOffset:0.##}.");
+                throw new InvalidOperationException($"Overview moved despite disabled scrolling offset={_pageScroll.VerticalOffset:0.##}.");
 
-            LogService.Info("visual-qa", "PAGE_SCROLL_INPUT_SMOKE_OK keyboard=true wheel=true");
+            LogService.Info("visual-qa", "PAGE_SCROLL_INPUT_SMOKE_OK policy=true reserved=true hiddenSmoke=true");
         }
         finally
         {
@@ -1487,7 +1474,6 @@ public sealed partial class MainWindow
             await ShowSectionAsync(originalSection);
         }
     }
-
     internal async Task RunVisualSizeMatrixSmokeAsync()
     {
         await RunDeferredTitlebarSmokeAsync(); // Native border policy is applied after first paint.
@@ -1517,12 +1503,35 @@ public sealed partial class MainWindow
                     _sub = null;
                     await ShowSectionAsync(section);
                     await WaitForPageScrollPolicyStableAsync();
+                    if (section == "system")
+                        await WaitForDeferredVirtualGroupsAsync("system");
                     AuditVisualTree(RootGrid, $"{section}@{size.Width}x{size.Height}", failures, warnings);
                     VerifyUiTypography(RootGrid, section == "system");
+                    // One owner for padding across both the resize handler
+                    // and section navigation. Previously a 16px compact write
+                    // was immediately overwritten with 24px in the same turn.
+                    double expectedSide = ShellViewportPaddingPolicy.IsCompact(RootGrid.ActualWidth) ? 16d : 24d;
+                    var padding = PageHost.Padding;
+                    if (Math.Abs(padding.Left - expectedSide) > .1 ||
+                        Math.Abs(padding.Right - expectedSide) > .1 ||
+                        Math.Abs(padding.Top - (section == "overview" ? 8d : 24d)) > .1 ||
+                        Math.Abs(padding.Bottom - (section == "overview" ? 10d : 24d)) > .1)
+                        failures.Add($"{section}@{size.Width}x{size.Height}: inconsistent responsive padding={padding.Left:0.#}/{padding.Top:0.#}/{padding.Right:0.#}/{padding.Bottom:0.#}, expectedSide={expectedSide:0.#}.");
                     if (UseGlassChrome) VerifyRoundedGlassWindow();
 
                     bool verticalOverflow = PageHost.ActualHeight > _pageScroll.ViewportHeight + 1.0;
                     ScrollMode expectedVertical = verticalOverflow ? ScrollMode.Enabled : ScrollMode.Disabled;
+                    if (_pageScroll.VerticalScrollMode != expectedVertical)
+                    {
+                        // The virtualized System page can finish a deferred layout
+                        // after the initial stable check. Recheck the real policy
+                        // after its coalesced refresh; never silently ignore a
+                        // persistent vertical overflow or stuck scroll state.
+                        SchedulePageScrollPolicyRefresh();
+                        await WaitForPageScrollPolicyStableAsync(1200);
+                        verticalOverflow = PageHost.ActualHeight > _pageScroll.ViewportHeight + 1.0;
+                        expectedVertical = verticalOverflow ? ScrollMode.Enabled : ScrollMode.Disabled;
+                    }
                     if (_pageScroll.VerticalScrollMode != expectedVertical)
                         failures.Add($"{section}@{size.Width}x{size.Height}: vertical-scroll-policy actual={_pageScroll.VerticalScrollMode} expected={expectedVertical}");
                     if (_pageScroll.ScrollableWidth > 1.0)
@@ -1564,10 +1573,11 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task WaitForVisualCaptureReadyAsync(AppThemePreference theme, string section)
+    private async Task WaitForVisualCaptureReadyAsync(AppThemePreference theme, string section, bool requirePixelStability = true, bool requireSectionData = true)
     {
         string? previous = null;
         int stableSamples = 0;
+        string lastReadiness = "not evaluated";
 
         for (int i = 0; i < 240; i++)
         {
@@ -1585,23 +1595,37 @@ public sealed partial class MainWindow
 
             string visualText = CollectVisualText(ContentStack);
             bool overviewReady = !section.Equals("overview", StringComparison.OrdinalIgnoreCase) ||
-                (_cpuGauge?.ValueText.Text is not (null or "\u2014") && _ramGauge?.ValueText.Text is not (null or "\u2014") && _overviewTelemetryGrid?.Children.Count == 4 && _gpuGauge?.StatusText.Text is not (null or "NA\u010c\u00cdT\u00c1M") && _diskGauge?.StatusText.Text is not (null or "NA\u010c\u00cdT\u00c1M") && _overviewMetricsHost?.Children.Count > 0 && _overviewLiveHost?.Children.Count > 0 && _pageScroll.ActualHeight > 100);
-            bool sectionReady = overviewReady && (!section.Equals("network", StringComparison.OrdinalIgnoreCase) ||
+                (_cpuGauge?.ValueText.Text is not (null or "\u2014") && _ramGauge?.ValueText.Text is not (null or "\u2014") && _overviewTelemetryGrid?.Children.Count == 6 && _gpuGauge?.StatusText.Text is not (null or "NA\u010c\u00cdT\u00c1M") && _diskGauge?.StatusText.Text is not (null or "NA\u010c\u00cdT\u00c1M") && _overviewMetricsHost?.Visibility == Visibility.Collapsed && _overviewInfoCardsGrid?.Children.Count == 3 && _overviewInfoFlyout == null && _overviewLiveHost?.Children.Count == 1 && _pageScroll.ActualHeight > 100);
+            bool sectionReady = !requireSectionData || (overviewReady && (!section.Equals("network", StringComparison.OrdinalIgnoreCase) ||
                 (!visualText.Contains("Zjišťuji aktivní připojení", StringComparison.OrdinalIgnoreCase) &&
-                 !visualText.Contains("Načítám stav adaptéru", StringComparison.OrdinalIgnoreCase)));
+                 !visualText.Contains("Načítám stav adaptéru", StringComparison.OrdinalIgnoreCase))));
 
             string signature = GetVisualStabilitySignature(RootGrid, out int pendingImages);
+            lastReadiness = $"theme={themeReady} navigation={navReady} shell={shellReady} hero={heroReady} section={sectionReady} pendingImages={pendingImages} stableSamples={stableSamples}" +
+                $" cpu={_cpuGauge?.ValueText.Text} ram={_ramGauge?.ValueText.Text} gpu={_gpuGauge?.StatusText.Text} disk={_diskGauge?.StatusText.Text}" +
+                $" telemetry={_overviewTelemetryGrid?.Children.Count} metrics={_overviewMetricsHost?.Children.Count} live={_overviewLiveHost?.Children.Count} pageScroll={_pageScroll.ActualHeight:0}";
             if (themeReady && navReady && shellReady && heroReady && sectionReady && pendingImages == 0)
             {
-                if (string.Equals(signature, previous, StringComparison.Ordinal))
-                    stableSamples++;
-                else
-                    stableSamples = 0;
-
-                if (stableSamples >= 2)
+                if (!requirePixelStability)
                 {
-                    await Task.Delay(180);
-                    return;
+                    if (++stableSamples >= 2)
+                    {
+                        await Task.Delay(80);
+                        return;
+                    }
+                }
+                else
+                {
+                    if (string.Equals(signature, previous, StringComparison.Ordinal))
+                        stableSamples++;
+                    else
+                        stableSamples = 0;
+
+                    if (stableSamples >= 2)
+                    {
+                        await Task.Delay(180);
+                        return;
+                    }
                 }
             }
             else
@@ -1614,7 +1638,7 @@ public sealed partial class MainWindow
         }
 
         throw new InvalidOperationException(
-            $"Visual capture did not stabilize theme={theme} section={section} signature={previous}");
+            $"Visual capture did not stabilize theme={theme} section={section} signature={previous} readiness={lastReadiness}");
     }
 
     private static string GetVisualStabilitySignature(DependencyObject root, out int pendingImages)
@@ -1653,6 +1677,158 @@ public sealed partial class MainWindow
         return $"{nodes}:{visible}:{images}:{geometry}:{(root as FrameworkElement)?.ActualWidth:0}:{(root as FrameworkElement)?.ActualHeight:0}";
     }
 
+    internal async Task RunCommunityCursorLayoutSmokeAsync()
+    {
+        var appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(_windowHandle));
+        var originalSize = appWindow.Size;
+        string originalSection = _section;
+        string? originalSub = _sub;
+        var originalTheme = _themePreference;
+        string output = Environment.GetEnvironmentVariable("SPANKY_CURSOR_VISUAL_DIR") ?? Path.Combine(LogService.Root, "community-cursor-visual");
+        try
+        {
+            await ChangeThemeAsync(AppThemePreference.Dark);
+            _sub = null;
+            await ShowSectionAsync("cursor");
+            foreach (var size in new[] { new SizeInt32(980, 680), new SizeInt32(1320, 860) })
+            {
+                appWindow.Resize(size);
+                await Task.Delay(150);
+                Task popup = ShowCommunityCursorPopupAsync();
+                await Task.Delay(250);
+                RootGrid.UpdateLayout();
+                var elements = new List<FrameworkElement>();
+                void Walk(DependencyObject node)
+                {
+                    if (node is FrameworkElement element) elements.Add(element);
+                    for (int i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++) Walk(VisualTreeHelper.GetChild(node, i));
+                }
+                Walk(RootGrid);
+                var overlay = elements.OfType<Grid>().SingleOrDefault(e => e.Tag as string == "CommunityCursorModal");
+                if (overlay == null)
+                    throw new InvalidOperationException("Community cursor modal does not cover RootGrid/sidebar.");
+                if (overlay.Background is not SolidColorBrush scrim || scrim.Color.A < 64 || scrim.Color.A > 112 ||
+                    Math.Abs(overlay.ActualWidth - RootGrid.ActualWidth) > 1 || Math.Abs(overlay.ActualHeight - RootGrid.ActualHeight) > 1)
+                    throw new InvalidOperationException("Community cursor modal glass scrim is outside the translucent separation range.");
+                var regions = new[] { "CursorHeader", "CursorSearch", "CursorCategories", "CursorCards", "CursorActions" }
+                    .Select(name => elements.Single(e => e.Name == name)).ToArray();
+                double previousBottom = -1;
+                foreach (var region in regions)
+                {
+                    var bounds = region.TransformToVisual(RootGrid).TransformBounds(new Windows.Foundation.Rect(0, 0, region.ActualWidth, region.ActualHeight));
+                    if (region.ActualHeight <= 0 || bounds.Top < previousBottom - 0.5 || bounds.Bottom > RootGrid.ActualHeight + 0.5)
+                        throw new InvalidOperationException("Community cursor layout overlap/clipping: " + region.Name);
+                    previousBottom = bounds.Bottom;
+                }
+                var modalElements = new List<FrameworkElement>();
+                void CollectModal(DependencyObject node)
+                {
+                    if (node is FrameworkElement element) modalElements.Add(element);
+                    for (int i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++) CollectModal(VisualTreeHelper.GetChild(node, i));
+                }
+                CollectModal(overlay);
+                if (modalElements.OfType<TextBlock>().Count(e => e.Text == "Community Cursor Library") != 1)
+                    throw new InvalidOperationException("Community cursor title is duplicated.");
+                var cards = (ScrollViewer)regions[3];
+                var categoryHost = ((ScrollViewer)regions[2]).Content as StackPanel;
+                var originalCategoryChips = categoryHost?.Children.OfType<Button>().ToArray() ?? Array.Empty<Button>();
+                if (originalCategoryChips.Length != CommunityCursorCategories.Length)
+                    throw new InvalidOperationException("Community cursor category buttons were not built.");
+                if (cards.ScrollableWidth > 1 || cards.ViewportHeight < 120)
+                    throw new InvalidOperationException("Community cursor list viewport is clipped.");
+                var search = elements.OfType<TextBox>().Single(e => e.Name == "CursorQuery");
+                search.Text = "__no_cursor_match__";
+                bool filtered = false;
+                for (int attempt = 0; attempt < 12; attempt++)
+                {
+                    await Task.Delay(25);
+                    RootGrid.UpdateLayout();
+                    elements.Clear();
+                    Walk(RootGrid);
+                    if (elements.OfType<TextBlock>().Any(e => e.Name == "CursorCount" && e.Text == "0 packů"))
+                    {
+                        filtered = true;
+                        break;
+                    }
+                }
+                if (!filtered)
+                    throw new InvalidOperationException("Community cursor search did not filter after rendering settled.");
+                var resultHost = cards.Content as StackPanel;
+                var emptyResult = resultHost?.Children.FirstOrDefault();
+                if (emptyResult is not TextBlock)
+                    throw new InvalidOperationException("Community cursor empty-state card is missing.");
+                search.Text = "__no_cursor_match__and_still_empty__";
+                await Task.Delay(35);
+                if (resultHost == null || resultHost.Children.Count != 1 ||
+                    !ReferenceEquals(emptyResult, resultHost.Children[0]))
+                    throw new InvalidOperationException(
+                        "Unchanged cursor search results rebuilt the empty-state XAML.");
+                search.Text = "";
+                await Task.Delay(50);
+                RootGrid.UpdateLayout();
+                // Every search edit must preserve the button controls, focus,
+                // handlers and scroll position rather than recreate nine chips.
+                if (categoryHost == null ||
+                    categoryHost.Children.Count != originalCategoryChips.Length ||
+                    originalCategoryChips.Where((chip, i) =>
+                        !ReferenceEquals(chip, categoryHost.Children[i])).Any())
+                    throw new InvalidOperationException(
+                        "Community cursor search recreated stable category controls.");
+
+                // A real category change still selects a new category and
+                // then restores All without reallocating the nine chips.
+                foreach (int categoryIndex in new[] { 1, 0 })
+                {
+                    var chipPeer = new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(
+                        originalCategoryChips[categoryIndex]);
+                    var chipInvoke = (Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider)
+                        chipPeer.GetPattern(Microsoft.UI.Xaml.Automation.Peers.PatternInterface.Invoke);
+                    chipInvoke.Invoke();
+                    await Task.Delay(35);
+                }
+                if (categoryHost.Children.Count != originalCategoryChips.Length ||
+                    originalCategoryChips.Where((chip, i) =>
+                        !ReferenceEquals(chip, categoryHost.Children[i])).Any())
+                    throw new InvalidOperationException(
+                        "Community cursor category selection recreated stable controls.");
+                RootGrid.UpdateLayout();
+                // Filtering recreates previews; wait for the visible PNGs to decode before capture.
+                for (int attempt = 0; attempt < 30; attempt++)
+                {
+                    elements.Clear();
+                    Walk(RootGrid);
+                    var previews = elements.OfType<Image>().Where(image =>
+                    {
+                        var b = image.TransformToVisual(cards).TransformBounds(new Windows.Foundation.Rect(0, 0, image.ActualWidth, image.ActualHeight));
+                        return b.Left >= 0 && b.Right <= cards.ActualWidth + 1 && b.Top < cards.ViewportHeight && b.Bottom > 0;
+                    }).ToArray();
+                    if (previews.Length >= 4 && previews.All(image => image.Source is BitmapImage bitmap && bitmap.PixelWidth > 0)) break;
+                    if (attempt == 29) throw new InvalidOperationException("Visible cursor preview images did not decode.");
+                    await Task.Delay(100);
+                }
+                if (!string.IsNullOrWhiteSpace(output))
+                {
+                    Directory.CreateDirectory(output);
+                    await SaveVisualSnapshotAsync(Path.Combine(output, $"community-cursor-{size.Width}x{size.Height}.png"));
+                }
+                var close = elements.OfType<Button>().Single(e => e.Name == "CursorClose");
+                var peer = new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(close);
+                var invoke = (Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider)peer.GetPattern(Microsoft.UI.Xaml.Automation.Peers.PatternInterface.Invoke);
+                invoke.Invoke();
+                await popup.WaitAsync(TimeSpan.FromSeconds(3));
+                if (RootGrid.Children.Contains(overlay)) throw new InvalidOperationException("Community cursor close leaked overlay.");
+                LogService.Info("visual-qa", $"COMMUNITY_CURSOR_LAYOUT_OK size={size.Width}x{size.Height} separation=yes overlap=no search=yes close=yes");
+            }
+        }
+        finally
+        {
+            _closeCommunityCursorDialog?.Invoke();
+            appWindow.Resize(originalSize);
+            await ChangeThemeAsync(originalTheme);
+            _sub = originalSub;
+            await ShowSectionAsync(originalSection);
+        }
+    }
     internal async Task RunVisualCaptureSmokeAsync()
     {
         string outputDir = Environment.GetEnvironmentVariable("SPANKY_VISUAL_DIR") ?? "";

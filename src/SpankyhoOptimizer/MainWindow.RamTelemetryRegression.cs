@@ -29,7 +29,7 @@ public sealed partial class MainWindow
             Check();
             var refs = _overviewTextRefs;
             await CompleteOverviewDashboardAsync(HardwareSnapshotService.GetOverviewAsync(false, CancellationToken.None),
-                refs.Cpu,refs.Gpu,refs.Ram,refs.Disk,refs.Os,refs.Board,refs.Power,refs.Network,refs.Driver,refs.History,refs.Windows,CancellationToken.None);
+                refs.Cpu,refs.Gpu,refs.Ram,refs.Disk,refs.Os,refs.Board,refs.Power,refs.Network,refs.Driver,refs.History,refs.Windows,CancellationToken.None, _navigationGeneration);
             await FlushOverviewUiForSmokeAsync();
             Check();
             LogService.Info("visual-qa","RAM_TELEMETRY_SMOKE_OK liveSummary=true lateSnapshotStable=true");

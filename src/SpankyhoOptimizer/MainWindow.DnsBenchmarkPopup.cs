@@ -33,31 +33,63 @@ public sealed partial class MainWindow
 
         string[] ChooseServers(Func<string, bool> familyMatch)
         {
-            var family = pool
-                .Where(x => x.IsAlive && string.IsNullOrWhiteSpace(x.Error) &&
-                            !x.RedirectsNxDomain && x.Protocol == DnsResolverProtocol.UdpTcp &&
-                            familyMatch(x.Address))
-                .OrderByDescending(x => x.OverallScore)
-                .ThenBy(x => x.AverageMs)
-                .ToArray();
+            var family = new List<DnsBenchmarkResult>(pool.Count);
+            foreach (DnsBenchmarkResult item in pool)
+            {
+                if (item.IsAlive && string.IsNullOrWhiteSpace(item.Error) &&
+                    !item.RedirectsNxDomain && item.Protocol == DnsResolverProtocol.UdpTcp &&
+                    familyMatch(item.Address))
+                    family.Add(item);
+            }
 
-            var sameProvider = family
-                .Where(x => string.Equals(x.Name, selected.Name, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(x => string.Equals(x.Address, selected.Address, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-                .ThenByDescending(x => x.OverallScore)
-                .ToArray();
+            family.Sort(static (a, b) =>
+            {
+                int score = b.OverallScore.CompareTo(a.OverallScore);
+                return score != 0 ? score : a.AverageMs.CompareTo(b.AverageMs);
+            });
 
-            var chosen = new List<string>(2);
-            var primary = sameProvider.FirstOrDefault() ?? family.FirstOrDefault();
-            if (primary != null) chosen.Add(primary.Address);
+            DnsBenchmarkResult? primary = null;
+            foreach (DnsBenchmarkResult item in family)
+            {
+                if (!string.Equals(item.Name, selected.Name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                primary ??= item;
+                if (string.Equals(item.Address, selected.Address, StringComparison.OrdinalIgnoreCase))
+                {
+                    primary = item;
+                    break;
+                }
+            }
+            primary ??= family.Count > 0 ? family[0] : null;
+            if (primary == null) return Array.Empty<string>();
 
-            var companion = family.FirstOrDefault(x =>
-                    !chosen.Contains(x.Address, StringComparer.OrdinalIgnoreCase) &&
-                    (primary == null || !string.Equals(x.Name, primary.Name, StringComparison.OrdinalIgnoreCase)))
-                ?? sameProvider.FirstOrDefault(x => !chosen.Contains(x.Address, StringComparer.OrdinalIgnoreCase));
+            DnsBenchmarkResult? companion = null;
+            foreach (DnsBenchmarkResult item in family)
+            {
+                if (string.Equals(item.Address, primary.Address, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (!string.Equals(item.Name, primary.Name, StringComparison.OrdinalIgnoreCase))
+                {
+                    companion = item;
+                    break;
+                }
+            }
 
-            if (companion != null) chosen.Add(companion.Address);
-            return chosen.ToArray();
+            if (companion == null)
+            {
+                foreach (DnsBenchmarkResult item in family)
+                {
+                    if (!string.Equals(item.Address, primary.Address, StringComparison.OrdinalIgnoreCase))
+                    {
+                        companion = item;
+                        break;
+                    }
+                }
+            }
+
+            return companion == null
+                ? new[] { primary.Address }
+                : new[] { primary.Address, companion.Address };
         }
 
         return new DnsApplyPlan(ChooseServers(IsV4), ChooseServers(IsV6));
@@ -96,18 +128,32 @@ public sealed partial class MainWindow
         var overlay = CreateDialogOverlay(12600);
         bool popupClosed = false;
         bool benchmarkFinished = false;
+        CancellationTokenRegistration navigationCloseRegistration = default;
         void ClosePopup()
         {
             if (popupClosed) return;
             popupClosed = true;
             try { popupCts.Cancel(); } catch (ObjectDisposedException) { }
             UnmountDialog(overlay);
+            navigationCloseRegistration.Dispose();
             if (benchmarkFinished) popupCts.Dispose();
         }
 
+        navigationCloseRegistration = navigationToken.Register(() =>
+        {
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, ClosePopup);
+        });
+
         overlay.Unloaded += (_, _) =>
         {
+            // Window shutdown/navigation can unload the overlay without going through ClosePopup.
+            // Mark it closed so the benchmark finally block owns disposal and no CTS survives
+            // after the dialog visual tree is gone.
+            popupClosed = true;
             try { popupCts.Cancel(); } catch (ObjectDisposedException) { }
+            navigationCloseRegistration.Dispose();
+            if (benchmarkFinished)
+                popupCts.Dispose();
         };
         var card = CreateDialogCard(760, 820, z: 36);
         var root = new StackPanel { Spacing = 14 };
@@ -115,7 +161,6 @@ public sealed partial class MainWindow
         var head = new Grid { ColumnSpacing = 14 };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         head.ColumnDefinitions.Add(new ColumnDefinition());
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         head.Children.Add(new Border
         {
             Width = 48,
@@ -141,31 +186,6 @@ public sealed partial class MainWindow
         });
         Grid.SetColumn(titles, 1);
         head.Children.Add(titles);
-
-        var headerClose = new Button
-        {
-            Width = 38,
-            Height = 38,
-            Padding = new Thickness(0),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top,
-            Background = DialogInnerSurfaceBrush(),
-            BorderBrush = DialogNeutralBorderBrush(),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(11),
-            Content = new FontIcon
-            {
-                Glyph = "\uE711",
-                FontFamily = new FontFamily("Segoe Fluent Icons"),
-                FontSize = 11.5,
-                Foreground = TextPrimaryBrush()
-            }
-        };
-        ToolTipService.SetToolTip(headerClose, "Zavřít");
-        EnsureAccessibleButton(headerClose, "Zavřít DNS benchmark");
-        headerClose.Click += (_, _) => ClosePopup();
-        Grid.SetColumn(headerClose, 2);
-        head.Children.Add(headerClose);
 
         var headerSectionStack = new StackPanel { Spacing = 12 };
         headerSectionStack.Children.Add(head);
@@ -207,7 +227,7 @@ public sealed partial class MainWindow
         {
             Height = 8,
             CornerRadius = new CornerRadius(4),
-            Background = ThemeColor(72, 22, 35, 48),
+            Background = GlassTrackBrush(),
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
         var fill = new Border
@@ -411,35 +431,40 @@ public sealed partial class MainWindow
 
         applyBestButton = StyledDialogButton("Použít Best overall", true, async () =>
         {
+            if (popupClosed || popupCts.IsCancellationRequested) return;
             var best = applicableResults.OrderByDescending(x => x.OverallScore).FirstOrDefault();
             if (best != null)
                 await ApplyBenchmarkDnsAsync(best, applicableResults, status, summaryText, rollbackButton,
-                    applyBestButton, appliedState, appliedStateTitle, appliedStateDetails, applyPreviewText, popupToken);
+                    applyBestButton, appliedState, appliedStateTitle, appliedStateDetails, applyPreviewText, popupCts.Token);
         });
         applyBestButton.Visibility = Visibility.Visible;
         applyBestButton.IsEnabled = false;
 
         applyFastestButton = StyledDialogButton("Použít nejrychlejší", false, async () =>
         {
+            if (popupClosed || popupCts.IsCancellationRequested) return;
             var fastest = applicableResults.OrderBy(x => x.AverageMs).FirstOrDefault();
             if (fastest != null)
                 await ApplyBenchmarkDnsAsync(fastest, applicableResults, status, summaryText, rollbackButton,
-                    applyFastestButton, appliedState, appliedStateTitle, appliedStateDetails, applyPreviewText, popupToken);
+                    applyFastestButton, appliedState, appliedStateTitle, appliedStateDetails, applyPreviewText, popupCts.Token);
         });
         applyFastestButton.Visibility = Visibility.Visible;
         applyFastestButton.IsEnabled = false;
 
         applySelectedButton = StyledDialogButton("Použít vybraný pár", false, async () =>
         {
+            if (popupClosed || popupCts.IsCancellationRequested) return;
             if (resolverPicker.SelectedItem is ComboBoxItem item && item.Tag is DnsBenchmarkResult selected)
                 await ApplyBenchmarkDnsAsync(selected, applicableResults, status, summaryText, rollbackButton,
-                    applySelectedButton, appliedState, appliedStateTitle, appliedStateDetails, applyPreviewText, popupToken);
+                    applySelectedButton, appliedState, appliedStateTitle, appliedStateDetails, applyPreviewText, popupCts.Token);
         });
         applySelectedButton.Visibility = Visibility.Visible;
         applySelectedButton.IsEnabled = false;
 
         rollbackButton = StyledDialogButton("Vrátit předchozí DNS", false, async () =>
         {
+            if (popupClosed || popupCts.IsCancellationRequested ||
+                Interlocked.Exchange(ref _dnsApplyBusy, 1) != 0) return;
             try
             {
                 var progressResult = await RunCancellableWithProgressAsync(
@@ -447,7 +472,7 @@ public sealed partial class MainWindow
                     "Vracím předchozí DNS konfiguraci…",
                     async progressToken =>
                     {
-                        using var linked = CancellationTokenSource.CreateLinkedTokenSource(popupToken, progressToken);
+                        using var linked = CancellationTokenSource.CreateLinkedTokenSource(popupCts.Token, progressToken);
                         return await DnsProfileService.RollbackAsync(linked.Token);
                     });
                 if (!progressResult.Completed)
@@ -479,6 +504,10 @@ public sealed partial class MainWindow
                     status.Text = "Rollback DNS selhal.";
                     summaryText.Text = ex.Message;
                 }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _dnsApplyBusy, 0);
             }
         });
         rollbackButton.Visibility = DnsProfileService.HasRollbackSnapshot ? Visibility.Visible : Visibility.Collapsed;
@@ -528,19 +557,16 @@ public sealed partial class MainWindow
 
         card.Child = layout;
         var topClose = MountDialog(overlay, card, ClosePopup);
-        if (topClose != null) topClose.Visibility = Visibility.Collapsed;
 
         bool dnsPopupContractOk =
-            head.Children.Contains(headerClose) &&
+            topClose != null &&
             actions.Children.Contains(cancelButton) &&
             applyActions.Children.Contains(applyBestButton) &&
             applyActions.Children.Contains(applyFastestButton) &&
             applyActions.Children.Contains(applySelectedButton) &&
             applyActions.Children.Contains(rollbackButton) &&
             footerStack.Children.Contains(applyActions) &&
-            footerStack.Children.Contains(actions) &&
-            ReferenceEquals(card.Child, layout) &&
-            topClose != null;
+            footerStack.Children.Contains(actions);
 
         if (!dnsPopupContractOk)
         {
@@ -552,7 +578,7 @@ public sealed partial class MainWindow
         }
 
         LogService.Info("network",
-            "DNS_POPUP_CONTRACT_OK headerClose=true escapeClose=true footerClose=true applyBest=true applyFastest=true applySelected=true rollback=true");
+            "DNS_POPUP_CONTRACT_OK sharedClose=true escapeClose=true footerClose=true applyBest=true applyFastest=true applySelected=true rollback=true");
 
         var completed = new List<DnsBenchmarkResult>();
         var benchmarkClock = Stopwatch.StartNew();
@@ -747,8 +773,15 @@ public sealed partial class MainWindow
             if (!progressResult.Completed)
             {
                 LogService.Info("network", $"DNS apply cancelled: {selected.Name}");
-                if (!token.IsCancellationRequested && sourceButton != null)
-                    sourceButton.Content = originalButtonContent;
+                if (!token.IsCancellationRequested)
+                {
+                    status.Text = "DNS změna byla zrušena.";
+                    appliedState.BorderBrush = WarningBrush();
+                    appliedStateTitle.Foreground = WarningBrush();
+                    appliedStateTitle.Text = "DNS změna byla zrušena";
+                    appliedStateDetails.Text = "Operace byla přerušena. Zkontroluj aktuální DNS; předchozí nastavení lze obnovit ze zálohy, pokud je dostupná.";
+                    if (sourceButton != null) sourceButton.Content = originalButtonContent;
+                }
                 return;
             }
             var applyResult = progressResult.Result;
@@ -800,8 +833,13 @@ public sealed partial class MainWindow
         }
         catch (OperationCanceledException)
         {
-            if (!token.IsCancellationRequested && sourceButton != null)
-                sourceButton.Content = originalButtonContent;
+            if (!token.IsCancellationRequested)
+            {
+                status.Text = "DNS změna byla zrušena.";
+                appliedStateTitle.Text = "DNS změna byla zrušena";
+                appliedStateDetails.Text = "Operace byla přerušena. Zkontroluj aktuální DNS; předchozí nastavení lze obnovit ze zálohy, pokud je dostupná.";
+                if (sourceButton != null) sourceButton.Content = originalButtonContent;
+            }
         }
         catch (Exception ex)
         {
@@ -822,8 +860,13 @@ public sealed partial class MainWindow
         finally
         {
             Interlocked.Exchange(ref _dnsApplyBusy, 0);
-            if (!token.IsCancellationRequested && sourceButton != null)
-                sourceButton.IsEnabled = true;
+            if (!token.IsCancellationRequested)
+            {
+                if (rollbackButton != null)
+                    rollbackButton.Visibility = DnsProfileService.HasRollbackSnapshot ? Visibility.Visible : Visibility.Collapsed;
+                RefreshNetworkDnsDashboardStatus();
+                if (sourceButton != null) sourceButton.IsEnabled = true;
+            }
         }
     }
 

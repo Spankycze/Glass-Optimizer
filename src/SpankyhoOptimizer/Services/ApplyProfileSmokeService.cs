@@ -68,9 +68,20 @@ internal static class ApplyProfileSmokeService
     private static TweakDefinition Create(string path, int index)
     {
         string name = "Value" + index;
+        // RegistryBackupStore persists an ID -> target identity. Distinct smoke
+        // scenarios must NEVER reuse an ID for different HKCU paths, even
+        // across repeated test runs or after a previous crash. Preserve older
+        // backup records rather than deleting/bypassing their safety checks.
+        string scenario = path switch
+        {
+            @"Software\SpankyhoOptimizer\Smoke\ApplyProfile" => "apply",
+            @"Software\SpankyhoOptimizer\Smoke\StartupWarmApply" => "startup",
+            @"Software\SpankyhoOptimizer\Smoke\PreflightWarm" => "preflight",
+            _ => throw new ArgumentOutOfRangeException(nameof(path), "Unknown smoke registry path")
+        };
         var tweak = new TweakDefinition
         {
-            Id = "smoke.apply.profile." + index,
+            Id = "smoke.apply.profile." + scenario + "." + index,
             Section = "smoke",
             Group = "Apply Profile",
             Name = "Apply profile " + index,

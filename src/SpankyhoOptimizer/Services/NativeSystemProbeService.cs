@@ -57,6 +57,7 @@ public static class NativeSystemProbeService
     private static ManagementScope? _storageDiskScope;
     private static ManagementScope? _storageDriverScope;
     private static Task? _storageTemperatureRefreshTask;
+    private static int _storageTemperatureRefreshGeneration = -1;
     private static int _storageTemperatureGeneration;
     private static int _storageTemperatureStaleHitCount;
     private static int _storageTemperatureFreshLoadCount;
@@ -221,12 +222,14 @@ public static class NativeSystemProbeService
         {
             using var searcher = new ManagementObjectSearcher(new ManagementScope(@"\\.\root\CIMV2"), new ObjectQuery(
                 "SELECT DeviceName,DriverProviderName,DriverVersion FROM Win32_PnPSignedDriver WHERE DeviceClass='NET' AND DeviceName=" + Wql(description)), QueryOptions());
-            foreach (ManagementObject x in searcher.Get())
-            {
-                provider = x["DriverProviderName"]?.ToString() ?? string.Empty;
-                version = x["DriverVersion"]?.ToString() ?? string.Empty;
-                break;
-            }
+            var rows = searcher.Get();
+            var metadata = WmiFirstRowScope.ReadFirst<ManagementObject, (string Provider, string Version)>(
+                rows, rows, x => (
+                    x["DriverProviderName"]?.ToString() ?? string.Empty,
+                    x["DriverVersion"]?.ToString() ?? string.Empty),
+                (provider, version));
+            provider = metadata.Provider;
+            version = metadata.Version;
         }
         catch { }
 
@@ -234,11 +237,11 @@ public static class NativeSystemProbeService
         {
             var scope = new ManagementScope(@"\\.\root\StandardCimv2"); scope.Connect();
             using var q = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT FullDuplex FROM MSFT_NetAdapter WHERE InterfaceDescription=" + Wql(description)), QueryOptions());
-            foreach (ManagementObject x in q.Get())
-            {
-                duplex = x["FullDuplex"] is bool fd ? (fd ? "Full Duplex" : "Half Duplex") : string.Empty;
-                break;
-            }
+            var rows = q.Get();
+            duplex = WmiFirstRowScope.ReadFirst<ManagementObject, string>(
+                rows, rows,
+                x => x["FullDuplex"] is bool fd ? (fd ? "Full Duplex" : "Half Duplex") : string.Empty,
+                duplex);
             ReadRssRsc(scope, name, ref rss, ref queues, ref rsc);
         }
         catch { }
@@ -249,13 +252,20 @@ public static class NativeSystemProbeService
         try
         {
             using var q = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT Enabled,NumberOfReceiveQueues FROM MSFT_NetAdapterRssSettingData WHERE Name=" + Wql(name)), QueryOptions());
-            foreach (ManagementObject x in q.Get()) { rss = Convert.ToBoolean(x["Enabled"] ?? false); queues = Convert.ToInt32(x["NumberOfReceiveQueues"] ?? 0); break; }
+            var rows = q.Get();
+            var status = WmiFirstRowScope.ReadFirst<ManagementObject, (bool Rss, int Queues)>(
+                rows, rows, x => (Convert.ToBoolean(x["Enabled"] ?? false),
+                    Convert.ToInt32(x["NumberOfReceiveQueues"] ?? 0)), (rss, queues));
+            rss = status.Rss;
+            queues = status.Queues;
         }
         catch { }
         try
         {
             using var q = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT IPv4Enabled FROM MSFT_NetAdapterRscSettingData WHERE Name=" + Wql(name)), QueryOptions());
-            foreach (ManagementObject x in q.Get()) { rsc = Convert.ToBoolean(x["IPv4Enabled"] ?? false); break; }
+            var rows = q.Get();
+            rsc = WmiFirstRowScope.ReadFirst<ManagementObject, bool>(
+                rows, rows, x => Convert.ToBoolean(x["IPv4Enabled"] ?? false), rsc);
         }
         catch { }
     }
@@ -303,7 +313,9 @@ public static class NativeSystemProbeService
                         GetStorageDiskScope(),
                         new ObjectQuery("SELECT Index,Model,MediaType,InterfaceType,Status,Size,FirmwareRevision,PNPDeviceID FROM Win32_DiskDrive"),
                         QueryOptions());
-                    foreach (ManagementObject x in q.Get())
+                    var results = q.Get();
+                    WmiEnumerationScope.ForEach<ManagementObject>(results, results,
+                        CancellationToken.None, x =>
                     {
                         string name = x["Model"]?.ToString() ?? "Disk";
                         string pnp = x["PNPDeviceID"]?.ToString() ?? string.Empty;
@@ -323,7 +335,7 @@ public static class NativeSystemProbeService
                             ToDouble(x["Size"]) / 1024d / 1024d / 1024d,
                             x["FirmwareRevision"]?.ToString() ?? string.Empty,
                             pnp));
-                    }
+                    });
                 }
                 catch (Exception ex)
                 {
@@ -395,13 +407,73 @@ public static class NativeSystemProbeService
         return EmptyStorageTemperatures;
     }
 
+    private static bool ReuseStorageTemperatureRefresh(
+        Task? pending, int pendingGeneration, int requestedGeneration) =>
+        pending is { IsCompleted: false } && pendingGeneration == requestedGeneration;
+
+    // A previous generation's query may still be running after invalidation.
+    // Serialize its successor rather than discarding the new refresh request.
+    private static Task CreateStorageTemperatureRefreshTask(
+        Task? predecessor, int generation, Func<int, Task> refresh)
+    {
+        return Task.Run(async () =>
+        {
+            if (predecessor != null)
+            {
+                // The prior task owns its own exception reporting. A failed
+                // or superseded probe must not suppress the new generation.
+                try { await predecessor.ConfigureAwait(false); }
+                catch { }
+            }
+            await refresh(generation).ConfigureAwait(false);
+        });
+    }
+
+    internal static async Task<string> RunStorageTemperatureGenerationSmokeAsync()
+    {
+        var old = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (ReuseStorageTemperatureRefresh(old.Task, pendingGeneration: 4, requestedGeneration: 5))
+            throw new InvalidOperationException(
+                "An in-flight previous-generation disk temperature refresh suppresses the new refresh.");
+        if (!ReuseStorageTemperatureRefresh(old.Task, pendingGeneration: 5, requestedGeneration: 5))
+            throw new InvalidOperationException("Same-generation refresh was not coalesced.");
+
+        int executed = 0, observedGeneration = -1;
+        Task next = CreateStorageTemperatureRefreshTask(
+            old.Task, 5, generation =>
+            {
+                Interlocked.Increment(ref executed);
+                observedGeneration = generation;
+                return Task.CompletedTask;
+            });
+        if (next.IsCompleted || Volatile.Read(ref executed) != 0)
+            throw new InvalidOperationException("New-generation disk refresh started before its predecessor finished.");
+        old.TrySetResult(true);
+        await next.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        if (Volatile.Read(ref executed) != 1 || observedGeneration != 5)
+            throw new InvalidOperationException("Queued disk refresh did not execute exactly once in new generation.");
+        return "STORAGE_TEMPERATURE_GENERATION_SMOKE_OK priorGenerationReplaced=true " +
+               "sameGenerationCoalesced=true successorSerialized=true hardwareCalls=0";
+    }
+
     private static void QueueStorageTemperatureRefresh()
     {
         lock (StorageTemperatureRefreshLock)
         {
-            if (_storageTemperatureRefreshTask is { IsCompleted: false }) return;
             int generation = Volatile.Read(ref _storageTemperatureGeneration);
-            var created = Task.Run(() => ReadStorageTemperaturesFresh(generation));
+            Task? current = _storageTemperatureRefreshTask;
+            if (ReuseStorageTemperatureRefresh(
+                current, _storageTemperatureRefreshGeneration, generation))
+                return;
+
+            Task? predecessor = current is { IsCompleted: false } ? current : null;
+            var created = CreateStorageTemperatureRefreshTask(
+                predecessor, generation, requested =>
+                {
+                    _ = ReadStorageTemperaturesFresh(requested);
+                    return Task.CompletedTask;
+                });
+            _storageTemperatureRefreshGeneration = generation;
             _storageTemperatureRefreshTask = created;
             _ = created.ContinueWith(t =>
             {
@@ -444,15 +516,17 @@ public static class NativeSystemProbeService
                 new ObjectQuery("SELECT DeviceId,Temperature FROM MSFT_StorageReliabilityCounter"),
                 QueryOptions());
 
-            foreach (ManagementObject counter in q.Get())
+            var results = q.Get();
+            WmiEnumerationScope.ForEach<ManagementObject>(results, results,
+                CancellationToken.None, counter =>
             {
-                if (counter["DeviceId"] is null) continue;
-                if (!uint.TryParse(counter["DeviceId"]?.ToString(), out uint deviceId)) continue;
+                if (counter["DeviceId"] is null) return;
+                if (!uint.TryParse(counter["DeviceId"]?.ToString(), out uint deviceId)) return;
                 double? temp = counter["Temperature"] is null
                     ? null
                     : Convert.ToDouble(counter["Temperature"]);
                 map[deviceId] = temp;
-            }
+            });
 
             if (generation == Volatile.Read(ref _storageTemperatureGeneration))
             {
@@ -570,14 +644,16 @@ public static class NativeSystemProbeService
                 GetStorageDriverScope(),
                 new ObjectQuery("SELECT DeviceID,DriverProviderName,DriverVersion FROM Win32_PnPSignedDriver WHERE DeviceClass='DISKDRIVE'"),
                 QueryOptions());
-            foreach (ManagementObject x in q.Get())
+            var results = q.Get();
+            WmiEnumerationScope.ForEach<ManagementObject>(results, results,
+                CancellationToken.None, x =>
             {
                 string deviceId = x["DeviceID"]?.ToString() ?? string.Empty;
                 if (deviceId.Length > 0)
                     map[deviceId] = (
                         x["DriverProviderName"]?.ToString() ?? string.Empty,
                         x["DriverVersion"]?.ToString() ?? string.Empty);
-            }
+            });
         }
         catch (Exception ex)
         {
@@ -644,18 +720,26 @@ public static class NativeSystemProbeService
                     RedirectStandardError = true
                 }
             };
+            var outputBuffer = new StringBuilder();
+            p.OutputDataReceived += (_, e) => { if (e.Data != null) lock (outputBuffer) outputBuffer.AppendLine(e.Data); };
+            // Drain stderr even when not used, to avoid blocking the child process.
+            p.ErrorDataReceived += (_, _) => { };
             if (!p.Start())
             {
                 LogService.Error("storage", "TRIM state probe failed to start fsutil.exe");
                 return false;
             }
-            string output = p.StandardOutput.ReadToEnd();
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
             if (!p.WaitForExit(3000))
             {
                 try { p.Kill(true); } catch { }
                 LogService.Error("storage", "TRIM state probe timed out", new System.TimeoutException("fsutil.exe behavior query DisableDeleteNotify exceeded 3 seconds."));
                 return false;
             }
+            p.WaitForExit(); // flush pending async output events after exit
+            string output;
+            lock (outputBuffer) output = outputBuffer.ToString();
             bool value = p.ExitCode == 0 && output.Contains("= 0", StringComparison.OrdinalIgnoreCase);
             lock (ProbeCacheLock) { _trimCache = value; _trimCacheAt = DateTime.UtcNow; }
             PersistentHardwareCacheService.WriteMachineStable(PersistentTrimKey, new TrimPersistentState(value));
@@ -675,7 +759,9 @@ public static class NativeSystemProbeService
         {
             bool valid = VerifyAuthenticode(path);
 #pragma warning disable SYSLIB0057
-            using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
+            // Release the intermediate native certificate handle as well.
+            using var signedFileCertificate = X509Certificate.CreateFromSignedFile(path);
+            using var cert = new X509Certificate2(signedFileCertificate);
 #pragma warning restore SYSLIB0057
             return (valid ? "Valid" : "Invalid", cert.Subject ?? string.Empty);
         }
@@ -811,6 +897,7 @@ public static class NativeSystemProbeService
         }
     }
 
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("wintrust.dll", ExactSpelling = true, SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern uint WinVerifyTrust(IntPtr hwnd, ref Guid pgActionID, ref WinTrustData pWVTData);
 

@@ -1,8 +1,10 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Management;
+using System.Net.NetworkInformation;
 using System.ServiceProcess;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,7 +13,20 @@ using Windows.Management.Deployment;
 
 namespace SpankyhoOptimizer.Services;
 
-public sealed record RepairDiagnostic(string Area, string State, bool Healthy, string Detail, string? Expected = null, string? Actual = null);
+[method: System.Text.Json.Serialization.JsonConstructor]
+public sealed record RepairDiagnostic(string Area, string State, bool Healthy, string Detail, string? Expected = null, string? Actual = null)
+{
+    public RepairDiagnostic(string area, string state, bool healthy, string detail)
+        : this(area, state, healthy, detail, null, null) { }
+
+    public void Deconstruct(out string area, out string state, out bool healthy, out string detail)
+    {
+        area = Area;
+        state = State;
+        healthy = Healthy;
+        detail = Detail;
+    }
+}
 
 public static class SystemRepairDiagnosticsService
 {
@@ -19,6 +34,7 @@ public static class SystemRepairDiagnosticsService
     private static IReadOnlyList<RepairDiagnostic>? _scanCache;
     private static DateTime _scanCacheAt;
     private static Task<IReadOnlyList<RepairDiagnostic>>? _scanInFlight;
+    private static int _scanGeneration;
 
     public static async Task<IReadOnlyList<RepairDiagnostic>> ScanAsync(CancellationToken token = default)
     {
@@ -28,19 +44,31 @@ public static class SystemRepairDiagnosticsService
 
     public static async Task<IReadOnlyList<RepairDiagnostic>> ScanCachedAsync(CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
+        Task<IReadOnlyList<RepairDiagnostic>> task;
         lock (CacheLock)
         {
-            if (_scanCache != null && DateTime.UtcNow - _scanCacheAt < TimeSpan.FromSeconds(20)) return _scanCache;
-            _scanInFlight ??= LoadCachedCoreAsync();
+            if (_scanCache != null && DateTime.UtcNow - _scanCacheAt < TimeSpan.FromSeconds(20))
+                return _scanCache;
+            int generation = _scanGeneration;
+            // Starting worker IPC may have a synchronous pre-await prelude.
+            // Keep it off the caller's WinUI thread and outside CacheLock;
+            // the shared Task still guarantees one in-flight scan per generation.
+            _scanInFlight ??= Task.Run(() => LoadCachedCoreAsync(generation));
+            task = _scanInFlight;
         }
-        Task<IReadOnlyList<RepairDiagnostic>> task;
-        lock (CacheLock) task = _scanInFlight!;
         return await task.WaitAsync(token).ConfigureAwait(false);
     }
 
     public static void InvalidateCache()
     {
-        lock (CacheLock) { _scanCache = null; _scanCacheAt = default; }
+        lock (CacheLock)
+        {
+            _scanGeneration++;
+            _scanCache = null;
+            _scanCacheAt = default;
+            _scanInFlight = null;
+        }
     }
 
     public static async Task<RepairDiagnostic?> VerifyAreaAsync(string area, CancellationToken token = default)
@@ -50,27 +78,158 @@ public static class SystemRepairDiagnosticsService
         return fresh.FirstOrDefault(x => string.Equals(x.Area, area, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task<IReadOnlyList<RepairDiagnostic>> LoadCachedCoreAsync()
+    private static async Task<IReadOnlyList<RepairDiagnostic>> LoadCachedCoreAsync(
+        int generation, Func<Task<IReadOnlyList<RepairDiagnostic>>>? readOnlyTestLoader = null)
     {
         try
         {
-            var result = await ScanAsync(CancellationToken.None).ConfigureAwait(false);
-            lock (CacheLock) { _scanCache = result; _scanCacheAt = DateTime.UtcNow; }
+            var result = await (readOnlyTestLoader?.Invoke() ??
+                ScanAsync(CancellationToken.None)).ConfigureAwait(false);
+            lock (CacheLock)
+            {
+                if (generation == _scanGeneration)
+                {
+                    _scanCache = result;
+                    _scanCacheAt = DateTime.UtcNow;
+                }
+            }
             return result;
         }
-        finally { lock (CacheLock) _scanInFlight = null; }
+        finally
+        {
+            // A failed scan must not poison the next request; an invalidated
+            // old scan must not clear the newer generation's in-flight work.
+            lock (CacheLock)
+                if (generation == _scanGeneration) _scanInFlight = null;
+        }
+    }
+
+    internal static async Task RunParallelScanCacheSmokeAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        // Worker IPC must deserialize the six-field record even though it also
+        // offers a four-argument compatibility constructor.
+        var jsonProbe = new RepairDiagnostic("IPC", "Ready", true, "json", "expected", "actual");
+        var roundTrip = System.Text.Json.JsonSerializer.Deserialize<RepairDiagnostic>(
+            System.Text.Json.JsonSerializer.Serialize(jsonProbe));
+        if (roundTrip != jsonProbe)
+            throw new InvalidOperationException("RepairDiagnostic worker JSON roundtrip failed.");
+        InvalidateCache();
+
+        // Simulate an obsolete delayed worker result and a newer scan without
+        // reading or changing actual system configuration.
+        var obsoleteSignal = new TaskCompletionSource<IReadOnlyList<RepairDiagnostic>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var currentSignal = new TaskCompletionSource<IReadOnlyList<RepairDiagnostic>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<IReadOnlyList<RepairDiagnostic>> obsolete;
+        Task<IReadOnlyList<RepairDiagnostic>> current;
+        lock (CacheLock)
+        {
+            obsolete = LoadCachedCoreAsync(_scanGeneration, () => obsoleteSignal.Task);
+            _scanInFlight = obsolete;
+        }
+        InvalidateCache();
+        lock (CacheLock)
+        {
+            current = LoadCachedCoreAsync(_scanGeneration, () => currentSignal.Task);
+            _scanInFlight = current;
+        }
+        var oldValue = new RepairDiagnostic("Old", "Obsolete", false, "");
+        var newValue = new RepairDiagnostic("New", "Ready", true, "");
+        obsoleteSignal.SetResult([oldValue]);
+        _ = await obsolete.ConfigureAwait(false);
+        lock (CacheLock)
+        {
+            if (_scanCache != null || !ReferenceEquals(_scanInFlight, current))
+                throw new InvalidOperationException("Obsolete repair scan overwrote current generation.");
+        }
+        currentSignal.SetResult([newValue]);
+        _ = await current.ConfigureAwait(false);
+        lock (CacheLock)
+        {
+            if (_scanCache == null || _scanCache[0].Area != "New" || _scanInFlight != null)
+                throw new InvalidOperationException("Latest repair scan did not persist correctly.");
+        }
+
+        // Failed work must clear its in-flight slot so a new scan can retry.
+        InvalidateCache();
+        var failureSignal = new TaskCompletionSource<IReadOnlyList<RepairDiagnostic>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<IReadOnlyList<RepairDiagnostic>> failed;
+        lock (CacheLock)
+        {
+            failed = LoadCachedCoreAsync(_scanGeneration, () => failureSignal.Task);
+            _scanInFlight = failed;
+        }
+        failureSignal.SetException(new InvalidOperationException("synthetic failure"));
+        try { _ = await failed.ConfigureAwait(false); }
+        catch (InvalidOperationException ex) when (ex.Message == "synthetic failure") { }
+        lock (CacheLock)
+        {
+            if (_scanInFlight != null || _scanCache != null)
+                throw new InvalidOperationException("Failed scan left poisoned cache.");
+        }
+        InvalidateCache();
+
+        // Real read-only parallel path, with stable seven-area display order.
+        var sw = Stopwatch.StartNew();
+        using var process = Process.GetCurrentProcess();
+        TimeSpan cpuBefore = process.TotalProcessorTime;
+        long allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+        var items = await ScanLocalAsync(token).ConfigureAwait(false);
+        string[] expected = ["Windows Update", "Microsoft Store", "Explorer", "Network",
+            "Škodlivé / zastaralé úpravy", "Game Bar / Capture", "GPU driver"];
+        if (items.Count != expected.Length ||
+            items.Where((x, i) => !string.Equals(x.Area, expected[i],
+                StringComparison.OrdinalIgnoreCase)).Any())
+            throw new InvalidOperationException("Repair scan area order/content changed.");
+        process.Refresh();
+        double cpuMs = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
+        long allocatedKb = Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore) / 1024;
+        LogService.Info("performance", "REPAIR_SCAN_PARALLEL_SMOKE_OK areas=" +
+            items.Count + " wallMs=" + sw.ElapsedMilliseconds +
+            $" cpuMs={cpuMs:F2} allocatedKB={allocatedKb} " +
+            $"wsMB={process.WorkingSet64 / 1048576d:F2} privateMB={process.PrivateMemorySize64 / 1048576d:F2}" +
+            " generationGuard=true failedRetry=true writes=false");
+
+        // Additional read-only cache semantics regression; run after the
+        // timed scan so network cache tests do not skew its measured wall/CPU.
+        await NetworkDiagnosticsService.VerifyCacheReadOnlyAsync(token).ConfigureAwait(false);
     }
 
     internal static async Task<IReadOnlyList<RepairDiagnostic>> ScanLocalAsync(CancellationToken token = default)
     {
-        var result = new List<RepairDiagnostic>();
-        result.Add(CheckServicePair("Windows Update", "wuauserv", "BITS"));
-        result.Add(CheckStore());
-        result.Add(CheckExplorer());
-        result.Add(await CheckNetworkAsync(token));
-        result.Add(await CheckBadTweaksAsync(token));
-        result.Add(CheckGameBar());
-        result.Add(await CheckNvidiaAsync(token));
+        token.ThrowIfCancellationRequested();
+        var sw = Stopwatch.StartNew();
+        // Windows PackageManager, SCM and explorer enumeration were synchronous
+        // before the first await, delaying every independent diagnostic probe.
+        // Run those three native providers off the caller thread and overlap them
+        // with network, BCD, Task Scheduler and GPU reads. Keep display order.
+        Task<RepairDiagnostic> service = Task.Run(
+            () => CheckServicePair("Windows Update", "wuauserv", "BITS"), token);
+        Task<RepairDiagnostic> store = Task.Run(CheckStore, token);
+        Task<RepairDiagnostic> explorer = Task.Run(CheckExplorer, token);
+        // Both async methods perform synchronous provider setup before their
+        // first await (ping initialization, BCD/WMI/registry probes). Schedule
+        // them off the caller thread to bound first-dispatch latency.
+        Task<RepairDiagnostic> network = Task.Run(() => CheckNetworkAsync(token), token);
+        Task<RepairDiagnostic> drift = Task.Run(() => CheckBadTweaksAsync(token), token);
+        var gameBar = CheckGameBar();
+        Task<RepairDiagnostic> graphics = CheckNvidiaAsync(token);
+        double dispatchMs = sw.Elapsed.TotalMilliseconds;
+        RepairDiagnostic[] completed = await Task.WhenAll(
+            service, store, explorer, network, drift, graphics).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        // Preserve the display order while using the awaited results directly.
+        // Consume the values returned by the completed aggregate, without synchronous accessors.
+        var result = new[]
+        {
+            completed[0], completed[1], completed[2], completed[3],
+            completed[4], gameBar, completed[5]
+        };
+        LogService.Info("performance", "REPAIR_SCAN_PARALLEL ms=" +
+            sw.ElapsedMilliseconds + $" dispatchMs={dispatchMs:F2} areas=" + result.Length);
         return result;
     }
 
@@ -121,7 +280,14 @@ public static class SystemRepairDiagnosticsService
 
     private static async Task<RepairDiagnostic> CheckNetworkAsync(CancellationToken token)
     {
-        var r = await NetworkDiagnosticsService.MeasureAsync(token: token);
+        // Health status still uses all eight samples and the same 25% loss
+        // threshold; only its pacing is shorter than the 80ms jitter/latency
+        // benchmark. Preserve distinct cache keys for different pacing.
+        var sw = Stopwatch.StartNew();
+        var r = await NetworkDiagnosticsService.MeasureAsync(
+            samples: 8, token: token, intervalMs: 30).ConfigureAwait(false);
+        LogService.Info("performance",
+            $"REPAIR_NETWORK_PROBE ms={sw.ElapsedMilliseconds} samples={r.Sent} intervalMs=30");
         bool ok = r.Received > 0 && r.LossPercent < 25;
         string actual = r.Received > 0 ? $"{r.Target} • {r.AvgMs:0.0} ms • ztráta {r.LossPercent:0.0} %" : "Bez odpovědi";
         return new("Network", ok ? "Online" : "Needs attention", ok,
@@ -129,19 +295,42 @@ public static class SystemRepairDiagnosticsService
             "Síť odpovídá a ztrátovost je pod 25 %", actual);
     }
 
+    internal static IReadOnlyList<string> GetDisabledActiveNetworkBindings(CancellationToken token = default) =>
+        NativeNetworkBindingRepairService.ReadDisabled(token);
+
     private static async Task<RepairDiagnostic> CheckBadTweaksAsync(CancellationToken token)
     {
         var issues = new List<string>();
+        bool transitionUnknown = false;
 
-        var binding = await ProcessRunner.RunAsync(
-            "powershell.exe",
-            "-NoProfile -Command \"Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { $n=$_.Name; Get-NetAdapterBinding -Name $n | Where-Object { ($_.ComponentID -eq 'ms_tcpip6' -or $_.ComponentID -eq 'ms_pacer') -and -not $_.Enabled } | ForEach-Object { $n + ':' + $_.ComponentID } }\"",
-            TimeSpan.FromSeconds(20), token).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(binding.StdOut))
-            issues.AddRange(binding.StdOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(x => "Binding " + x.Trim()));
+        // Start independent read-only providers once, while evaluating cheap
+        // registry flags. They overlap WMI, BCD, netsh and TaskScheduler COM
+        // latency rather than serially waiting between queries.
+        var bindingProbe = Task.Run(() => GetDisabledActiveNetworkBindings(token), token);
+        var bcdProbe = BcdEditStateService.GetCurrentAsync(token);
+        var transitionProbe = NetworkTransitionStateService.GetAsync(token);
+        var maintenanceProbe = new TaskSchedulerService().GetBasicAsync(false, token);
+        // Overlap independent memory-state probes with the registry/service inventory.
+        // Both tasks are observed below even when a provider is unavailable.
+        var compressionProbe = WindowsActions.GetMemoryCompressionAsync(token);
+        var memoryProbe = MemoryStateService.ReadAsync(token);
 
-        string bcd = await BcdEditStateService.GetCurrentAsync(token).ConfigureAwait(false);
+        // Read Microsoft_NetAdapterBindingSettingData through Windows WMI directly.
+        // Avoid launching powershell.exe for an ordinary diagnostic probe.
+        try
+        {
+            issues.AddRange(await bindingProbe.ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            // An unavailable WMI provider must not abort unrelated repair diagnostics
+            // or be reported as an incorrectly healthy network configuration.
+            LogService.Info("repair", "Native network binding query unavailable: " + ex.Message);
+            issues.Add("Network binding status could not be verified");
+        }
+
+        string bcd = await bcdProbe.ConfigureAwait(false);
         if (System.Text.RegularExpressions.Regex.IsMatch(bcd, @"(?im)^\s*disabledynamictick\s+Yes\s*$") ||
             System.Text.RegularExpressions.Regex.IsMatch(bcd, @"(?im)^\s*useplatformclock\s+(Yes|True|No|False)\s*$"))
             issues.Add("BCD timer override (Dynamic Tick / HPET)");
@@ -214,27 +403,33 @@ public static class SystemRepairDiagnosticsService
         }
         using (var control = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control"))
         {
-            if (int.TryParse(control?.GetValue("WaitToKillServiceTimeout")?.ToString(), out int waitSvc) && waitSvc < 20000)
-                issues.Add("WaitToKillServiceTimeout aggressive override=" + waitSvc);
+            if (int.TryParse(control?.GetValue("WaitToKillServiceTimeout")?.ToString(), out int waitSvc) &&
+                waitSvc != WindowsDefaultGuardService.ServiceShutdownDefaultMs)
+                issues.Add("WaitToKillServiceTimeout non-default override=" + waitSvc);
+            if (control?.GetValue("SvcHostSplitThresholdInKB") is int split &&
+                unchecked((uint)split) == uint.MaxValue)
+                issues.Add("SvcHostSplitThresholdInKB forces shared service hosts (0xFFFFFFFF)");
         }
 
         try
         {
-            string memoryCompression = await WindowsActions.GetMemoryCompressionAsync(token).ConfigureAwait(false);
+            string memoryCompression = await compressionProbe.ConfigureAwait(false);
             if (!memoryCompression.Contains("True", StringComparison.OrdinalIgnoreCase))
                 issues.Add("Memory Compression disabled");
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { }
 
         try
         {
-            var memory = await MemoryStateService.ReadAsync(token).ConfigureAwait(false);
+            var memory = await memoryProbe.ConfigureAwait(false);
             using var control = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control");
             int value = Convert.ToInt32(control?.GetValue("SvcHostSplitThresholdInKB") ?? 0);
             int ramKb = checked((int)Math.Round(memory.TotalRamGb * 1024d * 1024d));
             if (value > 0 && ramKb > 0 && Math.Abs((long)value - ramKb) <= Math.Max(65536L, ramKb / 20L))
                 issues.Add("SvcHostSplitThresholdInKB RAM-sized legacy override");
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { }
 
         foreach (string serviceName in new[] { "DoSvc", "UsoSvc", "WaaSMedicSvc", "StorSvc", "ClipSVC", "InstallService", "LanmanServer", "PolicyAgent", "IKEEXT", "AppReadiness" })
@@ -266,55 +461,38 @@ public static class SystemRepairDiagnosticsService
 
         try
         {
-            var transition = await NetworkTransitionStateService.GetAsync(token).ConfigureAwait(false);
-            string combined = transition.Teredo.StdOut + "\n" + transition.Isatap.StdOut + "\n" +
-                              transition.SixToFour.StdOut + "\n" + transition.Privacy.StdOut + "\n" + transition.Global.StdOut;
-            if (System.Text.RegularExpressions.Regex.IsMatch(combined, @"(?im)(teredo|isatap|6to4|privacy|temporary|randomize).*?(disabled|zakáz|vypnut)"))
+            var transition = await transitionProbe.ConfigureAwait(false);
+            // Preserve native labels rather than splitting localized netsh
+            // output; a failed query is unknown, never silently treated as clean.
+            string combined = transition.Combined.StdOut;
+            if (!transition.Combined.Success || string.IsNullOrWhiteSpace(combined))
+                transitionUnknown = true;
+            else if (System.Text.RegularExpressions.Regex.IsMatch(combined,
+                         @"(?im)(teredo|isatap|6to4|privacy|temporary|randomize).*?(disabled|zakáz|vypnut)"))
                 issues.Add("IPv6 transition/privacy legacy disable");
         }
-        catch { }
-
-        foreach (var (hive, path, valueName, label) in new[]
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex)
         {
-            (RegistryHive.LocalMachine, @"SOFTWARE\Policies\Mozilla\Firefox", "NetworkPrediction", "Firefox policy NetworkPrediction"),
-            (RegistryHive.LocalMachine, @"SOFTWARE\Policies\Google\Chrome", "NetworkPredictionOptions", "Chrome policy NetworkPrediction"),
-            (RegistryHive.LocalMachine, @"SOFTWARE\Policies\Microsoft\Edge", "NetworkPredictionOptions", "Edge policy NetworkPrediction"),
-            (RegistryHive.LocalMachine, @"SOFTWARE\Policies\BraveSoftware\Brave", "NetworkPredictionOptions", "Brave policy NetworkPrediction"),
-            (RegistryHive.LocalMachine, @"SOFTWARE\Policies\Vivaldi", "NetworkPredictionOptions", "Vivaldi policy NetworkPrediction")
-        })
-        {
-            using RegistryKey? baseKey = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64);
-            using RegistryKey? key = baseKey.OpenSubKey(path);
-            if (key?.GetValue(valueName) != null) issues.Add(label);
+            transitionUnknown = true;
+            LogService.Info("repair", "Read-only IPv6 transition query unavailable: " + ex.Message);
         }
 
         try
         {
-            var tasks = await new TaskSchedulerService().GetBasicAsync(false, token).ConfigureAwait(false);
-            foreach (var task in tasks.Where(IsCriticalMaintenanceTask).Where(x => !x.Enabled).Take(12))
+            var tasks = await maintenanceProbe.ConfigureAwait(false);
+            foreach (var task in tasks.Where(x => IsCriticalMaintenanceTask(x) && !x.Enabled).Take(12))
                 issues.Add("Disabled maintenance task: " + task.Path);
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { }
 
-        foreach (var profile in FirefoxAdvancedService.Profiles())
-        {
-            string file = Path.Combine(profile, "user.js");
-            if (!File.Exists(file)) continue;
-            string text = await File.ReadAllTextAsync(file, token).ConfigureAwait(false);
-            if (text.Contains("user_pref(\"network.prefetch-next\", false);", StringComparison.Ordinal) ||
-                text.Contains("user_pref(\"network.dns.disablePrefetch\", true);", StringComparison.Ordinal) ||
-                text.Contains("user_pref(\"network.dns.disablePrefetchFromHTTPS\", true);", StringComparison.Ordinal) ||
-                text.Contains("user_pref(\"network.http.speculative-parallel-limit\", 0);", StringComparison.Ordinal) ||
-                text.Contains("user_pref(\"browser.urlbar.speculativeConnect.enabled\", false);", StringComparison.Ordinal) ||
-                text.Contains("user_pref(\"browser.cache.disk.enable\", false);", StringComparison.Ordinal))
-            {
-                issues.Add("Firefox legacy performance prefs: " + Path.GetFileName(profile));
-            }
-        }
-
-        bool healthy = issues.Count == 0;
-        string actual = healthy ? "Bez nalezeného driftu" : string.Join(" • ", issues);
-        return new("Škodlivé / zastaralé úpravy", healthy ? "Clean" : "Needs repair", healthy,
+        bool healthy = issues.Count == 0 && !transitionUnknown;
+        string actual = issues.Count > 0 ? string.Join(" • ", issues) :
+            transitionUnknown ? "Stav IPv6 transition/privacy se nepodařilo ověřit" :
+            "Bez nalezeného driftu";
+        string status = healthy ? "Clean" : issues.Count > 0 ? "Needs repair" : "Unknown";
+        return new("Škodlivé / zastaralé úpravy", status, healthy,
             healthy ? "Nebyl nalezen tweak, který by zbytečně omezoval výkon nebo síť." : actual,
             "Výchozí bezpečné hodnoty bez agresivních override", actual);
     }
@@ -322,8 +500,7 @@ public static class SystemRepairDiagnosticsService
     private static bool IsCriticalMaintenanceTask(TaskInfo task)
     {
         return task.Path.Equals(@"\Microsoft\Windows\Defrag\ScheduledDefrag", StringComparison.OrdinalIgnoreCase) ||
-               task.Path.StartsWith(@"\Microsoft\Windows\UpdateAssistant\", StringComparison.OrdinalIgnoreCase) ||
-               task.Name.StartsWith("MicrosoftEdgeUpdateTask", StringComparison.OrdinalIgnoreCase);
+               task.Path.StartsWith(@"\Microsoft\Windows\UpdateAssistant\", StringComparison.OrdinalIgnoreCase);
     }
 
     private static RepairDiagnostic CheckGameBar()
@@ -360,36 +537,64 @@ public static class SystemRepairDiagnosticsService
         await RepairBadTweaksLocalAsync(token).ConfigureAwait(false);
     }
 
+    // The Windows Service Control Manager already has a trusted native wrapper.
+    // Read back every change instead of relying on localized sc.exe output.
+    private static void SetServiceStartModeNative(string name, uint startMode, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (startMode is not (2u or 3u))
+            throw new ArgumentOutOfRangeException(nameof(startMode), "Repair permits only Automatic or Manual.");
+        if (!NativeCore.ChangeServiceStartType(name, startMode, out int error))
+            throw new System.ComponentModel.Win32Exception(error, "Cannot restore service " + name);
+        int? actual = ServiceSafetyService.ReadStartType(name);
+        if (actual != startMode)
+            throw new InvalidOperationException("Service start-mode read-back mismatch: " + name +
+                " expected=" + startMode + " actual=" + (actual?.ToString() ?? "missing"));
+    }
+
+    internal static void VerifyNativeServiceRepairReadOnly()
+    {
+        // No write operations: validate the same registry/status providers as the
+        // real repair action, on the existing MMCSS Windows service.
+        using var controller = new ServiceController("MMCSS");
+        int? registryMode = ServiceSafetyService.ReadStartType("MMCSS");
+        if (registryMode == null || registryMode != (int)controller.StartType)
+            throw new InvalidOperationException("Native service state provider mismatch for MMCSS.");
+    }
+
     internal static async Task<WorkerAck> RepairBadTweaksLocalAsync(CancellationToken token = default)
     {
-        var binding = await ProcessRunner.RunAsync(
-            "powershell.exe",
-            "-NoProfile -Command \"Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { Enable-NetAdapterBinding -Name $_.Name -ComponentID ms_tcpip6 -Confirm:$false -ErrorAction SilentlyContinue; Enable-NetAdapterBinding -Name $_.Name -ComponentID ms_pacer -Confirm:$false -ErrorAction SilentlyContinue }\"",
-            TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
-        if (!binding.Success)
-            throw new InvalidOperationException(binding.StdErr + binding.StdOut);
+        // Explicit repair only: WMI's native binding Enable method replaces
+        // the external PowerShell pipeline. Verify changes and roll back any
+        // partially changed binding if the provider reports an error.
+        await Task.Run(() => NativeNetworkBindingRepairService.EnableDisabled(token), token)
+            .ConfigureAwait(false);
 
         foreach (string arg in new[] { "/deletevalue disabledynamictick", "/deletevalue useplatformclock" })
         {
             var bcd = await ProcessRunner.RunAsync("bcdedit.exe", arg, TimeSpan.FromSeconds(20), token).ConfigureAwait(false);
-            if (!bcd.Success && bcd.ExitCode == 0)
-                throw new InvalidOperationException(bcd.StdErr + bcd.StdOut);
+            var current = await ProcessRunner.RunAsync("bcdedit.exe", "/enum {current}", TimeSpan.FromSeconds(20), token).ConfigureAwait(false);
+            if (!current.Success) throw new InvalidOperationException(current.StdErr + current.StdOut);
+            string name = arg["/deletevalue ".Length..];
+            if (System.Text.RegularExpressions.Regex.IsMatch(current.StdOut,
+                @"(?im)^\s*" + System.Text.RegularExpressions.Regex.Escape(name) + @"\s+"))
+                throw new InvalidOperationException("BCD read-back nepotvrdil odstranění " + name + ": " + bcd.StdErr + bcd.StdOut);
         }
         BcdEditStateService.Invalidate();
 
         using (var boot = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Microsoft\Dfrg\BootOptimizeFunction", true))
             boot.SetValue("Enable", "Y", RegistryValueKind.String);
 
-        using (var game = Registry.CurrentUser.CreateSubKey(@"System\GameConfigStore", true))
-            game.DeleteValue("GameDVR_FSEBehaviorMode", false);
+        // Fullscreen compatibility override is managed by the user's
+        // approved Windows Default Guard group, with rollback journaling.
         using (var dwm = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Microsoft\Windows\Dwm", true))
         {
             dwm.DeleteValue("OverlayTestMode", false);
             dwm.DeleteValue("EnableOverlay", false);
         }
 
-        using (var graphics = Registry.LocalMachine.CreateSubKey(@"SYSTEM\CurrentControlSet\Control\GraphicsDrivers", true))
-            graphics.DeleteValue("TdrDelay", false);
+        // TdrDelay is repaired by Windows Default Guard only when approved,
+        // using its precise type check, write-ahead journal and readback.
 
         foreach (string thumbPath in new[]
         {
@@ -401,32 +606,38 @@ public static class SystemRepairDiagnosticsService
             thumb.SetValue("Autorun", 0, RegistryValueKind.DWord);
         }
 
-        var mmcssCfg = await ProcessRunner.RunAsync("sc.exe", "config MMCSS start= auto", TimeSpan.FromSeconds(20), token).ConfigureAwait(false);
-        if (!mmcssCfg.Success) throw new InvalidOperationException(mmcssCfg.StdErr + mmcssCfg.StdOut);
-        _ = await ProcessRunner.RunAsync("sc.exe", "start MMCSS", TimeSpan.FromSeconds(20), token).ConfigureAwait(false);
-
-        using (var mm = Registry.LocalMachine.CreateSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management", true))
-            mm.SetValue("DisablePagingExecutive", 0, RegistryValueKind.DWord);
-        using (var multimedia = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile", true))
-            multimedia.SetValue("SystemResponsiveness", 20, RegistryValueKind.DWord);
-        using (var desktop = Registry.CurrentUser.OpenSubKey(@"Control Panel\Desktop", writable: true))
+        // Native Service Control Manager avoids launching sc.exe for an idempotent repair.
+        SetServiceStartModeNative("MMCSS", 2u, token);
+        await Task.Run(() =>
         {
-            desktop?.DeleteValue("AutoEndTasks", false);
-            desktop?.DeleteValue("HungAppTimeout", false);
-            desktop?.DeleteValue("WaitToKillAppTimeout", false);
-        }
-        using (var control = Registry.LocalMachine.CreateSubKey(@"SYSTEM\CurrentControlSet\Control", true))
-            control.SetValue("WaitToKillServiceTimeout", "20000", RegistryValueKind.String);
+            token.ThrowIfCancellationRequested();
+            using var mmcss = new ServiceController("MMCSS");
+            mmcss.Refresh();
+            if (mmcss.Status == ServiceControllerStatus.Stopped) mmcss.Start();
+            if (mmcss.Status is ServiceControllerStatus.Stopped or ServiceControllerStatus.StartPending)
+                mmcss.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(20));
+            mmcss.Refresh();
+            if (mmcss.Status != ServiceControllerStatus.Running)
+                throw new InvalidOperationException("MMCSS se nepodařilo spustit: " + mmcss.Status);
+        }, token).ConfigureAwait(false);
+
+
+
+
+        // One approved source of truth for shared Windows-default registry
+        // values. The guard journals BEFORE changes, verifies each readback
+        // and respects disabled groups. Fixer does not bypass user consent.
+        WindowsDefaultGuardService.RepairApprovedOnce(token);
         await WindowsActions.SetMemoryCompressionAsync(true, token).ConfigureAwait(false);
 
         try
         {
             var memory = await MemoryStateService.ReadAsync(token).ConfigureAwait(false);
-            using var control = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control", writable: true);
+            using var control = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control", writable: false);
             int value = Convert.ToInt32(control?.GetValue("SvcHostSplitThresholdInKB") ?? 0);
             int ramKb = checked((int)Math.Round(memory.TotalRamGb * 1024d * 1024d));
-            if (value > 0 && ramKb > 0 && Math.Abs((long)value - ramKb) <= Math.Max(65536L, ramKb / 20L))
-                control?.DeleteValue("SvcHostSplitThresholdInKB", false);
+            if (WindowsDefaultGuardService.IsLegacyRamSizedSvcHostOverride(value, ramKb))
+                WindowsDefaultGuardService.RestoreLegacyRamSizedSvcHostOverride(value, token);
         }
         catch { }
 
@@ -447,9 +658,7 @@ public static class SystemRepairDiagnosticsService
             if (ServiceSafetyService.ReadStartType(serviceName) != 4)
                 continue;
 
-            var svc = await ProcessRunner.RunAsync("sc.exe", $"config {serviceName} start= {targetStart}", TimeSpan.FromSeconds(20), token).ConfigureAwait(false);
-            if (!svc.Success)
-                throw new InvalidOperationException(serviceName + ": " + svc.StdErr + svc.StdOut);
+            SetServiceStartModeNative(serviceName, targetStart == "auto" ? 2u : 3u, token);
         }
 
         foreach (string args in new[]
@@ -484,19 +693,6 @@ public static class SystemRepairDiagnosticsService
                 au?.DeleteValue("NoAutoUpdate", false);
         }
 
-        foreach (var (path, valueName) in new[]
-        {
-            (@"SOFTWARE\Policies\Mozilla\Firefox", "NetworkPrediction"),
-            (@"SOFTWARE\Policies\Google\Chrome", "NetworkPredictionOptions"),
-            (@"SOFTWARE\Policies\Microsoft\Edge", "NetworkPredictionOptions"),
-            (@"SOFTWARE\Policies\BraveSoftware\Brave", "NetworkPredictionOptions"),
-            (@"SOFTWARE\Policies\Vivaldi", "NetworkPredictionOptions")
-        })
-        {
-            using RegistryKey? key = Registry.LocalMachine.OpenSubKey(path, writable: true);
-            key?.DeleteValue(valueName, false);
-        }
-
         var scheduler = new TaskSchedulerService();
         var allTasks = await scheduler.GetBasicAsync(false, token).ConfigureAwait(false);
         var disabledCritical = allTasks.Where(IsCriticalMaintenanceTask).Where(x => !x.Enabled)
@@ -507,7 +703,6 @@ public static class SystemRepairDiagnosticsService
             if (errors.Length > 0) throw new InvalidOperationException(string.Join(Environment.NewLine, errors.Take(8)));
         }
 
-        await FirefoxAdvancedService.ApplyAsync(webRender: false, diskCacheOff: false, speculativeOff: false, dohMode2: false).ConfigureAwait(false);
         InvalidateCache();
         return new WorkerAck();
     }
@@ -520,8 +715,10 @@ public static class SystemRepairDiagnosticsService
 
     internal static async Task<WorkerAck> FlushNetworkLocalAsync(CancellationToken token = default)
     {
-        await ProcessRunner.RunAsync("ipconfig.exe", "/flushdns", TimeSpan.FromSeconds(20), token);
-        await ProcessRunner.RunAsync("netsh.exe", "winsock reset", TimeSpan.FromSeconds(25), token);
+        var dns = await ProcessRunner.RunAsync("ipconfig.exe", "/flushdns", TimeSpan.FromSeconds(20), token);
+        if (!dns.Success) throw new InvalidOperationException(dns.StdErr + dns.StdOut);
+        var winsock = await ProcessRunner.RunAsync("netsh.exe", "winsock reset", TimeSpan.FromSeconds(25), token);
+        if (!winsock.Success) throw new InvalidOperationException(winsock.StdErr + winsock.StdOut);
         return new WorkerAck();
     }
 }

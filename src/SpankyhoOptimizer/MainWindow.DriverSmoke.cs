@@ -9,14 +9,14 @@ public sealed partial class MainWindow
     public async Task RunDriversUiSmokeAsync()
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        await ShowSectionAsync("drivers");
+        await ShowSectionAsync("ai-runtime");
 
         if (_lastNavigationErrorId != null)
-            throw new InvalidOperationException("Drivers -> AI Runtime navigation error: " + _lastNavigationErrorId);
+            throw new InvalidOperationException("AI Runtime navigation error: " + _lastNavigationErrorId);
         if (!string.Equals(_section, "ai-runtime", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Legacy Drivers route did not redirect to AI System Runtime.");
+            throw new InvalidOperationException("AI System Runtime route did not become active.");
         if (ContentStack.Children.Count == 0)
-            throw new InvalidOperationException("AI System Runtime rendered no content for legacy Drivers route.");
+            throw new InvalidOperationException("AI System Runtime rendered no content.");
 
         AiSystemRuntimeConfig cfg = AiSystemResourceManagerService.LoadConfig();
         if (!cfg.OptionalDevicesEnabled)
