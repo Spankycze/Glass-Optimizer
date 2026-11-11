@@ -51,8 +51,6 @@ public sealed partial class MainWindow
         LogService.Info("ai-system", AiSelfOptimizationService.RunHealthWriteThrottleSmoke());
         LogService.Info("ai-system", AiSharedDecisionContextService.RunPublishedPermissionSmoke());
         LogService.Info("ai-system", AiActivePowerRuntimeSummaryPolicy.RunStatusDescriptionSmoke());
-        LogService.Info("ai-system", AiGameGpuPriorityPolicy.RunFunctionalSmoke());
-        LogService.Info("ai-system", AiGameGpuPriorityService.RunCrossHostLeaseSmoke());
         LogService.Info("ai-system", AiPerformanceExperimentCoordinator.RunFunctionalSmoke());
         LogService.Info("ai-system", AiTweakMonotonicTimingPolicy.RunFunctionalSmoke());
         LogService.Info("ai-system", AiPendingTrialSelectionPolicy.RunMaintenanceLeaseLifecycleSmoke());

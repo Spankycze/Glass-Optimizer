@@ -118,51 +118,6 @@ internal static class AiPowerTelemetryEvidenceSmoke
         Check(!AiKnownGameProcessPolicy.IsKnownGame("cs2.exe --launch"), "command line rejected");
         Check(!AiKnownGameProcessPolicy.IsKnownGame("cs2.exe:stream"), "stream alias rejected");
 
-        // GPU priority is allowed only with independent foreground and
-        // workload agreement; background tasks must never gain priority.
-        Check(AiGameGpuPriorityPolicy.MayBoost(true, true, true, true, true, 123, 123),
-            "foreground game GPU admission");
-        Check(!AiGameGpuPriorityPolicy.MayBoost(true, true, true, true, true, 4, 4),
-            "system-reserved pid rejected");
-        Check(!AiGameGpuPriorityPolicy.MayBoost(true, true, true, true, true, 0, 0),
-            "missing foreground pid rejected");
-        Check(!AiGameGpuPriorityPolicy.MayBoost(true, true, true, true, false, 123, 123),
-            "unknown executable rejected");
-        Check(!AiGameGpuPriorityPolicy.MayBoost(true, true, true, true, true, 123, 456),
-            "stale foreground pid rejected");
-        Check(!AiGameGpuPriorityPolicy.MayBoost(true, false, true, true, true, 123, 123),
-            "stale game telemetry rejected");
-        Check(!AiGameGpuPriorityPolicy.MayBoost(true, true, true, false, true, 123, 123),
-            "non-game workload rejected");
-        Check(!AiGameGpuPriorityPolicy.MayBoost(false, true, true, true, true, 123, 123),
-            "disabled priority rejects admission");
-        Check(AiGameGpuPriorityPolicy.ShouldRecheckOwned(
-            DateTime.UnixEpoch.AddSeconds(11), DateTime.UnixEpoch),
-            "owned GPU priority recheck at ten seconds");
-        Check(!AiGameGpuPriorityPolicy.ShouldRecheckOwned(
-            DateTime.UnixEpoch.AddSeconds(9), DateTime.UnixEpoch),
-            "owned GPU priority avoids unnecessary readback");
-
-        // Journal recovery must not mistake crafted ownership for authority.
-        Check(!AiGameGpuPriorityPolicy.ValidJournalOwnership(
-            4, DateTime.UtcNow.Ticks, @"C:\Games\cs2.exe", 2, 3),
-            "reserved journal PID rejected");
-        Check(!AiGameGpuPriorityPolicy.ValidJournalOwnership(
-            123, DateTime.UtcNow.Ticks, @"C:\Games\cs2.exe", 2, 5),
-            "realtime journal priority rejected");
-        Check(!AiGameGpuPriorityPolicy.ValidJournalOwnership(
-            123, DateTime.UtcNow.Ticks, @"C:\Games\cs2.exe", 1, 3),
-            "non-normal original priority rejected");
-        Check(!AiGameGpuPriorityPolicy.MayRestoreOwned(
-            false, true, AiGameGpuPriorityPolicy.AboveNormal),
-            "different process cannot be restored");
-        Check(!AiGameGpuPriorityPolicy.MayRestoreOwned(
-            true, false, AiGameGpuPriorityPolicy.AboveNormal),
-            "unreadable process priority cannot be restored");
-        Check(!AiGameGpuPriorityPolicy.MayRestoreOwned(
-            true, true, AiGameGpuPriorityPolicy.Normal),
-            "externally restored priority must be preserved");
-
         // 35-38: Actual thermal guard requires plausible sensor evidence.
         Check(AiPowerDemandPolicy.ShouldThermalGuard(false, 80, 35, 80),
             "real thermal protection retained");

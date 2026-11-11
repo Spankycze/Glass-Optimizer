@@ -332,13 +332,6 @@ public sealed partial class MainWindow
             enabled => SaveAiRuntimeConfigVerified(
                 c => c with { AutomaticProcessPriorityEnabled = enabled },
                 c => c.AutomaticProcessPriorityEnabled, enabled, restartAgent: true)));
-        scope.Children.Add(BuildRuntimeToggleRow(
-            "Automatická GPU priorita her",
-            "Aktivní hra: Normal → Above Normal; obnova při opuštění hry. FPS nejsou zaručené.",
-            systemConfig.AutomaticGameGpuPriorityEnabled,
-            enabled => SaveAiRuntimeConfigVerified(
-                c => c with { AutomaticGameGpuPriorityEnabled = enabled },
-                c => c.AutomaticGameGpuPriorityEnabled, enabled, restartAgent: true)));
         scope.Children.Add(QuickButton("Otevřít síť", () => ShowSectionAsync("network")));
         scope.Children.Add(new TextBlock
         {

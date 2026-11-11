@@ -24,7 +24,6 @@ public sealed record AiSystemRuntimeConfig(
     bool TweaksEnabled = true,
     bool PowerPlanEnabled = true,
     bool SecurityEnabled = true,
-    bool AutomaticGameGpuPriorityEnabled = true,
     bool AutomaticProcessPriorityEnabled = true,
     bool DisableWindowsSearchIndexing = false);
 
@@ -299,7 +298,6 @@ public sealed class AiSystemResourceManagerService
     private readonly AiOptionalTaskOptimizationService _optionalTasks = new();
     private readonly AiSystemInventoryCoverageService _fullInventory = new();
     private readonly AiThirdPartyIdleAutomationService _thirdPartyIdle = new();
-    private readonly AiGameGpuPriorityService _gameGpuPriority = new();
     private readonly AiForegroundWindowResponseProbe _foregroundResponse = new();
     private readonly AiTweakRuntimeService _tweakRuntime = new();
     private readonly AiSecurityHardeningService _securityRuntime = new();
@@ -654,19 +652,6 @@ public sealed class AiSystemResourceManagerService
         // Learn usage habits only from live, comparable evidence.
         if (cpuEvidenceAvailable && powerStatusFresh)
             _forecast.Record(DateTime.Now, !realIdle, gameActive);
-
-        // Independent foreground-game GPU scheduling. Reuse the existing
-        // FanAgent sample/tick, never add a process scanner or a timer.
-        // OFF, telemetry loss and journal failure restore owned priority.
-        _gameGpuPriority.Tick(
-            // A live GPU scheduling boost would confound EPP/service/task
-            // A/B/A evidence. Restore owned boost during other experiments.
-            AiGameGpuPriorityPolicy.MayEnableForTick(
-                config.Enabled && config.AutomaticGameGpuPriorityEnabled &&
-                _journalLoadHealthy && cpuEvidenceAvailable &&
-                powerTelemetryComparable && !_recoverInterruptedTrials,
-                AiPerformanceExperimentCoordinator.IsActive),
-            powerStatus, workload, now);
 
         if (!_journalLoadHealthy)
         {
@@ -1230,7 +1215,7 @@ public sealed class AiSystemResourceManagerService
     }
 
     // Dedicated CPU-priority OFF path: restore only AI-owned process state,
-    // without touching services, tasks, drivers, GPU priority or the power plan.
+    // without touching services, tasks, drivers or the power plan.
     public static void RestoreProcessPriorityNow()
     {
         var service = new AiSystemResourceManagerService();
@@ -1256,7 +1241,6 @@ public sealed class AiSystemResourceManagerService
             try
             {
                 service._processPriority.Tick(false, null, AiWorkloadClass.Unknown, DateTime.UtcNow);
-                service._gameGpuPriority.Tick(false, null, AiWorkloadClass.Unknown, DateTime.UtcNow);
                 await service.RestoreAllAsync(token).ConfigureAwait(false);
                 string? searchRestore = service._searchOptimization.Tick(enabled: false);
                 if (!string.IsNullOrEmpty(service._searchOptimization.LastError))
@@ -4910,4 +4894,3 @@ public sealed class AiSystemResourceManagerService
         return slash >= 0 && slash + 1 < path.Length ? path[(slash + 1)..] : path;
     }
 }
-
