@@ -261,7 +261,6 @@ public sealed partial class FanTrayIconService : IDisposable
         {
             data.uTimeoutOrVersion = NotifyIconVersion4;
             _ = Shell_NotifyIconW(NimSetVersion, ref data);
-            TryPromoteSelfIcon();
         }
         else
         {

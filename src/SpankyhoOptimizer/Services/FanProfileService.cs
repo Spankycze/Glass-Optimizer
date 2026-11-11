@@ -274,7 +274,32 @@ public static class FanProfileService
         return !string.IsNullOrWhiteSpace(current) &&
                Path.GetFileNameWithoutExtension(current).Equals("SpankyhoOptimizer", StringComparison.OrdinalIgnoreCase)
             ? current
-            : string.Empty;
+            : TryResolveInstalledMainAppPath();
+    }
+
+    private static string TryResolveInstalledMainAppPath()
+    {
+        const string uninstallPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SpankyhoOptimizer";
+
+        foreach (RegistryView view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+        {
+            try
+            {
+                using RegistryKey root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
+                using RegistryKey? uninstall = root.OpenSubKey(uninstallPath);
+                string location = Environment.ExpandEnvironmentVariables(
+                    uninstall?.GetValue("InstallLocation")?.ToString() ?? string.Empty).Trim().Trim('"');
+                string candidate = Path.Combine(location, "SpankyhoOptimizer.exe");
+                if (!string.IsNullOrWhiteSpace(location) && File.Exists(candidate))
+                    return candidate;
+            }
+            catch
+            {
+                // Registry access is only a fallback for opening the existing app.
+            }
+        }
+
+        return string.Empty;
     }
 
     private static bool IsCurrentProcessElevated()

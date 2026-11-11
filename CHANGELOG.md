@@ -1,5 +1,10 @@
 # Changelog
 
+## 17.6.0
+
+- Fixed tray double-click activation so it opens the Lian Li fan section through the existing single-instance handoff.
+- Hardened fallback resolution of the installed main application path when the tray agent runs outside the application directory.
+
 ## 17.5.0
 
 - Added automatic Czech or English selection from the Windows UI language when no saved language override exists.
