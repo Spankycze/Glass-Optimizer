@@ -67,33 +67,7 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 
 ## Screenshots
 
-### AI System Runtime
-
-![Glass Optimizer AI System Runtime](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-ai-runtime.png)
-
-### System, power and maintenance
-
-![Glass Optimizer system controls](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-system.png)
-
-![Glass Optimizer Power Plan](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-power.png)
-
-![Glass Optimizer startup management](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-startup.png)
-
-### Network, graphics and storage
-
-![Glass Optimizer network controls](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-network.png)
-
-![Glass Optimizer GPU and Display](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-gpu.png)
-
-![Glass Optimizer NVMe storage](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-storage.png)
-
-### Interface, personalization and fans
-
-![Glass Optimizer UI and Explorer](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-ui.png)
-
-![Glass Optimizer personalization](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-personalizace.png)
-
-![Glass Optimizer fan controls](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-fans.png)
+![Glass Optimizer overview](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview.png)
 
 ## Compatibility
 
