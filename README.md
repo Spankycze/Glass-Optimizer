@@ -5,16 +5,18 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.7.0"><img src="https://img.shields.io/badge/verified_release-17.7.0-19c7d8?style=for-the-badge" alt="Verified release 17.7.0"></a>
+  <a href="https://github.com/Spankycze/Glass-Optimizer/releases/latest"><img src="https://img.shields.io/github/v/release/Spankycze/Glass-Optimizer?label=verified%20release&amp;style=for-the-badge" alt="Latest verified release"></a>
   <a href="https://github.com/Spankycze/Glass-Optimizer/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-English-7c5cff?style=for-the-badge" alt="English changelog"></a>
   <a href="https://github.com/Spankycze/Glass-Optimizer/releases"><img src="https://img.shields.io/github/downloads/Spankycze/Glass-Optimizer/total?style=for-the-badge&label=downloads" alt="GitHub downloads"></a>
 </p>
 
 Glass Optimizer brings frequently used Windows controls into one compact desktop application. It combines a glass-style interface with guarded system changes, read-back checks and reversible operations where Windows allows them.
 
+Confirmation, selection, information and progress dialogs share a compact layout, clear actions and background blur. Tray notifications stay opaque for readability.
+
 ## Verified release
 
-[Download Glass Optimizer 17.7.0](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.7.0)
+[Download the latest verified Glass Optimizer release](https://github.com/Spankycze/Glass-Optimizer/releases/latest)
 
 The release provides the verified Compact installer, its SHA-256 checksum and the release changelog. The application can check official GitHub releases in the background approximately every five hours. Downloaded installers are verified before the existing elevated installation flow starts.
 
@@ -49,7 +51,7 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 
 ### Local automation and fan control
 
-- **AI System Runtime:** local automation for selected power-plan behavior, CPU process priorities, GPU game priorities, supported services and scheduled tasks.
+- **AI System Runtime:** local automation for selected power-plan behavior, CPU process priorities, supported services and scheduled tasks.
 - **AI Smart Runtime:** local fan telemetry analysis using temperature, power, load and RPM data; no cloud processing is required.
 - **Fan control:** available only when the supported Lian Li UNI FAN SL-Infinity USB controller `0CF2:A102` is detected. Hardware is checked again before RPM, PWM, RGB or AI-profile changes.
 
@@ -63,7 +65,7 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 
 ## Screenshots
 
-![Glass Optimizer fan controls](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-fans.png)
+![Glass Optimizer overview](https://raw.githubusercontent.com/Spankycze/Glass-Optimizer/main/screenshots/glass-optimizer-overview-purple.jpg)
 
 ## Compatibility
 
@@ -71,4 +73,4 @@ Glass Optimizer targets supported Windows desktop environments. Some internal in
 
 ## License and release notes
 
-See the [17.7.0 release](https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.7.0) for the verified installer and checksum. See [`CHANGELOG.md`](CHANGELOG.md) for the English release history.
+See the [latest release](https://github.com/Spankycze/Glass-Optimizer/releases/latest) for the verified installer and checksum. See [`CHANGELOG.md`](CHANGELOG.md) for the English release history.
