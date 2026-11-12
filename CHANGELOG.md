@@ -1,5 +1,36 @@
 # Changelog
 
+## 17.12.0
+
+- Unified confirmation, selection, information and progress dialogs with compact headings and shared actions.
+- Removed redundant nested cards and decorative dialog layers while preserving warnings, cancellation and verification.
+- Kept tray notifications opaque and reduced the pending-changes bar size.
+- Preserved updater retry, cancellation and installation read-back while refining the compact update popup.
+
+## 17.11.0
+
+- Hardened GitHub release publishing to keep exactly the Compact installer and changelog assets.
+- Updated the software updater to verify the installer through GitHub's asset SHA-256 digest.
+- Preserved verified download, installation and rollback checks.
+
+## 17.10.0
+
+- Added verified update-popup progress milestones for download, verification and silent-installer handoff.
+- Added driver installer completion read-back before reporting a successful update.
+- Preserved retry, cancellation, stale-progress and popup lifecycle protections.
+
+## 17.9.0
+
+- Added verified update-popup progress milestones for download, verification and silent-installer handoff.
+- Added driver installer completion read-back before reporting a successful update.
+- Preserved retry, cancellation, stale-progress and popup lifecycle protections.
+
+## 17.8.0
+
+- Removed automatic game GPU priority and its runtime policy, service, UI toggle and smoke coverage.
+- Preserved read-only Windows `GPU Priority` monitoring and all other guarded AI workload behavior.
+- Preserved rollback protection and the four AC `Never` power-plan values.
+
 ## 17.7.0
 
 - Fixed tray double-click activation so it opens the main application Overview through the existing single-instance handoff.
