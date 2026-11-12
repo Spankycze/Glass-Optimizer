@@ -114,26 +114,33 @@ public static class AppUpdateService
             if (!Version.TryParse(version, out _)) throw new InvalidDataException("GitHub release má neplatnou verzi.");
 
             string? installerUrl = null;
-            string? shaUrl = null;
+            string? sha256 = null;
             foreach (JsonElement asset in root.GetProperty("assets").EnumerateArray())
             {
                 string name = asset.GetProperty("name").GetString() ?? string.Empty;
                 string url = asset.GetProperty("browser_download_url").GetString() ?? string.Empty;
-                if (name.Equals(GithubInstallerName, StringComparison.OrdinalIgnoreCase)) installerUrl = url;
-                if (name.EndsWith("-SHA256.txt", StringComparison.OrdinalIgnoreCase)) shaUrl = url;
+                if (name.Equals(GithubInstallerName, StringComparison.OrdinalIgnoreCase))
+                {
+                    installerUrl = url;
+                    if (asset.TryGetProperty("digest", out JsonElement digest))
+                    {
+                        string value = digest.GetString() ?? string.Empty;
+                        if (value.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+                            sha256 = value["sha256:".Length..];
+                    }
+                }
             }
-            if (string.IsNullOrWhiteSpace(installerUrl) || string.IsNullOrWhiteSpace(shaUrl) ||
+            if (string.IsNullOrWhiteSpace(installerUrl) || string.IsNullOrWhiteSpace(sha256) ||
                 !installerUrl.StartsWith("https://github.com/Spankycze/Glass-Optimizer/releases/download/", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("GitHub release neobsahuje installer a SHA-256 asset.");
+                throw new InvalidDataException("GitHub release neobsahuje installer s SHA-256 digestem.");
 
-            string sha = await ReadGithubShaAsync(shaUrl, GithubInstallerName, token).ConfigureAwait(false);
             var manifest = new AppUpdateManifest(
                 version,
                 installerUrl,
-                sha,
+                sha256,
                 root.TryGetProperty("body", out JsonElement body) ? body.GetString() : null,
-                shaUrl,
-                "GITHUB-SHA256");
+                installerUrl,
+                "GITHUB-ASSET-SHA256");
             bool available = IsNewerVersion(manifest.Version, CurrentVersion);
             return new(true, available, CurrentVersion, manifest,
                 available ? $"Dostupná oficiální verze {RuntimeVersionInfo.PublicVersion(version)} z GitHubu." : "Používáš aktuální verzi.");
@@ -143,6 +150,20 @@ public static class AppUpdateService
             LogService.Error("update", "GitHub update check failed", ex);
             return new(false, false, CurrentVersion, null, "Kontrola GitHub aktualizace selhala: " + ex.Message);
         }
+    }
+
+    public static string SerializePopupManifest(AppUpdateManifest manifest) =>
+        Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(manifest, OptimizerJsonContext.Default.AppUpdateManifest));
+
+    public static AppUpdateManifest DeserializePopupManifest(string encoded)
+    {
+        byte[] payload = Convert.FromBase64String(encoded);
+        AppUpdateManifest manifest = JsonSerializer.Deserialize(payload, OptimizerJsonContext.Default.AppUpdateManifest)
+            ?? throw new InvalidDataException("Automatic update manifest is empty.");
+        if (!IsGithubManifest(manifest))
+            throw new InvalidDataException("Automatic update manifest is not an official GitHub release.");
+        VerifyManifestSignature(manifest);
+        return manifest;
     }
     internal static bool IsNewerVersion(string? remoteVersion, string? installedVersion) =>
         Version.TryParse(remoteVersion, out var remote) &&
@@ -178,12 +199,10 @@ public static class AppUpdateService
 
     internal static void VerifyManifestSignature(AppUpdateManifest manifest)
     {
-        if (string.Equals(manifest.SignatureAlgorithm, "GITHUB-SHA256", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(manifest.SignatureAlgorithm, "GITHUB-ASSET-SHA256", StringComparison.OrdinalIgnoreCase))
         {
-            if (string.IsNullOrWhiteSpace(manifest.Signature) ||
-                !manifest.Signature.StartsWith("https://github.com/Spankycze/Glass-Optimizer/releases/download/", StringComparison.OrdinalIgnoreCase) ||
-                !Regex.IsMatch(manifest.Sha256 ?? string.Empty, "^[0-9a-fA-F]{64}$"))
-                throw new InvalidDataException("GitHub update manifest nemá platný SHA-256 asset.");
+            if (!IsGithubManifest(manifest))
+                throw new InvalidDataException("GitHub update manifest nemá platný SHA-256 digest installeru.");
             return;
         }
         if (!string.Equals(manifest.SignatureAlgorithm, "RSA-PSS-SHA256", StringComparison.OrdinalIgnoreCase)
@@ -211,8 +230,6 @@ public static class AppUpdateService
     {
         if (!IsLocalBridgeManifest(manifest) && !IsGithubManifest(manifest))
             VerifyManifestSignature(manifest);
-        if (IsGithubManifest(manifest))
-            manifest = manifest with { Sha256 = await ReadGithubShaAsync(manifest.Signature!, GithubInstallerName, token).ConfigureAwait(false) };
         if (string.IsNullOrWhiteSpace(manifest.Sha256)) throw new InvalidDataException("Update manifest neobsahuje povinný SHA-256 hash.");
         // Validate the filename before touching the update cache at all.
         // DownloadAsync can be called independently of CheckAsync.
@@ -264,16 +281,32 @@ public static class AppUpdateService
     }
 
     private static bool IsGithubManifest(AppUpdateManifest manifest) =>
-        string.Equals(manifest.SignatureAlgorithm, "GITHUB-SHA256", StringComparison.OrdinalIgnoreCase);
+        string.Equals(manifest.SignatureAlgorithm, "GITHUB-ASSET-SHA256", StringComparison.OrdinalIgnoreCase) &&
+        !string.IsNullOrWhiteSpace(manifest.Signature) &&
+        Regex.IsMatch(manifest.Sha256 ?? string.Empty, "^[0-9a-fA-F]{64}$") &&
+        HasOfficialGithubReleaseBinding(manifest);
 
-    private static async Task<string> ReadGithubShaAsync(string url, string fileName, CancellationToken token)
+    private static bool HasOfficialGithubReleaseBinding(AppUpdateManifest manifest)
     {
-        if (!url.StartsWith("https://github.com/Spankycze/Glass-Optimizer/releases/download/", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("SHA asset není z oficiálního GitHub repozitáře.");
-        string text = await Client.GetStringAsync(url, token).ConfigureAwait(false);
-        Match match = Regex.Match(text, $@"(?im)^\s*([0-9a-f]{{64}})\s+[* ]?{Regex.Escape(fileName)}\s*$");
-        if (!match.Success) throw new InvalidDataException("GitHub SHA asset neobsahuje hash očekávaného installeru.");
-        return match.Groups[1].Value.ToUpperInvariant();
+        if (!Uri.TryCreate(manifest.Url, UriKind.Absolute, out Uri? installer) ||
+            !string.Equals(installer.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !installer.IsDefaultPort ||
+            !string.Equals(installer.Host, "github.com", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(manifest.Signature, manifest.Url, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        string[] installerParts = installer.AbsolutePath.Trim('/').Split('/');
+        if (installerParts.Length != 6 ||
+            !installerParts[0].Equals("Spankycze", StringComparison.OrdinalIgnoreCase) ||
+            !installerParts[1].Equals("Glass-Optimizer", StringComparison.OrdinalIgnoreCase) ||
+            !installerParts[2].Equals("releases", StringComparison.OrdinalIgnoreCase) ||
+            !installerParts[3].Equals("download", StringComparison.OrdinalIgnoreCase) ||
+            !installerParts[5].Equals(GithubInstallerName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return Version.TryParse(installerParts[4].TrimStart('v', 'V'), out Version? releaseVersion) &&
+            Version.TryParse(manifest.Version, out Version? manifestVersion) &&
+            releaseVersion.Equals(manifestVersion);
     }
 
     // Recheck the manifest version at the actual filesystem write boundary.
@@ -448,7 +481,7 @@ public static class AppUpdateService
         }
     }
 
-    public static void LaunchInstallerForUpdate(string path, string? expectedSha256 = null, bool silent = false)
+    public static Process LaunchInstallerForUpdate(string path, string? expectedSha256 = null, bool silent = false)
     {
         if (!File.Exists(path)) throw new FileNotFoundException("Update installer nebyl nalezen.", path);
         string fullPath = Path.GetFullPath(path);
@@ -472,8 +505,11 @@ public static class AppUpdateService
             UseShellExecute = true,
             WorkingDirectory = Path.GetDirectoryName(fullPath) ?? AppContext.BaseDirectory
         };
-        using var started = Process.Start(info);
+        var started = Process.Start(info);
         if (started == null)
             throw new InvalidOperationException("Update installer se nepodařilo spustit.");
+        return started;
     }
+
+    public static bool IsSuccessfulInstallerExitCode(int code) => code == 0 || code == 1641 || code == 3010;
 }
