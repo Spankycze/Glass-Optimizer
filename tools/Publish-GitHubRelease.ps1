@@ -29,6 +29,11 @@ if ([IO.Path]::GetFileName($ChangelogPath) -cne 'CHANGELOG.md') {
 
 $releaseJson = (& gh release view $Tag --repo $Repository --json assets 2>&1)
 if ($LASTEXITCODE -ne 0) {
+    # Create a release only when its Git tag exists; don't turn transient API/auth failures into release mutations.
+    & gh api "repos/$Repository/git/ref/tags/$Tag" --silent
+    if ($LASTEXITCODE -ne 0) {
+        throw "RELEASE_LOOKUP_FAILED_OR_TAG_MISSING: $Tag"
+    }
     $title = "Glass Optimizer $($Tag.TrimStart('v', 'V'))"
     & gh release create $Tag --repo $Repository --title $title --notes-file $ChangelogPath
     if ($LASTEXITCODE -ne 0) {
@@ -40,19 +45,30 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 $release = $releaseJson | ConvertFrom-Json
-foreach ($asset in @($release.assets)) {
-    & gh release delete-asset $Tag $asset.name --repo $Repository --yes
-    if ($LASTEXITCODE -ne 0) {
-        throw "RELEASE_ASSET_DELETE_FAILED: $($asset.name)"
-    }
-}
-
+# Upload replacements first. A failed transfer must not destroy the working release assets.
 & gh release upload $Tag $InstallerPath $ChangelogPath --repo $Repository --clobber
 if ($LASTEXITCODE -ne 0) {
     throw 'RELEASE_ASSET_UPLOAD_FAILED'
 }
 
 $expected = @('Glass_Optimizer_Setup_Compact.exe', 'CHANGELOG.md')
+$verifyJson = (& gh release view $Tag --repo $Repository --json assets 2>&1)
+if ($LASTEXITCODE -ne 0) {
+    throw 'RELEASE_VERIFY_FAILED'
+}
+$uploaded = $verifyJson | ConvertFrom-Json
+$uploadedNames = @($uploaded.assets | ForEach-Object name)
+foreach ($name in $expected) {
+    if ($name -notin $uploadedNames) {
+        throw "RELEASE_REQUIRED_ASSET_MISSING: $name"
+    }
+}
+foreach ($asset in @($uploaded.assets | Where-Object { $_.name -notin $expected })) {
+    & gh release delete-asset $Tag $asset.name --repo $Repository --yes
+    if ($LASTEXITCODE -ne 0) {
+        throw "RELEASE_ASSET_DELETE_FAILED: $($asset.name)"
+    }
+}
 $verifyJson = (& gh release view $Tag --repo $Repository --json assets 2>&1)
 if ($LASTEXITCODE -ne 0) {
     throw 'RELEASE_VERIFY_FAILED'
