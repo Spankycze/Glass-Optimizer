@@ -1,3 +1,9 @@
+## 17.9.0 — aktivní stav, 12. 11. 2026
+Updater popup zobrazuje ověřené milníky stahování, kontroly hashe, předání `--silent-install` a read-back ověření driveru. Smoke testy, zdrojový build, installer build a `build-fast.ps1` prošly.
+
+## 17.8.0 — aktivní stav, 11. 11. 2026
+Odstraněna automatická herní GPU priorita včetně služby, politiky, UI přepínače a smoke vazeb. Zachováno read-only sledování Windows `GPU Priority`, ostatní AI funkce, restore ochrany a čtyři AC hodnoty `Never`.
+
 ## 17.7.0 — aktivní stav, 11. 11. 2026
 Tray dvojklik posílá existující `FanTrayAction.OpenFans`; akce otevírá hlavní aplikaci na výchozím Přehledu. Odstraněno blokující úvodní povýšení ikony a zachován fallback dohledání instalované hlavní aplikace.
 

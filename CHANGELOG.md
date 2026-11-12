@@ -1,5 +1,17 @@
 # Changelog
 
+## 17.9.0
+
+- Added verified update-popup progress milestones for download, verification and silent-installer handoff.
+- Added driver installer completion read-back before reporting a successful update.
+- Preserved retry, cancellation, stale-progress and popup lifecycle protections.
+
+## 17.8.0
+
+- Removed automatic game GPU priority and its runtime policy, service, UI toggle and smoke coverage.
+- Preserved read-only Windows `GPU Priority` monitoring and all other guarded AI workload behavior.
+- Preserved rollback protection and the four AC `Never` power-plan values.
+
 ## 17.7.0
 
 - Fixed tray double-click activation so it opens the main application Overview through the existing single-instance handoff.

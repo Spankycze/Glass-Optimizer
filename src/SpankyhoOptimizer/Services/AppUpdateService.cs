@@ -66,6 +66,8 @@ public static class AppUpdateService
         string source = GetSource();
         if (string.IsNullOrWhiteSpace(source))
             return await CheckOfficialGithubAsync(token).ConfigureAwait(false);
+        if (IsLocalBridgeSource(source))
+            return await CheckOfficialGithubAsync(token).ConfigureAwait(false);
         try
         {
             string json = source.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
@@ -87,25 +89,12 @@ public static class AppUpdateService
                 !Version.TryParse(CurrentVersion, out var local))
                 throw new InvalidDataException("Update manifest obsahuje neplatné číslo verze.");
             bool available = IsNewerVersion(manifest.Version, CurrentVersion);
-            if (IsLocalBridgeSource(source))
-            {
-                AppUpdateCheck official = await CheckOfficialGithubAsync(token).ConfigureAwait(false);
-                if (official.Configured && official.Available &&
-                    (!available || IsNewerVersion(official.Manifest!.Version, manifest.Version)))
-                    return official;
-            }
             return new(true, available, CurrentVersion, manifest,
                 available ? $"Dostupná verze {RuntimeVersionInfo.PublicVersion(manifest.Version)}." : "Používáš aktuální verzi.");
         }
         catch (Exception ex)
         {
             LogService.Error("update", "Update check failed", ex);
-            if (IsLocalBridgeSource(source))
-            {
-                AppUpdateCheck official = await CheckOfficialGithubAsync(token).ConfigureAwait(false);
-                if (official.Configured)
-                    return official;
-            }
             return new(true, false, CurrentVersion, null, "Kontrola aktualizace selhala: " + ex.Message);
         }
     }

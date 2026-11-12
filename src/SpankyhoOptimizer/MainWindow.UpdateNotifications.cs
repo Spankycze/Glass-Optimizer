@@ -69,7 +69,7 @@ public sealed partial class MainWindow
             {
                 var progress = new Progress<AppUpdateDownloadProgress>(p =>
                 {
-                    int percent = p.Percent < 0 ? 5 : Math.Clamp(p.Percent, 0, 96);
+                    int percent = p.Percent < 0 ? 3 : Math.Clamp(p.Percent, 0, 48);
                     string detail = p.Total.HasValue
                         ? $"{p.Received / 1048576d:0.0} / {p.Total.Value / 1048576d:0.0} MB"
                         : $"{p.Received / 1048576d:0.0} MB";
@@ -80,18 +80,21 @@ public sealed partial class MainWindow
                 });
 
                 string path = await AppUpdateService.DownloadAsync(manifest, progress, token);
-                uiProgress.Report(new DesktopUpdateProgress(100, "Installer je stažený a ověřený.", Path.GetFileName(path)));
+                uiProgress.Report(new DesktopUpdateProgress(50, "Installer je stažený a ověřený.", Path.GetFileName(path)));
 
                 return new DesktopUpdateCompletion(
                     "Aktualizace je připravená k instalaci.",
                     "Nainstalovat",
-                    () =>
-                    {
-                        AppUpdateService.LaunchInstallerForUpdate(path, manifest.Sha256);
-                        Close();
-                        return Task.CompletedTask;
-                    },
-                    "SHA-256 + podpis manifestu ověřen.");
+                     null,
+                     "SHA-256 + podpis manifestu ověřen.",
+                      (installProgress, installToken) =>
+                      {
+                          installToken.ThrowIfCancellationRequested();
+                          installProgress.Report(new DesktopUpdateProgress(98, "Spouštím tichou instalaci…", Path.GetFileName(path)));
+                          AppUpdateService.LaunchInstallerForUpdate(path, manifest.Sha256, silent: true);
+                          installProgress.Report(new DesktopUpdateProgress(100, "Installer převzal aktualizaci.", "Aplikace se nyní bezpečně nahradí."));
+                          return Task.CompletedTask;
+                      });
             },
             stackIndex);
 
@@ -156,17 +159,36 @@ public sealed partial class MainWindow
                 return new DesktopUpdateCompletion(
                     "Driver je stažený, rozbalený a ověřený.",
                     "Nainstalovat",
-                    () =>
-                    {
-                        GpuDriverService.LaunchInstaller(installer);
-                        GpuDriverService.MarkExostenzaCleanupPending(release.Version);
-                        SafeTaskService.Forget(
-                            GpuDriverService.MonitorPendingExostenzaAsync(release.Version),
-                            "drivers",
-                            "Exostenza desktop update monitor");
-                        return Task.CompletedTask;
-                    },
-                    "Před instalací byl vytvořen bod obnovení.");
+                     null,
+                     "Před instalací byl vytvořen bod obnovení.",
+                     async (installProgress, installToken) =>
+                     {
+                         installToken.ThrowIfCancellationRequested();
+                         installProgress.Report(new DesktopUpdateProgress(97, "Spouštím instalaci driveru…", release.Version));
+                         GpuDriverService.LaunchInstaller(installer);
+                         GpuDriverService.MarkExostenzaCleanupPending(release.Version);
+                         for (int attempt = 0; attempt < 36; attempt++)
+                         {
+                             installToken.ThrowIfCancellationRequested();
+                              if (GpuDriverService.IsKnownGpuInstallerRunning())
+                              {
+                                  installProgress.Report(new DesktopUpdateProgress(
+                                      97, "Instaluji Exostenza driver…", release.Version));
+                             }
+                             else
+                             {
+                                 string? state = await GpuDriverService.ReconcilePendingExostenzaAsync(installToken);
+                                 if (state?.Contains("nainstalována a ověřena", StringComparison.OrdinalIgnoreCase) == true)
+                                 {
+                                     installProgress.Report(new DesktopUpdateProgress(100, "Driver je nainstalovaný a ověřený.", release.Version));
+                                     return;
+                                 }
+                                 installProgress.Report(new DesktopUpdateProgress(99, "Ověřuji výsledek instalace driveru…", state ?? release.Version));
+                             }
+                             await Task.Delay(TimeSpan.FromSeconds(5), installToken);
+                         }
+                         throw new TimeoutException("Instalaci driveru se nepodařilo včas ověřit.");
+                     });
             },
             stackIndex);
 
