@@ -1,5 +1,11 @@
 # Changelog
 
+## 17.11.0
+
+- Hardened GitHub release publishing to keep exactly the Compact installer and changelog assets.
+- Updated the software updater to verify the installer through GitHub's asset SHA-256 digest.
+- Preserved verified download, installation and rollback checks.
+
 ## 17.10.0
 
 - Added verified update-popup progress milestones for download, verification and silent-installer handoff.
