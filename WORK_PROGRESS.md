@@ -1,4 +1,10 @@
-## 17.9.0 — aktivní stav, 12. 11. 2026
+## 17.11.0 — aktivní zdroj, 12. 11. 2026
+Release `17.10.0` prošel strict bránou, Compact installer byl ověřen hashem a nainstalován. Zdroj se po release preflightu posunul na `17.11.0`; další release zatím není připraven.
+
+## 17.10.0 — ověřený release, 12. 11. 2026
+Updater lifecycle opravy prošly cílenými testy, smoke testy, guardy, Debug/Release buildy a úplnou strict release bránou.
+
+## 17.9.0 — historický ověřený stav, 12. 11. 2026
 Updater popup zobrazuje ověřené milníky stahování, kontroly hashe, předání `--silent-install` a read-back ověření driveru. Smoke testy, zdrojový build, installer build a `build-fast.ps1` prošly.
 
 ## 17.8.0 — aktivní stav, 11. 11. 2026

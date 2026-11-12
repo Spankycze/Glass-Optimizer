@@ -1,5 +1,11 @@
 # Changelog
 
+## 17.10.0
+
+- Added verified update-popup progress milestones for download, verification and silent-installer handoff.
+- Added driver installer completion read-back before reporting a successful update.
+- Preserved retry, cancellation, stale-progress and popup lifecycle protections.
+
 ## 17.9.0
 
 - Added verified update-popup progress milestones for download, verification and silent-installer handoff.

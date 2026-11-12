@@ -9,8 +9,8 @@
   <PropertyGroup Condition="'$(MSBuildProjectName)'=='SpankyhoOptimizer' Or '$(MSBuildProjectName)'=='SpankyhoOptimizer.Core' Or '$(MSBuildProjectName)'=='SpankyhoOptimizer.RuntimeHost' Or '$(MSBuildProjectName)'=='SpankyInstaller'">
     <!-- Internal build identity retains 3 components for update ordering.
          Customer-facing versions and setup filenames use Major.Minor only. -->
-    <SpankyVersion>17.10.0</SpankyVersion>
-    <SpankyPublicVersion>17.10</SpankyPublicVersion>
+    <SpankyVersion>17.11.0</SpankyVersion>
+    <SpankyPublicVersion>17.11</SpankyPublicVersion>
     <SpankyVersionUnderscore>$([System.String]::Copy('$(SpankyPublicVersion)').Replace('.', '_'))</SpankyVersionUnderscore>
     <Version>$(SpankyVersion)</Version>
     <AssemblyVersion>$(SpankyVersion).0</AssemblyVersion>
