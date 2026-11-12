@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
 using SpankyhoOptimizer.Services;
 using WinRT.Interop;
@@ -17,12 +18,22 @@ using Windows.Graphics;
 namespace SpankyhoOptimizer;
 
 internal sealed record DesktopUpdateProgress(int Percent, string Status, string? Detail = null);
-internal sealed record DesktopUpdateCompletion(string Status, string PrimaryText, Func<Task>? PrimaryAction = null, string? Detail = null);
+internal sealed record DesktopUpdateCompletion(
+    string Status,
+    string PrimaryText,
+    Func<Task>? PrimaryAction = null,
+    string? Detail = null,
+    Func<IProgress<DesktopUpdateProgress>, CancellationToken, Task>? PrimaryProgressAction = null);
 
 internal sealed class DesktopUpdateNotificationWindow : Window
 {
-    private const int WindowWidth = 400;
-    private const int WindowHeight = 264;
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
+    }
+
+    private const int WindowWidth = 480;
+    private const int WindowHeight = 226;
     private const int SwShowNoActivate = 4;
     [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -51,9 +62,11 @@ internal sealed class DesktopUpdateNotificationWindow : Window
     private readonly TextBlock _percent;
     private readonly Border _fill;
     private readonly Border _track;
+    private Storyboard? _fillAnimation;
     private readonly Button _primary;
     private readonly Button _secondary;
     private Func<Task>? _completionAction;
+    private Func<IProgress<DesktopUpdateProgress>, CancellationToken, Task>? _completionProgressAction;
     private bool _configured;
     private int _configureFailures;
     private bool _busy;
@@ -74,80 +87,28 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         _stackIndex = Math.Max(0, stackIndex);
         Title = "Glass Optimizer";
         ExtendsContentIntoTitleBar = true;
-        SystemBackdrop = new UpdatePopupGlassBackdrop();
 
         var root = new Grid
         {
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 18, 22, 29)),
             Padding = new Thickness(6),
             RequestedTheme = ElementTheme.Dark
         };
 
         var card = new Border
         {
-            CornerRadius = new CornerRadius(28),
+            CornerRadius = new CornerRadius(18),
             BorderThickness = new Thickness(1),
             // Quiet neutral edge, no bright blue decorative border.
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(88, 220, 239, 250)),
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 64, 64, 64)),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 28, 34, 44)),
             Padding = new Thickness(0)
         };
         root.Children.Add(card);
 
-        var body = new StackPanel { Spacing = 8 };
+        var body = new StackPanel { Spacing = 5 };
 
-        var glassLayers = new Grid();
-        var innerGlass = new SystemBackdropElement
-        {
-            CornerRadius = new CornerRadius(28),
-            SystemBackdrop = new UpdatePopupGlassBackdrop(),
-            IsHitTestVisible = false
-        };
-        static void ReleaseInnerGlass(SystemBackdropElement element)
-        {
-            var previous = element.SystemBackdrop as UpdatePopupGlassBackdrop;
-            element.SystemBackdrop = null;
-            previous?.ReleaseDetachedElementTarget();
-        }
-        innerGlass.Unloaded += static (sender, _) =>
-        {
-            var element = (SystemBackdropElement)sender;
-            if (!element.IsLoaded) ReleaseInnerGlass(element);
-        };
-        glassLayers.Children.Add(innerGlass);
-        glassLayers.Children.Add(new Border
-        {
-            CornerRadius = new CornerRadius(28),
-            Background = new LinearGradientBrush
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0),
-                EndPoint = new Windows.Foundation.Point(1, 1),
-                GradientStops =
-                {
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(33, 9, 15, 23), Offset = 0 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(18, 9, 15, 23), Offset = 1 }
-                }
-            },
-            IsHitTestVisible = false
-        });
-        glassLayers.Children.Add(new Border
-        {
-            CornerRadius = new CornerRadius(28),
-            Background = new LinearGradientBrush
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0),
-                EndPoint = new Windows.Foundation.Point(0, 1),
-                GradientStops =
-                {
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(10, 255, 255, 255), Offset = 0 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(1, 255, 255, 255), Offset = 0.38 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0, 255, 255, 255), Offset = 1 }
-                }
-            },
-            IsHitTestVisible = false
-        });
-        glassLayers.Children.Add(new Border { Padding = new Thickness(14), Child = body });
-        card.Child = glassLayers;
+        card.Child = new Border { Padding = new Thickness(14, 10, 14, 10), Child = body };
 
         var header = new Grid { ColumnSpacing = 12 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -164,11 +125,11 @@ internal sealed class DesktopUpdateNotificationWindow : Window
             logo.Source = new BitmapImage(new Uri(logoPath));
         header.Children.Add(new Border
         {
-            Width = 42,
-            Height = 42,
-            CornerRadius = new CornerRadius(13),
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(44, 31, 111, 205)),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(40, 154, 166, 181)),
+            Width = 40,
+            Height = 40,
+            CornerRadius = new CornerRadius(8),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 48, 48, 48)),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 80, 80, 80)),
             BorderThickness = new Thickness(1),
             Child = logo
         });
@@ -177,15 +138,14 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         titles.Children.Add(new TextBlock
         {
             Text = category.ToUpperInvariant(),
-            FontSize = 10.5,
-            CharacterSpacing = 70,
+            FontSize = 11,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 97, 179, 255))
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 206, 206, 206))
         });
         titles.Children.Add(new TextBlock
         {
             Text = title,
-            FontSize = 16.5,
+            FontSize = 16,
             FontWeight = FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 244, 249, 252))
         });
@@ -193,7 +153,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         {
             Text = version,
             FontSize = 12,
-            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(210, 176, 213, 232))
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(210, 206, 206, 206))
         });
         Grid.SetColumn(titles, 1);
         header.Children.Add(titles);
@@ -202,7 +162,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         body.Children.Add(new TextBlock
         {
             Text = description,
-            FontSize = 11.5,
+            FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
             Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(222, 221, 236, 244)),
             MaxLines = 2
@@ -214,8 +174,8 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         _status = new TextBlock
         {
             Text = "Aktualizace je připravená ke stažení.",
-            FontSize = 11.5,
-            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(220, 185, 216, 232)),
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 206, 206, 206)),
             TextTrimming = TextTrimming.CharacterEllipsis
         };
         _percent = new TextBlock
@@ -223,7 +183,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
             Text = "",
             FontSize = 11.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 96, 178, 255)),
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 206, 206, 206)),
             Margin = new Thickness(10, 0, 0, 0)
         };
         statusRow.Children.Add(_status);
@@ -233,18 +193,18 @@ internal sealed class DesktopUpdateNotificationWindow : Window
 
         _track = new Border
         {
-            Height = 7,
+            Height = 6,
             CornerRadius = new CornerRadius(4),
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(65, 91, 102, 116)),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 64, 64, 64)),
             Visibility = Visibility.Collapsed,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
         _fill = new Border
         {
             Width = 0,
-            Height = 7,
+            Height = 6,
             CornerRadius = new CornerRadius(4),
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 151, 179, 210)),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 92, 183, 255)),
             HorizontalAlignment = HorizontalAlignment.Left
         };
         _track.Child = _fill;
@@ -253,8 +213,8 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         _detail = new TextBlock
         {
             Text = "",
-            FontSize = 10.5,
-            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(180, 164, 197, 214)),
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(180, 190, 190, 190)),
             TextWrapping = TextWrapping.Wrap,
             MaxLines = 2
         };
@@ -284,8 +244,10 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         Closed += (_, _) =>
         {
             _closed = true;
-            ReleaseInnerGlass(innerGlass);
+            _fillAnimation?.Stop();
+            _fillAnimation = null;
             _completionAction = null;
+            _completionProgressAction = null;
             try { _cts.Cancel(); } catch { }
             DisposeCancellationWhenIdle();
         };
@@ -295,14 +257,14 @@ internal sealed class DesktopUpdateNotificationWindow : Window
     {
         Content = text,
         Height = 38,
-        CornerRadius = new CornerRadius(19),
+        CornerRadius = new CornerRadius(8),
         BorderThickness = new Thickness(1),
         BorderBrush = new SolidColorBrush(primary
-            ? Windows.UI.Color.FromArgb(72, 118, 155, 188)
-            : Windows.UI.Color.FromArgb(40, 112, 123, 136)),
+            ? Windows.UI.Color.FromArgb(255, 120, 120, 120)
+            : Windows.UI.Color.FromArgb(255, 80, 80, 80)),
         Background = new SolidColorBrush(primary
-            ? Windows.UI.Color.FromArgb(90, 36, 70, 107)
-            : Windows.UI.Color.FromArgb(34, 29, 38, 49)),
+            ? Windows.UI.Color.FromArgb(255, 64, 64, 64)
+            : Windows.UI.Color.FromArgb(255, 40, 40, 40)),
         Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 242, 249, 252)),
         FontWeight = FontWeights.SemiBold
     };
@@ -313,12 +275,37 @@ internal sealed class DesktopUpdateNotificationWindow : Window
     {
         var color = failed
             ? Windows.UI.Color.FromArgb(255, 251, 130, 133)
-            : Windows.UI.Color.FromArgb(255, 96, 178, 255);
+            : Windows.UI.Color.FromArgb(255, 92, 183, 255);
         _status.Foreground = new SolidColorBrush(color);
         _percent.Foreground = new SolidColorBrush(color);
         _fill.Background = new SolidColorBrush(failed
             ? Windows.UI.Color.FromArgb(255, 210, 78, 92)
-            : Windows.UI.Color.FromArgb(255, 151, 179, 210));
+            : Windows.UI.Color.FromArgb(255, 92, 183, 255));
+    }
+
+    private void SetFillWidth(double width)
+    {
+        double currentWidth = _fill.ActualWidth;
+        _fillAnimation?.Stop();
+        _fill.Width = currentWidth;
+        if (_closed || App.IsSmokeUi || !UiMotionSettingsService.EffectiveEnabled || !_track.IsLoaded)
+        {
+            _fill.Width = width;
+            return;
+        }
+
+        var animation = new DoubleAnimation
+        {
+            From = currentWidth,
+            To = width,
+            Duration = TimeSpan.FromMilliseconds(180),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(animation, _fill);
+        Storyboard.SetTargetProperty(animation, "Width");
+        _fillAnimation = new Storyboard();
+        _fillAnimation.Children.Add(animation);
+        _fillAnimation.Begin();
     }
 
     private void DisposeCancellationWhenIdle()
@@ -331,14 +318,31 @@ internal sealed class DesktopUpdateNotificationWindow : Window
     private async Task OnPrimaryAsync()
     {
         if (_closed || _busy) return;
-        if (_completionAction != null)
+        if (_completionAction != null || _completionProgressAction != null)
         {
             try
             {
                 _busy = true;
                 _primary.IsEnabled = false;
                 _secondary.IsEnabled = false;
-                await _completionAction();
+                if (_completionProgressAction != null)
+                {
+                    IProgress<DesktopUpdateProgress> completionProgress = new InlineProgress<DesktopUpdateProgress>(p =>
+                    {
+                        if (!_closed && _busy && !_cts.IsCancellationRequested)
+                        {
+                            int percent = Math.Clamp(p.Percent, 0, 100);
+                            double width = _track.ActualWidth > 0 ? _track.ActualWidth : 350;
+                            SetFillWidth(width * percent / 100d);
+                            _percent.Text = percent + " %";
+                            _status.Text = p.Status;
+                            if (p.Detail != null) _detail.Text = p.Detail;
+                        }
+                    });
+                    await _completionProgressAction(completionProgress, _cts.Token);
+                }
+                else
+                    await _completionAction();
                 if (!_closed) Close();
             }
             catch (Exception ex)
@@ -360,7 +364,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
         CancellationToken token = _cts.Token;
         _primary.IsEnabled = false;
         _secondary.Content = "Zru\u0161it";
-        _fill.Width = 0;
+        SetFillWidth(0);
         _track.Visibility = Visibility.Visible;
         _status.Text = "P\u0159ipravuji stahov\u00e1n\u00ed\u2026";
         _detail.Text = "";
@@ -371,7 +375,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
             if (_closed || !_busy || token.IsCancellationRequested || generation != _downloadGeneration) return;
             int percent = Math.Clamp(p.Percent, 0, 100);
             double width = _track.ActualWidth > 0 ? _track.ActualWidth : 350;
-            _fill.Width = width * percent / 100d;
+            SetFillWidth(width * percent / 100d);
             _percent.Text = percent + " %";
             _status.Text = p.Status;
             if (p.Detail != null) _detail.Text = p.Detail;
@@ -384,11 +388,15 @@ internal sealed class DesktopUpdateNotificationWindow : Window
             token.ThrowIfCancellationRequested();
             _status.Text = result.Status;
             if (!string.IsNullOrWhiteSpace(result.Detail)) _detail.Text = result.Detail;
-            _fill.Width = _track.ActualWidth > 0 ? _track.ActualWidth : 350;
-            _percent.Text = "100 %";
+            bool hasPostDownloadProgress = result.PrimaryProgressAction != null;
+            SetFillWidth((_track.ActualWidth > 0 ? _track.ActualWidth : 350) * (hasPostDownloadProgress ? 0.5 : 1));
+            _percent.Text = hasPostDownloadProgress ? "50 %" : "100 %";
             _primary.Content = result.PrimaryText;
             _completionAction = result.PrimaryAction;
+            _completionProgressAction = result.PrimaryProgressAction;
             _primary.IsEnabled = result.PrimaryAction != null;
+            if (_completionProgressAction != null)
+                _primary.IsEnabled = true;
             _secondary.Content = "Zav\u0159\u00edt";
         }
         catch (OperationCanceledException)
@@ -421,6 +429,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
             DisposeCancellationWhenIdle();
         }
     }
+
     public void ShowWithoutActivation()
     {
         try
