@@ -1,5 +1,12 @@
 # Changelog
 
+## 17.13.0
+
+- Replaced the community cursor catalog with 15 Bibata cursor packs, in-app previews and Bibata-only selection; the active Bibata scheme is preserved.
+- Kept only the Chris Titus PowerShell profile integration and removed Titus AI from the UI, automatic updates and system installs.
+- Removed unrelated PowerShell modules, Clink, the legacy Windows PowerShell profile and app-added profile blocks; Titus dependencies and a rollback backup are preserved.
+- Preserved guarded Windows changes, rollback behavior and the four AC `Never` power-plan values.
+
 ## 17.12.0
 
 - Unified confirmation, selection, information and progress dialogs with compact headings and shared actions.
