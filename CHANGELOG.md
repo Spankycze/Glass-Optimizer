@@ -1,5 +1,11 @@
 # Changelog
 
+## 17.15.0
+
+- Marked animated cursor packs in green and sorted fully animated packs to the top of the inline cursor page (Glass Glow, Bibata Bee, Bibata Zebra, Rainbow Modern and Rainbow Original).
+- Added a short on-page hint so animated and vivid packs are easy to find without opening any popup.
+- Added five MIT cursor packs from GitHub: Vision Black, Nailong, Clawd Pixel and OpenZone Black/White; the inline library now has 22 packs.
+
 ## 17.14.0
 
 - Moved the Bibata cursor library directly onto the Cursor page with previews and per-pack Apply buttons; the selection popup is no longer used.
