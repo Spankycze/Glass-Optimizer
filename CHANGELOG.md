@@ -1,5 +1,11 @@
 # Changelog
 
+## 17.14.0
+
+- Moved the Bibata cursor library directly onto the Cursor page with previews and per-pack Apply buttons; the selection popup is no longer used.
+- Fixed cursor application on current Windows builds by refreshing the scheme without the failing profile-write flag.
+- Added the MIT-licensed Modern Inverted and animated Glass Glow cursor packs from GitHub; the curated library now has 17 packs.
+
 ## 17.13.0
 
 - Replaced the community cursor catalog with 15 Bibata cursor packs, in-app previews and Bibata-only selection; the active Bibata scheme is preserved.
