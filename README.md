@@ -34,6 +34,11 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 - **UI and Explorer:** supported Windows shell and Explorer settings.
 - **Personalization:** available appearance and personalization controls.
 
+### Cursors and terminal
+
+- **Bibata cursors:** 15 Bibata packs with in-app previews and one-click application.
+- **Titus PowerShell:** the Chris Titus PowerShell profile only, with GitHub updates and rollback. Titus AI and unrelated shell tooling are not installed.
+
 ### Network and applications
 
 - **Internet and Network:** network information and supported network tools.
