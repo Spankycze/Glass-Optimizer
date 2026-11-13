@@ -36,7 +36,7 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 
 ### Cursors and terminal
 
-- **Cursor library:** 15 Bibata packs plus the MIT Modern Inverted and animated Glass Glow packs (17 total), shown inline with previews and one-click application.
+- **Cursor library:** 22 curated packs — 15 Bibata, Modern Inverted, Glass Glow, Vision Black, Nailong, Clawd Pixel and OpenZone Black/White — shown inline with previews and one-click application.
 - **Titus PowerShell:** the Chris Titus PowerShell profile only, with GitHub updates and rollback. Titus AI and unrelated shell tooling are not installed.
 
 ### Network and applications
