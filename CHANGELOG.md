@@ -1,5 +1,27 @@
 # Changelog
 
+## 17.20.0
+
+- Opened the next development cycle after the 17.19.0 release; no user-facing changes are included yet and this section tracks the upcoming work.
+
+## 17.19.0
+
+- Fixed the Overview changelog verification so it checks the actual newest release notes instead of one fixed historical version; all four visible rows must now match the bundled changelog.
+- No changes to tray feedback, Defender protection status, restore-point rules or any release gate.
+
+## 17.18.0
+
+- Hardened the tray feedback popup check: the smoke now proves the popup itself never owns the foreground window instead of comparing unrelated desktop focus changes.
+- Action feedback, Defender protection status, restore-point rules and all release gates are unchanged.
+
+## 17.17.0
+
+- Every action result now appears as a compact dark Windows 11 tray popup in the bottom-right corner instead of the inline green/grey bar at the top of the page; it never steals focus, stays out of Alt+Tab and closes itself after a few seconds.
+- Simplified the Defender page to one protection-status card (real-time, cloud, Network Protection, SmartScreen, firewall) with advanced modules and destructive actions collapsed and one Windows Security button.
+- Fixed Defender safety and state bugs: disabling stops when no restore point can be created, disable and restore failures surface in the popup and refresh the page, and no extra modal is left behind after an action.
+- Defender page caching now compares Tamper Protection state and read-back revision before reattaching, so status rows and actions can never show stale values.
+- Kept restore-point checks, read-back verification, the four AC `Never` power-plan values and all existing release gates unchanged.
+
 ## 17.16.0
 
 - Reworked the Debloater into one direct checklist: tick the apps you want to remove, with recommended apps preselected and a clear “Odebrat vybrané” action.

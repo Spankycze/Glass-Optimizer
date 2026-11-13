@@ -49,7 +49,7 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 ### Maintenance and protection
 
 - **Privacy:** supported Windows privacy settings.
-- **Microsoft Defender:** available Defender information and controls.
+- **Microsoft Defender:** one protection-status card with real-time, cloud, Network Protection, SmartScreen and firewall read-back; advanced modules and disable/restore actions stay collapsed, every change needs a restore point, and results appear in the tray popup.
 - **Debloater:** one direct checklist — tick the apps to remove, review the selection and confirm after a restore point; recommended apps are preselected and protected packages stay disabled.
 - **Fixer:** supported Windows repair actions with confirmation before mutation.
 - **Settings:** application language, theme and preference controls.
