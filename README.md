@@ -50,7 +50,7 @@ The release provides the verified Compact installer, its SHA-256 checksum and th
 
 - **Privacy:** supported Windows privacy settings.
 - **Microsoft Defender:** available Defender information and controls.
-- **AI Debloater and Debloater:** guarded management of selected Windows components.
+- **Debloater:** one direct checklist — tick the apps to remove, review the selection and confirm after a restore point; recommended apps are preselected and protected packages stay disabled.
 - **Fixer:** supported Windows repair actions with confirmation before mutation.
 - **Settings:** application language, theme and preference controls.
 
