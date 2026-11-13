@@ -1,5 +1,11 @@
 # Changelog
 
+## 17.16.0
+
+- Reworked the Debloater into one direct checklist: tick the apps you want to remove, with recommended apps preselected and a clear “Odebrat vybrané” action.
+- Removed the confusing keep-first dialog and dashboard metric cards; added Recommended / All / Selected filters, search, protected-app rows, and a selection summary.
+- Kept the restore-point check, advanced-package confirmation, per-app progress, and persisted keep exceptions.
+
 ## 17.15.0
 
 - Marked animated cursor packs in green and sorted fully animated packs to the top of the inline cursor page (Glass Glow, Bibata Bee, Bibata Zebra, Rainbow Modern and Rainbow Original).
