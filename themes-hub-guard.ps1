@@ -1,9 +1,9 @@
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $root 'tools\source-set.ps1')
-$shell=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.Shell.cs') -Raw
+$shell=Get-SpankySourceText (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.Shell.cs')
 $themes=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.Themes.cs') -Raw
-$catalog=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\Services\CatalogService.cs') -Raw
+$catalog=Get-SpankySourceText (Join-Path $root 'src\SpankyhoOptimizer\Services\CatalogService.cs')
 $wall=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\Services\WallpaperThemeService.cs') -Raw
 $context=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.ContextMenu.cs') -Raw
 $main=Get-SpankyMainWindowSource $root
