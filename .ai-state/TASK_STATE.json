@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updatedAt": "2026-10-05T04:58:50.6492490+02:00",
+  "updatedAt": "2026-11-10T18:47:28+01:00",
   "currentTask": null,
   "tasks": [
     {
@@ -448,7 +448,7 @@
       "title": "Measured AI system and network performance feedback",
       "area": "network",
       "skill": "network-debug.md",
-      "status": "in-progress",
+      "status": "abandoned",
       "createdAt": "2026-10-03T21:58:48.0817335+02:00",
       "updatedAt": "2026-10-03T22:01:12.3037744+02:00",
       "dependsOn": [],
@@ -927,7 +927,7 @@
       "title": "Continue Glass21: consistent Overview and navigation",
       "area": "ui",
       "skill": "winui-performance.md",
-      "status": "in-progress",
+      "status": "abandoned",
       "createdAt": "2026-10-04T19:30:31.1141504+02:00",
       "updatedAt": "2026-10-04T19:47:05.3714968+02:00",
       "dependsOn": [],
@@ -1025,9 +1025,9 @@
       "title": "Measured navigation stalls and idle UI lifecycle",
       "area": "winui-performance",
       "skill": "winui-performance.md",
-      "status": "in-progress",
+      "status": "done",
       "createdAt": "2026-10-05T04:29:35.8586611+02:00",
-      "updatedAt": "2026-10-05T04:41:26.6696495+02:00",
+      "updatedAt": "2026-10-08T02:18:10.2834916+02:00",
       "dependsOn": [],
       "blockedBy": [],
       "subtasks": [],
@@ -1056,6 +1056,1307 @@
         "src\\SpankyhoOptimizer\\MainWindow.BlackUi.cs",
         "src\\SpankyhoOptimizer\\MainWindow.OverviewDashboard.cs",
         "WORK_PROGRESS.md"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261005140507",
+      "title": "Community Cursor modal readability and layout 663",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-05T14:05:07.6194103+02:00",
+      "updatedAt": "2026-10-05T14:39:32.8121458+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\MainWindow.CursorCommunityPopup.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.VisualQa.cs",
+        "src\\SpankyhoOptimizer\\App.cs",
+        "WORK_PROGRESS.md",
+        "src\\SpankyhoOptimizer\\Services\\NativeNicTuningService.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.StyledDialogs.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.PowerNetwork.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261005144807",
+      "title": "Restore glass popup styling 664",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-05T14:48:07.4113253+02:00",
+      "updatedAt": "2026-10-05T14:59:47.2165642+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.StyledDialogs.cs",
+        "src/SpankyhoOptimizer/MainWindow.CursorCommunityPopup.cs",
+        "WORK_PROGRESS.md"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261005150433",
+      "title": "Complete functional audit of existing application",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-05T15:04:33.7080975+02:00",
+      "updatedAt": "2026-10-05T20:11:57.1273348+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "tools/CoreTests/TweakFunctionalAuditTests.cs",
+        "src/SpankyhoOptimizer/Services/RegistryBackupStore.cs",
+        "docs/superpowers/plans/2026-10-05-functional-audit.md",
+        "src/SpankyhoOptimizer/Services/TweakEngine.cs",
+        "src/SpankyhoOptimizer/Services/TweakFactory.cs",
+        "src/SpankyhoOptimizer/Models/TweakDefinition.cs",
+        "src/SpankyhoOptimizer/MainWindow.cs",
+        "src/SpankyhoOptimizer/MainWindow.UiPrimitives.cs",
+        "Directory.Build.props",
+        "src\\SpankyhoOptimizer\\App.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.AiSystemRuntime.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.StyledDialogs.cs",
+        "src\\SpankyhoOptimizer\\Services\\CatalogService.cs",
+        "src\\SpankyhoOptimizer\\Services\\ProcessRunner.cs",
+        "src\\SpankyhoOptimizer\\Services\\PowerShellTweakerService.cs",
+        "src\\SpankyhoOptimizer\\Services\\ServiceCatalogService.cs",
+        "src\\SpankyhoOptimizer\\Services\\NativeNicTuningService.cs",
+        "src\\SpankyhoOptimizer\\Services\\RegistryBackupStore.cs",
+        "src\\SpankyhoOptimizer\\Services\\GTweakPortCatalog.cs",
+        "src\\SpankyhoOptimizer\\Services\\GTweakPortCatalog.SystemInterface.cs",
+        "src\\SpankyhoOptimizer\\Services\\GTweakPortCatalog.MoreSystemInterface.cs",
+        "src\\SpankyhoOptimizer\\Services\\UnelevatedProcessRunner.cs",
+        "run-coyote.ps1"
+      ],
+      "validationRequired": [
+        "Core 459/459",
+        "Quality 16/16",
+        "Coyote 20249 schedules",
+        "full-smoke exit 0",
+        "release gate 15.4.666 exit 0"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "glass-682",
+      "title": "glass-682",
+      "area": "general",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-06T15:48:10.7419169+02:00",
+      "updatedAt": "2026-10-06T15:58:33.4147131+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.Glass21.cs;src/SpankyhoOptimizer/MainWindow.Theme.cs;src/SpankyhoOptimizer/MainWindow.StyledDialogs.cs;installer/InstallerWindow.Restored.cs;installer/ModernInstaller.xaml"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "glass-lifecycle-683",
+      "title": "glass-lifecycle-683",
+      "area": "general",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-06T16:05:14.1933442+02:00",
+      "updatedAt": "2026-10-06T16:10:51.0011395+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.Glass21.cs;src/SpankyhoOptimizer/MainWindow.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "ios27-motion-684",
+      "title": "ios27-motion-684",
+      "area": "general",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-06T16:46:29.0861349+02:00",
+      "updatedAt": "2026-10-06T17:06:42.908171+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.Motion.cs;src/SpankyhoOptimizer/MainWindow.cs;src/SpankyhoOptimizer/MainWindow.Shell.cs;src/SpankyhoOptimizer/MainWindow.StyledDialogs.cs;src/SpankyhoOptimizer/Services/UiMotionSettingsService.cs;src/SpankyhoOptimizer/MainWindow.Tools.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "ui-disappear-root-687",
+      "title": "ui-disappear-root-687",
+      "area": "general",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-06T17:26:55.8659421+02:00",
+      "updatedAt": "2026-10-06T17:38:07.4359307+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.Motion.cs;src/SpankyhoOptimizer/MainWindow.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "overview-redesign-688",
+      "title": "overview-redesign-688",
+      "area": "general",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-06T17:50:44.6987968+02:00",
+      "updatedAt": "2026-10-06T17:57:52.8776534+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "overview-polish-689",
+      "title": "overview-polish-689",
+      "area": "general",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-06T17:59:34.6399245+02:00",
+      "updatedAt": "2026-10-06T18:14:42.2809654+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.OverviewDashboard.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "overview-density-690",
+      "title": "overview-density-690",
+      "area": "general",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-06T18:18:45.1375696+02:00",
+      "updatedAt": "2026-10-06T18:34:20.1137273+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.OverviewDashboard.cs;src/SpankyhoOptimizer/MainWindow.BlackUi.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "full-stability-audit-691",
+      "title": "full-stability-audit-691",
+      "area": "general",
+      "skill": "general-debug.md",
+      "status": "abandoned",
+      "createdAt": "2026-10-06T18:41:41.9260014+02:00",
+      "updatedAt": "2026-10-06T18:41:41.9260014+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "stability-glass-deployment-732",
+      "title": "Installed version parity, popup backdrop lifecycle and measured idle performance",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-07T18:59:01.9924829+02:00",
+      "updatedAt": "2026-10-08T02:30:58.3921693+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\App.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.GlassStabilitySmoke.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.Glass21.cs",
+        "src\\SpankyhoOptimizer\\DesktopUpdateNotificationWindow.cs",
+        "build-release.ps1"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "glass-cards-popup-733",
+      "title": "Stable card acrylic, readable popup states, motion and layout",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-07T19:39:59.1937636+02:00",
+      "updatedAt": "2026-10-08T02:18:10.5804281+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\MainWindow.Glass21.cs",
+        "src\\SpankyhoOptimizer\\DesktopUpdateNotificationWindow.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.GlassContinuationSmoke.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.GlassVisibleCheck.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.GlassStabilitySmoke.cs",
+        "desktop-update-notification-guard.ps1",
+        "src\\SpankyhoOptimizer\\MainWindow.GlassLifetimeSmoke.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "popup-frame-progress-735",
+      "title": "Popup native frame, visible verification and stale progress isolation",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-07T21:00:35.5392555+02:00",
+      "updatedAt": "2026-10-07T21:20:35.2251991+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\DesktopUpdateNotificationWindow.cs",
+        "src\\SpankyhoOptimizer\\Services\\NativeTitleBarService.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.PopupProgressSmoke.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.PopupFrameSmoke.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.GlassStabilitySmoke.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "github-integration-736",
+      "title": "GitHub source updates versus actually consumed components",
+      "area": "general",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-07T21:49:48.9781222+02:00",
+      "updatedAt": "2026-10-08T02:18:10.7523078+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\GithubIntegrationSmoke.cs",
+        "src\\SpankyhoOptimizer\\Services\\UpstreamSourceUpdateService.cs",
+        "src\\SpankyhoOptimizer\\Services\\WinUtilServicePolicy.cs",
+        "src\\SpankyhoOptimizer\\Services\\UpstreamUpdatePolicy.cs",
+        "src\\SpankyhoOptimizer\\Services\\ServiceBatchExecution.cs",
+        "src\\SpankyhoOptimizer\\Services\\WorkerMutationService.cs",
+        "src\\SpankyhoOptimizer\\Services\\WorkerPayloads.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.ComponentCenter.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.UpstreamSources.cs",
+        "build-release.ps1",
+        "src\\SpankyhoOptimizer\\SpankyhoOptimizer.csproj"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "installer-glass-738",
+      "title": "Installer glass errors and retry lifecycle",
+      "area": "installer",
+      "skill": "release-build.md",
+      "status": "done",
+      "createdAt": "2026-10-08T00:30:06.6841117+02:00",
+      "updatedAt": "2026-10-08T00:47:11.2732577+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "installer\\InstallerWindow.ErrorState.cs",
+        "installer\\InstallerWindow.Restored.cs",
+        "installer\\InstallerMain.cs",
+        "installer\\ModernInstaller.xaml",
+        "tests\\InstallerUiTests\\Program.cs",
+        "tests\\InstallerUiTests\\InstallerUiTests.csproj",
+        "build-release.ps1"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "runtime-ui-739",
+      "title": "Installed739 normal GUI lifecycle and bounded overview/navigation audit",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-08T01:09:58.3307609+02:00",
+      "updatedAt": "2026-10-08T01:32:45.8701023+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\MainWindow.OverviewDashboard.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.OverviewInteractionRegression.cs",
+        "WORK_PROGRESS.md",
+        "src\\SpankyhoOptimizer\\MainWindow.Glass21.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "overview-status-741",
+      "title": "Fix deferred Overview system/driver loading state",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-08T01:37:12.2197897+02:00",
+      "updatedAt": "2026-10-08T01:59:50.096736+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\MainWindow.OverviewDashboard.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.OverviewStatusRegression.cs",
+        "src\\SpankyhoOptimizer\\App.cs",
+        "WORK_PROGRESS.md"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261008020258",
+      "title": "Finish remaining seven project workstreams by evidence and targeted regression fixes",
+      "area": "regression",
+      "skill": "xaml-regression.md",
+      "status": "abandoned",
+      "createdAt": "2026-10-08T02:02:58.1939168+02:00",
+      "updatedAt": "2026-10-08T05:23:37.9094582+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [
+        "functional-audit",
+        "glass-ui",
+        "AI-cloud-state",
+        "upstream-consumers",
+        "full-release"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "ai-1071-ram-evidence",
+      "title": "AI RAM ABA evidence, candidate selection and measured overhead",
+      "area": "ai-runtime",
+      "skill": "general-debug.md",
+      "status": "abandoned",
+      "createdAt": "2026-10-13T08:08:00.826916+02:00",
+      "updatedAt": "2026-10-13T08:09:59.1277142+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [
+        "targeted source tests",
+        "build-fast",
+        "build-test",
+        "build-release",
+        "independent SHA256"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261018110621",
+      "title": "RuntimeHost/UI CPU+RAM footprint optimization",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "abandoned",
+      "createdAt": "2026-10-18T11:06:21.4731551+02:00",
+      "updatedAt": "2026-10-21T06:59:21.8942366+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.SystemPageCache.cs",
+        "src/SpankyhoOptimizer/Services/ArchiveSafetyService.cs"
+      ],
+      "validationRequired": [
+        "No steady-state CPU/RAM savings claimed"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-worker-ipc-path",
+      "title": "Worker IPC output path write safety",
+      "area": "regression",
+      "skill": "xaml-regression.md",
+      "status": "done",
+      "createdAt": "2026-10-21T07:19:18.6866448+02:00",
+      "updatedAt": "2026-10-21T07:30:09.2991717+02:00",
+      "dependsOn": [
+        "FULL_SMOKE"
+      ],
+      "blockedBy": [
+        "FULL_SMOKE"
+      ],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/Services/WorkerIpcSecurity.cs"
+      ],
+      "validationRequired": [
+        "RED_GREEN_WORKER_IPC_PATH",
+        "Independent Desktop SHA verified"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-gpu-signer",
+      "title": "GPU installer signer identity safety",
+      "area": "regression",
+      "skill": "xaml-regression.md",
+      "status": "done",
+      "createdAt": "2026-10-21T07:41:11.4655363+02:00",
+      "updatedAt": "2026-10-21T07:41:13.0534768+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/Services/FileSecurityService.cs"
+      ],
+      "validationRequired": [
+        "Independent desktop SHA verified and older installer removed"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-registry-export",
+      "title": "Atomic and streaming registry backup export",
+      "area": "regression",
+      "skill": "xaml-regression.md",
+      "status": "done",
+      "createdAt": "2026-10-21T07:44:18.3787701+02:00",
+      "updatedAt": "2026-10-21T07:57:57.5429665+02:00",
+      "dependsOn": [
+        "FULL_SMOKE"
+      ],
+      "blockedBy": [
+        "FULL_SMOKE"
+      ],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/Services/GTweakRegistryExportService.cs"
+      ],
+      "validationRequired": [
+        "RED_GREEN_REGISTRY_EXPORT",
+        "Strict release16.114.84 first pass with full smoke"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-powerguard-arguments",
+      "title": "Power plan guard parameter forwarding",
+      "area": "regression",
+      "skill": "xaml-regression.md",
+      "status": "done",
+      "createdAt": "2026-10-21T08:03:01.0641597+02:00",
+      "updatedAt": "2026-10-21T08:14:02.5729483+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/Services/PowerPlanGuardService.cs"
+      ],
+      "validationRequired": [
+        "Full strict Release16.114.85 PASS"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-launcher-startup-match",
+      "title": "Safe launcher startup matching",
+      "area": "regression",
+      "skill": "xaml-regression.md",
+      "status": "done",
+      "createdAt": "2026-10-21T08:21:42.9390249+02:00",
+      "updatedAt": "2026-10-21T08:28:03.8710518+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/Services/LauncherProcessMatcher.cs"
+      ],
+      "validationRequired": [
+        "Strict release16.114.86 full smoke PASS"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-config-import-export",
+      "title": "Safe Optimizer config import export",
+      "area": "regression",
+      "skill": "xaml-regression.md",
+      "status": "done",
+      "createdAt": "2026-10-21T08:36:53.2611582+02:00",
+      "updatedAt": "2026-10-21T08:41:25.2641514+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-remove-export-import",
+      "title": "Remove unwanted export and import",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-21T08:41:26.0757443+02:00",
+      "updatedAt": "2026-10-21T08:47:00.504462+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.Tools.cs"
+      ],
+      "validationRequired": [
+        "Strict release16.114.87 first pass130.49s"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-runtime-diagnostics-gate",
+      "title": "Reduce default runtime diagnostics overhead",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-21T08:58:10.0614715+02:00",
+      "updatedAt": "2026-10-21T09:07:26.6264937+02:00",
+      "dependsOn": [
+        "TARGETED_COMPILE"
+      ],
+      "blockedBy": [
+        "TARGETED_COMPILE"
+      ],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/Services/LogService.cs"
+      ],
+      "validationRequired": [
+        "PERF_POLICY_RED_GREEN",
+        "Strict release16.114.88 full smoke PASS129.97s"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-hot-log-allocations",
+      "title": "Eliminate hot log allocations",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-21T09:21:14.9133448+02:00",
+      "updatedAt": "2026-10-21T09:27:39.2280087+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/Services/LogService.cs"
+      ],
+      "validationRequired": [
+        "Strict release16.114.89 full smoke PASS129.60s"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-otel-allocations",
+      "title": "Remove disabled telemetry allocations",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-21T10:03:43.2262496+02:00",
+      "updatedAt": "2026-10-21T10:09:27.536796+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/Services/DiagnosticsTelemetry.cs"
+      ],
+      "validationRequired": [
+        "Strict release16.114.90 full smoke PASS132.94s"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-games-foundation",
+      "title": "Integrate safe Games section",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-21T11:28:04.9448166+02:00",
+      "updatedAt": "2026-10-21T11:40:32.0525511+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src/SpankyhoOptimizer/MainWindow.Games.cs"
+      ],
+      "validationRequired": [
+        "Read-only fixture GameReady 2 libraries 2 games PASS and full smoke PASS"
+      ],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-games-hardware-readiness",
+      "title": "Game hardware preflight and UI cache",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-21T12:02:32.8469299+02:00",
+      "updatedAt": "2026-10-21T12:08:38.9299617+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-game-fps-benchmark",
+      "title": "Real game FPS benchmark",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-21T12:42:17.734925+02:00",
+      "updatedAt": "2026-10-21T12:58:41.9730671+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-remove-dangerous-dead-ramguard-code",
+      "title": "Remove dead RAM Guard cleanup",
+      "area": "cleanup",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-21T13:08:09.2910783+02:00",
+      "updatedAt": "2026-10-21T13:12:52.8612548+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-changelog-index-hotpath",
+      "title": "Changelog popup index cache",
+      "area": "ui",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-21T13:25:52.6699792+02:00",
+      "updatedAt": "2026-10-21T13:32:21.5995219+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-integrate-selected-bufferbloat",
+      "title": "Internet bufferbloat and SQM",
+      "area": "internet",
+      "skill": "network-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-21T13:52:39.6603843+02:00",
+      "updatedAt": "2026-10-21T13:57:46.3674214+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-selected-fixer-cases",
+      "title": "Four selected Fixer cases",
+      "area": "fixer",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-21T14:10:52.070991+02:00",
+      "updatedAt": "2026-10-21T14:16:40.7863059+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-complete-selected-fixer-diagnostics",
+      "title": "Selected Fixer fault detection",
+      "area": "fixer",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-21T14:40:05.5257299+02:00",
+      "updatedAt": "2026-10-21T14:45:46.1517604+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-selected-direct-app-repair",
+      "title": "Selected official app repairs",
+      "area": "fixer",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-21T14:57:09.7976997+02:00",
+      "updatedAt": "2026-10-21T15:02:46.5959791+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-selected-windows-search-repair-navigation",
+      "title": "Windows Search repair routes",
+      "area": "fixer",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-21T15:11:54.4638181+02:00",
+      "updatedAt": "2026-10-21T15:17:00.5549423+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-approved-firmware-memory-readiness",
+      "title": "Selected BIOS RAM ReBAR check",
+      "area": "hardware",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-21T15:30:17.4536415+02:00",
+      "updatedAt": "2026-10-21T15:40:09.3376367+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-selected-gamereadyx-dependencies",
+      "title": "GameReadyX compatibility checks",
+      "area": "fixer",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-21T15:57:55.6554723+02:00",
+      "updatedAt": "2026-10-21T16:06:46.9316893+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "task-20261021-gamereadyx-manual-runtime-guidance",
+      "title": "GameReadyX official repair steps",
+      "area": "fixer",
+      "skill": "general-debug.md",
+      "status": "done",
+      "createdAt": "2026-10-21T16:16:36.2951841+02:00",
+      "updatedAt": "2026-10-21T16:22:37.5820103+02:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "epic-game-priority-protection-16265",
+      "title": "Epic game-start priority rollback",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T16:27:38.8405917+01:00",
+      "updatedAt": "2026-10-26T16:27:39.3728766+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiAutomaticProcessPriorityPolicy.cs",
+        "src\\SpankyhoOptimizer\\Services\\AiAutomaticProcessPriorityService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "epic-startup-hold-16266",
+      "title": "Epic auto-start persistent ownership and seven action verification",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T18:07:18.0886249+01:00",
+      "updatedAt": "2026-10-26T18:07:18.6454102+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.TaskSchedulerSmoke.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "epic-startup-feedback-16267",
+      "title": "Long-lived Epic owned startup evidence",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T18:18:36.4399337+01:00",
+      "updatedAt": "2026-10-26T18:18:36.8489362+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "epic-owner-epoch-race-16268",
+      "title": "Fail-closed startup timestamp and external override race",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T18:29:29.8784939+01:00",
+      "updatedAt": "2026-10-26T18:29:30.2927153+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs",
+        "src\\SpankyhoOptimizer\\MainWindow.TaskSchedulerSmoke.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "startup-journal-nullpath-16269",
+      "title": "Null-safe startup owner journal",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T18:41:29.6419063+01:00",
+      "updatedAt": "2026-10-26T18:41:30.058805+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "null-feedback-owner-recovery-16270",
+      "title": "Null-safe app learning and recovery",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T18:55:13.2711177+01:00",
+      "updatedAt": "2026-10-26T18:55:13.740673+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "native-startup-null-safety-16271",
+      "title": "Native startup inventory null-safe rollback",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T19:07:03.3324036+01:00",
+      "updatedAt": "2026-10-26T19:07:03.7526924+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "native-prewal-startup-gate-16272",
+      "title": "Pre-WAL native startup admission",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T19:22:32.5189511+01:00",
+      "updatedAt": "2026-10-26T19:22:32.94637+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "first-native-startup-candidate-16273",
+      "title": "First native-safe idle startup candidate",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T19:33:28.3944986+01:00",
+      "updatedAt": "2026-10-26T19:33:28.8607515+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "canonical-startup-owner-id-16274",
+      "title": "Canonical startup ownership identity",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T19:47:43.730245+01:00",
+      "updatedAt": "2026-10-26T19:47:44.1955825+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "persistent-canonical-owner-16275",
+      "title": "Canonical persisted HKCU startup ownership",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T20:05:24.2229803+01:00",
+      "updatedAt": "2026-10-26T20:05:24.6359037+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "fresh-canonical-prewrite-16276",
+      "title": "Fresh native startup canonical write guard",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T20:17:07.0099836+01:00",
+      "updatedAt": "2026-10-26T20:17:07.436601+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "canonical-disabled-restore-id-16277",
+      "title": "Canonical disabled startup restore identity",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T20:28:22.0201266+01:00",
+      "updatedAt": "2026-10-26T20:28:22.4491699+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "startup-final-owner-proof-16278",
+      "title": "Canonical evidence before startup ownership release",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T20:39:00.726453+01:00",
+      "updatedAt": "2026-10-26T20:39:01.169784+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "startup-helper-owned-scope-16279",
+      "title": "Self-contained owned startup guards",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T20:55:30.8212209+01:00",
+      "updatedAt": "2026-10-26T20:55:31.3747906+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\AiThirdPartyIdleAutomationService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "bounded-strict-user-profile-16280",
+      "title": "Bounded strict user profile reads",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T21:12:14.5457486+01:00",
+      "updatedAt": "2026-10-26T21:12:15.0020839+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\UserFeatureProfileService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "bounded-legacy-profile-failclosed-16281",
+      "title": "Fail-closed bounded legacy profile migration",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T21:27:43.4765553+01:00",
+      "updatedAt": "2026-10-26T21:27:44.0238353+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\UserFeatureProfileService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "profile-prewrite-size-16282",
+      "title": "Preserve bounded user profile on oversized Save",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T21:47:09.6193516+01:00",
+      "updatedAt": "2026-10-26T21:47:10.1935633+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\UserFeatureProfileService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "profile-physical-id-16283",
+      "title": "Detect same-metadata external KEEP updates",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T22:11:39.3488638+01:00",
+      "updatedAt": "2026-10-26T22:11:39.7976932+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\ReusableFileMetadata.cs",
+        "src\\SpankyhoOptimizer\\Services\\UserFeatureProfileService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "atomic-keep-read-unverified-id-16284",
+      "title": "Nonblocking KEEP reads and unverified identity fail-closed",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T22:30:15.421835+01:00",
+      "updatedAt": "2026-10-26T22:30:15.8825055+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\UserFeatureProfileService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "verified-keep-write-physical-id-16285",
+      "title": "Fail-closed native physical ID for KEEP writes",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T22:46:12.1078307+01:00",
+      "updatedAt": "2026-10-26T22:46:12.5572877+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\UserFeatureProfileService.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "fan-watchdog-bounded-heartbeat-16286",
+      "title": "Bounded fan watchdog heartbeat",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T23:01:32.0279765+01:00",
+      "updatedAt": "2026-10-26T23:02:02.5922495+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\FanProfileService.cs",
+        "src\\SpankyhoOptimizer\\App.cs"
+      ],
+      "validationRequired": [],
+      "retryCount": 0,
+      "lastError": null
+    },
+    {
+      "id": "bounded-fan-version-16287",
+      "title": "Bounded safe fan agent version metadata",
+      "area": "performance",
+      "skill": "winui-performance.md",
+      "status": "done",
+      "createdAt": "2026-10-26T23:12:03.0179848+01:00",
+      "updatedAt": "2026-10-26T23:12:03.4581794+01:00",
+      "dependsOn": [],
+      "blockedBy": [],
+      "subtasks": [],
+      "filesTouched": [
+        "src\\SpankyhoOptimizer\\Services\\FanProfileService.cs"
       ],
       "validationRequired": [],
       "retryCount": 0,

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "updatedUtc": "2026-11-13T17:34:56.5082940Z",
+  "kind": "release",
+  "outcome": "OK",
+  "builtVersion": "17.19.0",
+  "sourceVersion": "17.20.0",
+  "taskId": null,
+  "taskStatus": "none",
+  "taskTitle": "",
+  "evidence": "C:\\Users\\spnka\\Desktop\\Glass_Optimizer_Setup_Compact.exe"
+}

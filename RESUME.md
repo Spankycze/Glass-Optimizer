@@ -1,20 +1,18 @@
 # RESUME - current work only
 
-Updated UTC: 2026-11-12T01:22:00Z
-Source: 17.10.0
-Installed: 17.9.0.0
+Updated UTC: 2026-11-14T20:02:02.8470089Z
+Source: 17.20.0
+Installed: 17.19.0+cee8278fc117c36daf21783829f9f15041fee867
 Task:  | none
 
 ## Where work stopped
-GitHub release v17.9.0 published, downloaded, SHA-256 verified and silently installed.
+Latest successful test-quick checkpoint for v17.20.0.
 
 ## Exact next action
-Continue from current source v17.10.0; v17.9.0 is the latest verified release.
+Continue from current source v17.20.0 and the latest user request.
 
 ## Completed
-- GitHub release v17.9.0 published with installer, checksum and changelog.
-- Downloaded installer hash and size verified: 153B8B85F140B8FD41BECEA3806B72E66F9DD7979F728C10577AE3E63730F5C2, 64377788 bytes.
-- Silent installer exited 0; installed file version is 17.9.0.0.
+- Build checkpoint updated automatically.
 
 ## Pending
 
@@ -22,12 +20,11 @@ Continue from current source v17.10.0; v17.9.0 is the latest verified release.
 
 ## Evidence
 - .ai-state\BUILD_CHECKPOINT.json
-- C:\Users\spnka\Desktop\Glass_Optimizer_Setup_Compact.exe
-- Verified release: {"version":"17.9.0","release":"https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.9.0","installer":"C:\\Users\\spnka\\Desktop\\Glass_Optimizer_Setup_Compact.exe","sha256":"153B8B85F140B8FD41BECEA3806B72E66F9DD7979F728C10577AE3E63730F5C2","payloadVerified":true,"installedVersion":"17.9.0.0"}
+- Verified release: {"version":"17.19.0","releaseReport":null,"deploymentReport":null,"installer":"C:\\Users\\spnka\\Desktop\\Glass_Optimizer_Setup_Compact.exe","sha256":"89B2E7726737A1D70843913CA6094D20F08EBF1895F9D993E1865DE2A358BA53","payloadVerified":true,"installedVersion":"17.19.0+cee8278fc117c36daf21783829f9f15041fee867","validationReport":null,"releaseLog":null,"source":"successful-build-checkpoint-history"}
 
-## Freshness
-- Live gate confirms SOURCE 17.10.0, VERIFIED 17.9.0 and INSTALLED 17.9.0.0.
-- Source bump is not a verified release. Check future release status with get-live-project-state.ps1 -AsJson.
+## Freshness warnings
+- Source version differs from released version; an automatic next-version bump is not a new verified build.
+- Ignored 3 historical build-status entries; verify active versions with get-live-project-state.ps1 -AsJson.
 
 History: .ai-state/resume-history.jsonl and SESSION_HISTORY.md. Read only when needed.
 Use ai-workflow checkpoint with Summary, NextAction, Done, Pending and Evidence after each meaningful batch.

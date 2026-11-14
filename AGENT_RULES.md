@@ -1,7 +1,9 @@
 # Spankyho Optimizer Agent Rules
 
+- MANDATORY freshness gate: before stating a version or resuming work, run `pwsh -NoProfile -File 'V:\ChatGPT Projects\Spankyho Optimizer\get-live-project-state.ps1' -AsJson` on Spankyvole. Source, verified release, and installed version are distinct; a historical Library/chat note, build-time CURRENT_STATE.md, or old C: project path can NEVER override live V: checks. When offline say 'not verified', not an old number.
+
 - Work through normal ChatGPT + DC Remote; do not use Work mode.
-- Read PROJECT_STATE.md first, then SESSION_HANDOFF.md; use WORK_PROGRESS.md only for needed detail.
+- First run the live version gate on Spankyvole; then read AGENTS.md and RESUME.md. Consult the newest NEXT_CHAT_HANDOFF.md entry if needed. PROJECT_STATE.md and SESSION_HANDOFF.md can contain historical status, so use them only as archives, never as active version authority.
 - Use PROJECT_INDEX.json for code navigation before broad recursive scans.
 - Use TASK_STATE.json / CHECKPOINT.json through ai-workflow.ps1 for multi-step work.
 - Load only the skill relevant to the current task from skills/.

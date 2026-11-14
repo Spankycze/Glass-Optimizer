@@ -89,4 +89,13 @@ validate-*.code
 .DS_Store
 Thumbs.db
 desktop.ini
+
+devtools/graphics/vendor/
+devtools/graphics/generated/
 installer/payload.tar.zst
+.serena/
+.kilo/
+.qoder/
+.opencode/node_modules/
+.opencode/cache/
+.gg/

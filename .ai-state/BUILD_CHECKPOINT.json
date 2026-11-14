@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "updatedUtc": "2026-11-14T20:02:02.6169913Z",
+  "kind": "test-quick",
+  "outcome": "OK",
+  "builtVersion": "17.20.0",
+  "sourceVersion": "17.20.0",
+  "taskId": null,
+  "taskStatus": "none",
+  "taskTitle": "",
+  "evidence": ""
+}

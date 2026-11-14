@@ -1,0 +1,14 @@
+# Qoder: neindexovat vygenerované a nepotřebné soubory
+node_modules/
+dist/
+build/
+target/
+coverage/
+.venv/
+__pycache__/
+.cache/
+*.log
+*.tmp
+*.dmp
+*.pdb
+.dc-logs/

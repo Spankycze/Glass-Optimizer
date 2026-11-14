@@ -8382,7 +8382,7 @@
                                           "mode":  "fast-xaml-reuse",
                                           "xamlReuse":  true,
                                           "projectReferences":  "skip",
-                                          "binlog":  "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\perf\\20260930_174108\\build-profile\\incremental.binlog",
+                                          "binlog":  "C:\\Users\\spnka\\Desktop\\Spankyho Optimizer Project\\artifacts\\perf\\20260930_174108\\build-profile\\incremental.binlog",
                                           "hotLines":  [
                                                            "     1\u003eMarkupCompilePass1:",
                                                            "       XamlPreCompile:",

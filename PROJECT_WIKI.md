@@ -1,18 +1,34 @@
 # Spankyho Optimizer Project Wiki
 
-Generated: 2026-09-28 00:16:19
+Generated: 2026-10-07 06:59:18
 
 ## Inventory
-- Files: 261
-- Classes: 474
-- Methods: 2213
-- Services: 136
-- Call edges: 6230
-- Hot-pattern references: 1175
+- Files: 403
+- Classes: 712
+- Methods: 3383
+- Services: 188
+- Call edges: 9366
+- Hot-pattern references: 1492
 
 ## Major services
 - ActionFeedbackService â€” src\SpankyhoOptimizer\Services\ActionFeedbackService.cs:10
+- AdaptivePowerRuntimeService â€” src\SpankyhoOptimizer\Services\AdaptivePowerRuntimeService.cs:27
 - AdvancedCenterService â€” src\SpankyhoOptimizer\Services\AdvancedCenterService.cs:16
+- AiActionJournalService â€” src\SpankyhoOptimizer\Services\AiActionJournalService.cs:34
+- AiActionOrchestrationService â€” src\SpankyhoOptimizer\Services\AiActionOrchestrationService.cs:16
+- AiActionTransactionService â€” src\SpankyhoOptimizer\Services\AiActionTransactionService.cs:7
+- AiCloudProfileService â€” src\SpankyhoOptimizer\Services\AiCloudProfileService.cs:34
+- AiChatClientBridgeService â€” src\SpankyhoOptimizer\Services\AiChatClientBridgeService.cs:17
+- AiOptimizationDiagnosticService â€” src\SpankyhoOptimizer\Services\AiOptimizationDiagnosticService.cs:17
+- AiRuntimeInfrastructureService â€” src\SpankyhoOptimizer\Services\AiRuntimeInfrastructureService.cs:29
+- AiSecurityHardeningService â€” src\SpankyhoOptimizer\Services\AiSecurityHardeningService.cs:17
+- AiSelfOptimizationService â€” src\SpankyhoOptimizer\Services\AiSelfOptimizationService.cs:20
+- AiSharedDecisionContextService â€” src\SpankyhoOptimizer\Services\AiSharedDecisionContextService.cs:17
+- AiSmartRuntimeService â€” src\SpankyhoOptimizer\Services\AiSmartRuntimeService.cs:42
+- AiSystemResourceManagerService â€” src\SpankyhoOptimizer\Services\AiSystemResourceManagerService.cs:84
+- AiToolCacheService â€” src\SpankyhoOptimizer\Services\AiToolCacheService.cs:8
+- AiTweakRuntimeService â€” src\SpankyhoOptimizer\Services\AiTweakMeasuredRuntime.cs:16
+- AiTweakRuntimeService â€” src\SpankyhoOptimizer\Services\AiTweakRuntimeService.cs:62
 - AppDetectionService â€” src\SpankyhoOptimizer\Services\AppDetectionService.cs:13
 - ApplyProfileSmokeService â€” src\SpankyhoOptimizer\Services\ApplyProfileSmokeService.cs:10
 - AppThemeService â€” src\SpankyhoOptimizer\Services\AppThemeService.cs:16
@@ -24,13 +40,16 @@ Generated: 2026-09-28 00:16:19
 - BackgroundActivityService â€” src\SpankyhoOptimizer\Services\BackgroundActivityService.cs:28
 - BackgroundWorkSchedulerService â€” src\SpankyhoOptimizer\Services\BackgroundWorkSchedulerService.cs:10
 - BcdEditStateService â€” src\SpankyhoOptimizer\Services\BcdEditStateService.cs:7
-- BrowserCacheService â€” src\SpankyhoOptimizer\Services\V10PortServices.cs:907
 - CatalogService â€” src\SpankyhoOptimizer\Services\CatalogService.cs:14
 - ContextMenuService â€” src\SpankyhoOptimizer\Services\ContextMenuService.cs:12
+- CpuTemperatureService â€” src\SpankyhoOptimizer\Services\CpuTemperatureService.cs:8
 - CrashDumpService â€” src\SpankyhoOptimizer\Services\CrashDumpService.cs:10
 - CrashFingerprintService â€” src\SpankyhoOptimizer\Services\CrashFingerprintService.cs:13
-- CrashLoopGuardService â€” src\SpankyhoOptimizer\Services\CrashLoopGuardService.cs:9
+- CrashLoopGuardService â€” src\SpankyhoOptimizer\Services\CrashLoopGuardService.cs:10
 - CrashReportService â€” src\SpankyhoOptimizer\Services\CrashReportService.cs:11
+- CursorCommunityPackService â€” src\SpankyhoOptimizer\Services\CursorCommunityPackService.cs:26
+- CursorThemeService â€” src\SpankyhoOptimizer\Services\CursorThemeService.cs:14
+- DataRootCleanupService â€” src\SpankyhoOptimizer\Services\DataRootCleanupService.cs:6
 - DebloatService â€” src\SpankyhoOptimizer\Services\DebloatService.cs:11
 - DirectXGlobalSettingsService â€” src\SpankyhoOptimizer\Services\DirectXGlobalSettingsService.cs:10
 - DiskPdhUsageService â€” src\SpankyhoOptimizer\Services\DiskPdhUsageService.cs:6
@@ -39,11 +58,19 @@ Generated: 2026-09-28 00:16:19
 - DnsResolverCatalogService â€” src\SpankyhoOptimizer\Services\DnsResolverCatalogService.cs:15
 - DriverInventoryService â€” src\SpankyhoOptimizer\Services\DriverInventoryService.cs:14
 - DriverReleaseCacheService â€” src\SpankyhoOptimizer\Services\DriverReleaseCacheService.cs:6
+- ElevatedWorkerProcessService â€” src\SpankyhoOptimizer\Services\ElevatedWorkerProcessService.cs:8
 - ErrorService â€” src\SpankyhoOptimizer\Services\ErrorService.cs:6
+- FanPlatformHealthService â€” src\SpankyhoOptimizer\Services\FanPlatformHealthService.cs:14
+- FanProfileService â€” src\SpankyhoOptimizer\Services\FanProfileService.cs:79
+- FanTrayIconService â€” src\SpankyhoOptimizer\Services\FanTrayIconService.cs:29
+- FaultInjectionService â€” src\SpankyhoOptimizer\Services\FaultInjectionService.cs:9
 - FileSecurityService â€” src\SpankyhoOptimizer\Services\FileSecurityService.cs:14
-- FirefoxAdvancedService â€” src\SpankyhoOptimizer\Services\V10PortServices.cs:762
-- FirewallStateService â€” src\SpankyhoOptimizer\Services\FirewallStateService.cs:9
-- GhostUsbService â€” src\SpankyhoOptimizer\Services\V10PortServices.cs:481
+- FirewallStateService â€” src\SpankyhoOptimizer\Services\FirewallStateService.cs:10
+- GeminiLiveTranscriptionService â€” src\SpankyhoOptimizer\Services\GeminiLiveTranscriptionService.cs:13
+- GeminiSegmentTranscriptionService â€” src\SpankyhoOptimizer\Services\GeminiSegmentTranscriptionService.cs:15
+- GeminiSttRateLimitStateService â€” src\SpankyhoOptimizer\Services\GeminiSttRateLimitStateService.cs:7
+- GhostUsbService â€” src\SpankyhoOptimizer\Services\StartupAndSystemServices.cs:576
+- GoogleDriveOAuthService â€” src\SpankyhoOptimizer\Services\GoogleDriveOAuthService.cs:27
 - GpuDriverService â€” src\SpankyhoOptimizer\Services\GpuDriverService.cs:21
 - GpuPdhUsageService â€” src\SpankyhoOptimizer\Services\GpuPdhUsageService.cs:6
 - GTweakBluetoothService â€” src\SpankyhoOptimizer\Services\GTweakBluetoothService.cs:9
@@ -56,41 +83,14 @@ Generated: 2026-09-28 00:16:19
 - GTweakToolsetService â€” src\SpankyhoOptimizer\Services\GTweakToolsetService.cs:16
 - HardwareChangeMonitorService â€” src\SpankyhoOptimizer\Services\HardwareChangeMonitorService.cs:6
 - HardwareSnapshotService â€” src\SpankyhoOptimizer\Services\HardwareSnapshotService.cs:21
+- HardwareTelemetryBridgeService â€” src\SpankyhoOptimizer\Services\HardwareTelemetryBridgeService.cs:27
+- ChatGptPlanAuthService â€” src\SpankyhoOptimizer\Services\ChatGptPlanAuthService.cs:30
+- ChatGptPlanConversationService â€” src\SpankyhoOptimizer\Services\ChatGptPlanConversationService.cs:16
+- ChrisTitusIntegrationService â€” src\SpankyhoOptimizer\Services\ChrisTitusIntegrationService.cs:20
 - IdlePrewarmService â€” src\SpankyhoOptimizer\Services\IdlePrewarmService.cs:7
 - InputLatencyService â€” src\SpankyhoOptimizer\Services\InputLatencyService.cs:20
 - InstalledAppService â€” src\SpankyhoOptimizer\Services\InstalledAppService.cs:33
 - InterruptLatencyService â€” src\SpankyhoOptimizer\Services\InterruptLatencyService.cs:29
-- LauncherCacheService â€” src\SpankyhoOptimizer\Services\V10PortServices.cs:599
-- LauncherGamingModeService â€” src\SpankyhoOptimizer\Services\V10PortServices.cs:711
-- LegacyMultimediaTuningService â€” src\SpankyhoOptimizer\Services\LegacyMultimediaTuningService.cs:16
-- LogService â€” src\SpankyhoOptimizer\Services\LogService.cs:10
-- LogTailService â€” src\SpankyhoOptimizer\Services\LogTailService.cs:9
-- MemoryPressureService â€” src\SpankyhoOptimizer\Services\MemoryPressureService.cs:5
-- MemoryStateService â€” src\SpankyhoOptimizer\Services\MemoryStateService.cs:19
-- MtuOptimizerService â€” src\SpankyhoOptimizer\Services\MtuOptimizerService.cs:33
-- NativeNicTuningService â€” src\SpankyhoOptimizer\Services\NativeNicTuningService.cs:19
-- NativePerformanceSmokeService â€” src\SpankyhoOptimizer\Services\NativePerformanceSmokeService.cs:24
-- NativeSystemProbeService â€” src\SpankyhoOptimizer\Services\NativeSystemProbeService.cs:30
-- NativeTitleBarService â€” src\SpankyhoOptimizer\Services\NativeTitleBarService.cs:6
-- NetworkDiagnosticsService â€” src\SpankyhoOptimizer\Services\NetworkDiagnosticsService.cs:15
-- NetworkTransitionStateService â€” src\SpankyhoOptimizer\Services\NetworkTransitionStateService.cs:15
-- NonTweakMutationAuditService â€” src\SpankyhoOptimizer\Services\NonTweakMutationAuditService.cs:11
-- OperationJournalService â€” src\SpankyhoOptimizer\Services\OperationJournalService.cs:13
-- OptimizationAdvisorSmokeService â€” src\SpankyhoOptimizer\Services\OptimizationAdvisorSmokeService.cs:8
-- OptimizerConfigService â€” src\SpankyhoOptimizer\Services\OptimizerConfigService.cs:14
-- PerformanceBaselineService â€” src\SpankyhoOptimizer\Services\PerformanceBaselineService.cs:15
-- PerformanceProfilesService â€” src\SpankyhoOptimizer\Services\PerformanceProfilesService.cs:13
-- PerformanceTelemetryService â€” src\SpankyhoOptimizer\Services\PerformanceTelemetryService.cs:8
-- PerformanceTraceService â€” src\SpankyhoOptimizer\Services\PerformanceTraceService.cs:17
-- PersistentHardwareCacheService â€” src\SpankyhoOptimizer\Services\PersistentHardwareCacheService.cs:13
-- PlatformCompatibilityAuditService â€” src\SpankyhoOptimizer\Services\PlatformCompatibilityAuditService.cs:5
-- PowerPlanGuardService â€” src\SpankyhoOptimizer\Services\PowerPlanGuardService.cs:18
-- PowerPlanStateService â€” src\SpankyhoOptimizer\Services\PowerPlanStateService.cs:25
-- PowerShellCenterService â€” src\SpankyhoOptimizer\Services\PowerShellCenterService.cs:34
-- PowerShellTweakerService â€” src\SpankyhoOptimizer\Services\PowerShellTweakerService.cs:17
-- SafeModeLauncherService â€” src\SpankyhoOptimizer\Services\SafeModeLauncherService.cs:6
-- SafePresetProfileService â€” src\SpankyhoOptimizer\Services\SafePresetProfileService.cs:17
-- SafeTaskService â€” src\SpankyhoOptimizer\Services\SafeTaskService.cs:6
 
 ## Skills
 - general-debug.md
@@ -102,55 +102,55 @@ Generated: 2026-09-28 00:16:19
 
 ## Current project state
 # PROJECT_STATE
+Read RESUME.md first for current task, next action and verified release evidence.
 
-Generated: 2026-09-28 00:16:18
-Reason: ai-workflow-final
+Generated: 2026-10-07 01:51:35
+Reason: post-release-15.4.699
 Project: Spankyho Optimizer
-Current source version: 15.4.372
-Latest source modification: 2026-09-28 00:11:44
-Debug EXE: 2026-09-28 00:12:14 | 455 KB
+Current source version: 15.4.700
+Latest source modification: 2026-10-07 01:41:54
+Debug EXE: 2026-10-07 01:45:34 | 463.5 KB
 
 ## Fresh build/test status
-- build-fast: OK | build | exit=0 | 19055.9 ms | 2026-09-28 00:12:15 | v15.4.372
-- build-test: OK | cache-hit | exit=0 | 565.4 ms | 2026-09-28 00:15:47 | v15.4.372
-- build-release: OK | release | exit=0 | 92505.1 ms | 2026-09-27 23:59:07 | v15.4.371
-- Runnable fingerprint fresh: True
-- Structural fingerprint fresh: True
-- Latest desktop installer: Spankyho_Optimizer_V15_4_371_Setup.exe | 98.02 MB | 2026-09-27 23:58:01
+- build-fast: STALE | OK | unknown | exit=0 | 26594.6 ms | 2026-10-04 07:30:12 | v15.4.621
+- build-test: STALE | OK | unknown | exit=0 | 7469 ms | 2026-10-03 21:27:02 | v15.4.613
+- build-release: STALE | OK | release | exit=0 | 138882.1 ms | 2026-10-03 23:55:04 | v15.4.618
+- Runnable fingerprint fresh: False
+- Structural fingerprint fresh: False
+- Latest desktop installer: Spankyho_Optimizer_V15_4_699_Setup_Compact.exe | 74.77 MB | 2026-10-07 01:48:28
 
 ## Error index
-- open=0 | resolved=13 | indexed=13
+- open=0 | resolved=38 | indexed=38
 
 ## AI workflow
-- task: none
-- skill: none
-- checkpoint: cp-20260928001548076 | validated | v15.4.372
-- project index: ready | files=261 classes=474 methods=2213 services=136
+- task: full-stability-audit-691 | in-progress | full-stability-audit-691
+- skill: general-debug.md
+- checkpoint: cp-20261004083138365 | validation-passed | v15.4.623
+- project index: ready | files=403 classes=712 methods=3376 services=188
 
 ## Recent source changes
-- src\SpankyhoOptimizer\App.cs | 2026-09-28 00:11:44
-- src\SpankyhoOptimizer\MainWindow.PerformanceSmoke.cs | 2026-09-28 00:10:54
-- src\SpankyhoOptimizer\MainWindow.cs | 2026-09-28 00:06:52
-- src\SpankyhoOptimizer\MainWindow.Startup.cs | 2026-09-28 00:00:22
-- src\SpankyhoOptimizer\Services\PerformanceTraceService.cs | 2026-09-27 23:53:14
-- src\SpankyhoOptimizer\MainWindow.WindowsModernizer.cs | 2026-09-27 23:24:27
-- src\SpankyhoOptimizer\Services\MtuOptimizerService.cs | 2026-09-27 23:06:52
-- src\SpankyhoOptimizer\MainWindow.PowerNetwork.cs | 2026-09-27 22:52:53
-- src\SpankyhoOptimizer\Services\ProcessRunner.cs | 2026-09-27 22:47:24
-- src\SpankyhoOptimizer\MainWindow.PowerShellTweaker.cs | 2026-09-27 22:02:11
-- src\SpankyhoOptimizer\MainWindow.DnsBenchmarkPopup.cs | 2026-09-27 22:01:32
-- src\SpankyhoOptimizer\MainWindow.ExostenzaProgress.cs | 2026-09-27 22:00:30
+- src\SpankyhoOptimizer\App.cs | 2026-10-07 01:41:54
+- src\SpankyhoOptimizer.Core\SpankyhoOptimizer.Core.csproj | 2026-10-07 01:37:41
+- src\SpankyhoOptimizer\SpankyhoOptimizer.csproj | 2026-10-07 00:28:15
+- src\SpankyhoOptimizer\Services\AiCloudProfileService.cs | 2026-10-07 00:14:31
+- src\SpankyhoOptimizer\Services\GeminiLiveTranscriptionService.cs | 2026-10-07 00:14:21
+- src\SpankyhoOptimizer\Services\FanProfileService.cs | 2026-10-07 00:14:16
+- src\SpankyhoOptimizer\Services\ChatGptPlanConversationService.cs | 2026-10-06 23:40:56
+- src\SpankyhoOptimizer\Services\OpenAiConversationService.cs | 2026-10-06 23:36:04
+- src\SpankyhoOptimizer\Services\AiSharedDecisionContextService.cs | 2026-10-06 23:35:38
+- src\SpankyhoOptimizer\Services\AiTweakMeasuredRuntime.cs | 2026-10-06 23:32:19
+- src\SpankyhoOptimizer\Services\AiSystemResourceManagerService.cs | 2026-10-06 23:31:45
+- src\SpankyhoOptimizer\Services\AiChatClientBridgeService.cs | 2026-10-06 23:15:36
 
 ## Last DC command
-- 2026-09-28 00:15:47 | build-test | exit=0 | 565.4 ms | powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-test.ps1
+- (historical entry removed during cleanup)
 
 ## Continuity
-- WORK_PROGRESS.md: present
 
 ## Performance baseline
 # PERFORMANCE_BASELINE
 
-Aktualizováno: 2026-09-27 23:54 CEST  
+Aktualizováno: 2026-09-27 23:54 CEST
 Zdroj: `artifacts/perf/latest.json` • 10 opakování • median/P95 • trace + counters + WPR + soak.
 
 ## Aktuální runtime baseline

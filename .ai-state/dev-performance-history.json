@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "runs": [
+    {
+      "utc": "2026-10-25T11:32:21.0067728+01:00",
+      "project": "Spankyho Optimizer",
+      "target": "CoreBuild",
+      "ms": 246.22,
+      "samples": [
+        293.01,
+        243.02,
+        246.22
+      ],
+      "node": "v26.12.1"
+    },
+    {
+      "utc": "2026-10-25T11:32:38.7025378+01:00",
+      "project": "Spankyho Optimizer",
+      "target": "Quality",
+      "ms": 5228.03,
+      "samples": [
+        5228.03
+      ],
+      "node": "v26.12.1"
+    },
+    {
+      "utc": "2026-10-25T11:32:57.1680708+01:00",
+      "project": "Spankyho Optimizer",
+      "target": "Graphics",
+      "ms": 305.73,
+      "samples": [
+        451.42,
+        290.03,
+        305.73
+      ],
+      "node": "v26.12.1"
+    },
+    {
+      "utc": "2026-10-25T10:33:27.7753931+00:00",
+      "project": "Spankyho Optimizer",
+      "target": "DevCycleSelfTest",
+      "ms": 750.05,
+      "samples": [
+        750.05
+      ],
+      "node": "v26.12.1"
+    }
+  ]
+}
