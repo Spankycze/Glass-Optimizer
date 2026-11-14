@@ -12,7 +12,10 @@ public sealed class FanStartupIsolationTests
         Assert.NotNull(directory);
         string serviceFile = Path.Combine(directory!.FullName, "src", "SpankyhoOptimizer", "Services", "FanProfileService.cs");
         Assert.True(File.Exists(serviceFile), "Fan agent service source must exist for startup isolation check");
-        string source = File.ReadAllText(serviceFile);
+        // The type is split into partial files; check the whole type.
+        string[] serviceFiles = Directory.GetFiles(Path.GetDirectoryName(serviceFile)!, "FanProfileService*.cs");
+        Assert.NotEmpty(serviceFiles);
+        string source = string.Concat(Array.ConvertAll(serviceFiles, File.ReadAllText));
         Assert.Contains("public static async Task RunAgentAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("LegacyRamGuardCleanupService.CleanupBestEffort(", source, StringComparison.Ordinal);
     }
