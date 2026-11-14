@@ -2,8 +2,8 @@
   "Egress": {
     "FileSystem": {
       "LocalArtifacts": {
-        "directoryPath": "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\diagnostics\\dotnet-monitor",
-        "intermediateDirectoryPath": "C:\\Users\\spnka\\Desktop\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\diagnostics\\dotnet-monitor-tmp"
+        "directoryPath": "V:\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\diagnostics\\dotnet-monitor",
+        "intermediateDirectoryPath": "V:\\ChatGPT Projects\\Spankyho Optimizer\\artifacts\\diagnostics\\dotnet-monitor-tmp"
       }
     }
   },

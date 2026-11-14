@@ -1,9 +1,10 @@
-# Publishes exactly the Compact installer and CHANGELOG.md to a GitHub release.
+# Publishes exactly the Compact installer, README.md and CHANGELOG.md to a GitHub release.
 param(
     [Parameter(Mandatory = $true)][string]$Tag,
     [string]$Repository = 'Spankycze/Glass-Optimizer',
     [string]$InstallerPath = '',
-    [string]$ChangelogPath = ''
+    [string]$ChangelogPath = '',
+    [string]$ReadmePath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,8 +15,11 @@ if ([string]::IsNullOrWhiteSpace($InstallerPath)) {
 if ([string]::IsNullOrWhiteSpace($ChangelogPath)) {
     $ChangelogPath = Join-Path $root 'CHANGELOG.md'
 }
+if ([string]::IsNullOrWhiteSpace($ReadmePath)) {
+    $ReadmePath = Join-Path $root 'README.md'
+}
 
-foreach ($path in @($InstallerPath, $ChangelogPath)) {
+foreach ($path in @($InstallerPath, $ChangelogPath, $ReadmePath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "RELEASE_FILE_NOT_FOUND: $path"
     }
@@ -25,6 +29,9 @@ if ([IO.Path]::GetFileName($InstallerPath) -cne 'Glass_Optimizer_Setup_Compact.e
 }
 if ([IO.Path]::GetFileName($ChangelogPath) -cne 'CHANGELOG.md') {
     throw 'RELEASE_CHANGELOG_NAME_INVALID'
+}
+if ([IO.Path]::GetFileName($ReadmePath) -cne 'README.md') {
+    throw 'RELEASE_README_NAME_INVALID'
 }
 
 $releaseJson = (& gh release view $Tag --repo $Repository --json assets 2>&1)
@@ -46,12 +53,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 $release = $releaseJson | ConvertFrom-Json
 # Upload replacements first. A failed transfer must not destroy the working release assets.
-& gh release upload $Tag $InstallerPath $ChangelogPath --repo $Repository --clobber
+& gh release upload $Tag $InstallerPath $ChangelogPath $ReadmePath --repo $Repository --clobber
 if ($LASTEXITCODE -ne 0) {
     throw 'RELEASE_ASSET_UPLOAD_FAILED'
 }
 
-$expected = @('Glass_Optimizer_Setup_Compact.exe', 'CHANGELOG.md')
+$expected = @('Glass_Optimizer_Setup_Compact.exe', 'CHANGELOG.md', 'README.md')
 $verifyJson = (& gh release view $Tag --repo $Repository --json assets 2>&1)
 if ($LASTEXITCODE -ne 0) {
     throw 'RELEASE_VERIFY_FAILED'

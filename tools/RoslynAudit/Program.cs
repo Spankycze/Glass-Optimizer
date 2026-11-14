@@ -112,6 +112,7 @@ Console.WriteLine($"ROSLYN_AUDIT_OK files={files.Length} findings={findings.Coun
 foreach (var g in findings.GroupBy(x => x.Rule).OrderByDescending(g => g.Count()))
     Console.WriteLine($"ROSLYN_RULE {g.Key}={g.Count()}");
 
+StaticInteractionInventory.Write(root, Path.GetDirectoryName(output)!);
 return 0;
 
 static int SeverityRank(string severity) => severity switch { "high" => 3, "medium" => 2, _ => 1 };
