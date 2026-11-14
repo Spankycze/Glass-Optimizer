@@ -392,7 +392,7 @@ public sealed partial class App : Application
             throw new InvalidOperationException("Runtime TrustedInstaller hardening nebyl aplikován.");
 
         cts.Token.ThrowIfCancellationRequested();
-        PowerShellSyntaxService.ValidateFile(runtime);
+        await PowerShellSyntaxService.ValidateFileAsync(runtime);
 
         LogService.Info("ai", $"AI_RUNTIME_HARDENING_SMOKE_OK sourceBytes={sourceText.Length} runtimeBytes={runtimeText.Length} parse=ok");
     }
