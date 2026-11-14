@@ -89,3 +89,4 @@ validate-*.code
 .DS_Store
 Thumbs.db
 desktop.ini
+installer/payload.tar.zst
