@@ -446,7 +446,7 @@ public sealed class SourceArchitectureTests
             "ContextMenuNativeActions.cs",
             "GTweakMaintenanceService.cs",
             "GpuDriverService.cs",
-            "NativeNicTuningService.cs",
+            "NativeNicTuningService.Part03.cs",
             "PowerShellTweakerService.cs",
             "ProcessRunner.cs",
             "SafeModeLauncherService.cs",
@@ -610,7 +610,7 @@ public sealed class SourceArchitectureTests
             ["FaultInjectionService.cs"] = 1,
             ["HardwareTelemetryBridgeService.cs"] = 5,
             ["HardwareTelemetryBridgeService.Snapshot.cs"] = 5,
-            ["NativeNicTuningService.cs"] = 6,
+            ["NativeNicTuningService.Part03.cs"] = 6,
             ["WindowsDefaultGuardService.Policy.cs"] = 6
         };
         foreach (string file in Directory.EnumerateFiles(services, "*.cs"))
