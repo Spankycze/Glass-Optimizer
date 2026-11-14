@@ -37,10 +37,10 @@ public sealed partial class MainWindow
     private static Brush DialogModalCardBrush()
         => _darkTheme ? (_dialogModalCardBrush ??= new AcrylicBrush
         {
-            TintColor = Windows.UI.Color.FromArgb(255, 82, 170, 220),
-            TintOpacity = 0.10,
-            TintLuminosityOpacity = 0.18,
-            FallbackColor = Windows.UI.Color.FromArgb(96, 19, 36, 48)
+            TintColor = Windows.UI.Color.FromArgb(255, 255, 255, 255),
+            TintOpacity = 0,
+            TintLuminosityOpacity = 0,
+            FallbackColor = Windows.UI.Color.FromArgb(64, 255, 255, 255)
         }) : SectionCardBackgroundBrush();
 
     private static Brush DialogNeutralBorderBrush()
@@ -91,8 +91,8 @@ public sealed partial class MainWindow
             Background = DialogModalCardBrush(),
             BorderBrush = DialogNeutralBorderBrush(),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(_darkTheme ? 28 : 10),
-            Padding = new Thickness(_darkTheme ? 26 : 24),
+            CornerRadius = new CornerRadius(_darkTheme ? 20 : 10),
+            Padding = new Thickness(22),
             Shadow = _darkTheme ? new ThemeShadow() : null
         };
         card.Translation = new System.Numerics.Vector3(0, 0, z);
@@ -105,11 +105,14 @@ public sealed partial class MainWindow
         int expectedRows = Math.Max(1, RootGrid.RowDefinitions.Count);
         if (Grid.GetRow(overlay) != 0 || Grid.GetRowSpan(overlay) != expectedRows)
             throw new InvalidOperationException($"Dialog overlay span invalid: row={Grid.GetRow(overlay)} span={Grid.GetRowSpan(overlay)} expected={expectedRows}.");
+        if (overlay.Background is not SolidColorBrush scrim || scrim.Color.A != 72)
+            throw new InvalidOperationException("Dialog overlay must dim the underlying page without hiding it.");
         var card = CreateDialogCard(760, 720, 860);
         if (card.MinHeight <= 0 || card.MaxHeight < card.MinHeight)
             throw new InvalidOperationException($"Dialog height invalid: min={card.MinHeight} max={card.MaxHeight}.");
-        if (_darkTheme && (card.Background is not AcrylicBrush acrylic || acrylic.TintOpacity >= 0.9 || acrylic.FallbackColor.A > 112))
-            throw new InvalidOperationException("Glass dialog needs background blur, translucent tint and a translucent readability fallback.");
+        if (_darkTheme && (card.Background is not AcrylicBrush acrylic ||
+            acrylic.TintOpacity != 0 || acrylic.TintLuminosityOpacity != 0 || acrylic.FallbackColor.A > 96))
+            throw new InvalidOperationException("Dialog must blur the app background without adding a dark tint.");
         if (_darkTheme && card.BorderBrush == null)
             throw new InvalidOperationException("Dark glass dialog border is missing.");
         double maxAllowed = Math.Max(320, RootGrid.ActualWidth - 48);
@@ -147,66 +150,10 @@ public sealed partial class MainWindow
                 TabFocusNavigation = KeyboardNavigationMode.Cycle
             };
 
-            var depthShell = new Border
-            {
-                Margin = new Thickness(4, 6, 0, 0),
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                VerticalAlignment = VerticalAlignment.Stretch,
-                Background = _darkTheme ? ThemeColor(80, 5, 11, 18) : SurfaceAltBrush(),
-                BorderBrush = DialogNeutralBorderBrush(),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(_darkTheme ? 30 : 8),
-                Opacity = _darkTheme ? 0.72 : 0.72
-            };
-            depthShell.Translation = new System.Numerics.Vector3(0, 0, 14);
-            host.Children.Add(depthShell);
-
             card.Width = double.NaN;
             card.HorizontalAlignment = HorizontalAlignment.Stretch;
             card.Translation = new System.Numerics.Vector3(0, 0, 30);
             host.Children.Add(card);
-            if (_darkTheme)
-            {
-                var nativeGlass = CreateNativeGlassElement(card.CornerRadius);
-                var tint = new Border
-                {
-                    Background = GlassGradient(Windows.UI.Color.FromArgb(28, 116, 198, 238), Windows.UI.Color.FromArgb(12, 32, 74, 104)),
-                    CornerRadius = card.CornerRadius,
-                    IsHitTestVisible = false
-                };
-                var sheen = new Border
-                {
-                    Background = GlassGradient(Windows.UI.Color.FromArgb(34, 224, 243, 252), Windows.UI.Color.FromArgb(0, 224, 243, 252)),
-                    CornerRadius = card.CornerRadius,
-                    IsHitTestVisible = false
-                };
-                // Native SystemBackdropElement performs the actual blur. Tint and sheen only shape
-                // the iOS-like material and stay cheap because they are static compositor layers.
-                var content = card.Child;
-                card.Child = null;
-                card.Background = ThemeColor(0, 0, 0, 0);
-                var layers = new Grid { Margin = new Thickness(-card.Padding.Left, -card.Padding.Top, -card.Padding.Right, -card.Padding.Bottom) };
-                layers.Children.Add(nativeGlass);
-                layers.Children.Add(tint);
-                layers.Children.Add(sheen);
-                var contentHost = new Border { Padding = card.Padding, Child = content };
-                layers.Children.Add(contentHost);
-                card.Child = layers;
-            }
-
-            var topHighlight = new Border
-            {
-                Height = 1,
-                Margin = new Thickness(28, 1, 70, 0),
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                VerticalAlignment = VerticalAlignment.Top,
-                Background = _darkTheme ? ThemeColor(90, 255, 255, 255) : DialogNeutralBorderBrush(),
-                CornerRadius = new CornerRadius(1),
-                Opacity = _darkTheme ? 0.75 : 0.42
-            };
-            Canvas.SetZIndex(topHighlight, 6);
-            host.Children.Add(topHighlight);
-
             close = new Button
             {
                 Width = 32,
@@ -219,7 +166,7 @@ public sealed partial class MainWindow
                 BorderBrush = DialogNeutralBorderBrush(),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(16),
-                Opacity = 0.96,
+                Opacity = 1,
                 Content = new FontIcon { Glyph = "\uE711", FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 11.5, Foreground = TextPrimaryBrush() }
             };
             ToolTipService.SetToolTip(close, "Zavřít");
@@ -227,7 +174,7 @@ public sealed partial class MainWindow
             close.Translation = new System.Numerics.Vector3(0, 0, 38);
             // Neutral close button uses color feedback without scaling.
             close.PointerEntered += (_, _) => { close.Background = DialogBodyBrush(); close.BorderBrush = DialogNeutralHoverBorderBrush(); close.Opacity = 1; };
-            close.PointerExited += (_, _) => { close.Background = DialogInnerSurfaceBrush(); close.BorderBrush = DialogNeutralBorderBrush(); close.Opacity = 0.94; };
+            close.PointerExited += (_, _) => { close.Background = DialogInnerSurfaceBrush(); close.BorderBrush = DialogNeutralBorderBrush(); close.Opacity = 1; };
             close.Click += (_, _) => escapeAction();
             Canvas.SetZIndex(close, 10);
             host.Children.Add(close);
@@ -302,6 +249,14 @@ public sealed partial class MainWindow
 
     internal string RunDialogLifecycleSmoke()
     {
+        ValidateDialogLayoutSmoke();
+        var warning = WarningBrush();
+        var header = CreateDialogHeader("Dialog", "Popis", warning);
+        var action = StyledDialogButton("Použít", true, () => Task.CompletedTask);
+        if (header.Children.Count != 2 || header.Children[0] is not TextBlock title || title.FontSize != 20 ||
+            header.Children[1] is not TextBlock subtitle || !ReferenceEquals(subtitle.Foreground, warning) ||
+            action.Height != 36 || action.MinHeight > 36)
+            throw new InvalidOperationException("Shared dialog header and actions must retain the compact layout.");
         var overlay = CreateDialogOverlay(12790);
         var card = CreateDialogCard(520, 460, z: 36);
         card.Child = new Grid();
@@ -318,6 +273,8 @@ public sealed partial class MainWindow
 
         var close = MountDialog(overlay, card, CloseOnce);
         if (close == null) throw new InvalidOperationException("Dialog close button nebyl vytvořen.");
+        if (_darkTheme && (card.Background is not AcrylicBrush || !ReferenceEquals(card.Background, DialogModalCardBrush())))
+            throw new InvalidOperationException("Mounted dialog must retain its readable in-app acrylic surface.");
         if (overlay.KeyboardAccelerators.Count == 0)
             throw new InvalidOperationException("Dialog nemá Escape accelerator.");
         if (!RootGrid.Children.Contains(overlay))
@@ -354,9 +311,9 @@ public sealed partial class MainWindow
             
         };
         ApplyMaterialButtonAppearance(b, primary);
-        b.Height = 38;
-        b.Padding = new Thickness(18, 0, 18, 0);
-        b.CornerRadius = new CornerRadius(19);
+        b.Height = 36;
+        b.Padding = new Thickness(16, 0, 16, 0);
+        b.CornerRadius = new CornerRadius(12);
         EnsureAccessibleButton(b, text);
         b.Translation = new System.Numerics.Vector3(0, 0, 0);
 
@@ -394,6 +351,23 @@ public sealed partial class MainWindow
     }
 
 
+    private StackPanel CreateDialogHeader(string title, string? subtitle = null, Brush? subtitleForeground = null)
+    {
+        var header = new StackPanel { Spacing = 4, Margin = new Thickness(0, 0, 36, 0) };
+        header.Children.Add(new TextBlock
+        {
+            Text = title, FontSize = 20, FontWeight = FontWeights.SemiBold,
+            Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap
+        });
+        if (!string.IsNullOrWhiteSpace(subtitle))
+            header.Children.Add(new TextBlock
+            {
+                Text = subtitle, FontSize = 13, Foreground = subtitleForeground ?? DialogSecondaryTextBrush(),
+                TextWrapping = TextWrapping.Wrap
+            });
+        return header;
+    }
+
     private Grid CreateDialogLayout()
     {
         var grid = new Grid { RowSpacing = 14 };
@@ -417,14 +391,10 @@ public sealed partial class MainWindow
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var overlay = CreateDialogOverlay();
-        var card = CreateDialogCard(590, 700);
+        var card = CreateDialogCard(560, 620, 640);
         var root = CreateDialogLayout();
-        var header = new StackPanel { Spacing = 10, Margin = new Thickness(0, 0, 48, 0) };
-        header.Children.Add(new TextBlock { Text = title, FontSize = 24, FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"), FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap });
-        if (!string.IsNullOrWhiteSpace(subtitle)) header.Children.Add(new TextBlock { Text = subtitle, FontSize = 13.3, Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap });
-        root.Children.Add(header);
-        var info = new Border { Background = DialogBodyBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.25 : 1), CornerRadius = new CornerRadius(16), Padding = new Thickness(17), Child = new TextBlock { Text = message, FontSize = 14, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, LineHeight = 21 } };
-        info.Translation = new System.Numerics.Vector3(0, 0, 8);
+        root.Children.Add(CreateDialogHeader(title, subtitle));
+        var info = new TextBlock { Text = message, FontSize = 13, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, LineHeight = 20 };
         var scroll = DialogScroll(info); Grid.SetRow(scroll, 1); root.Children.Add(scroll);
         var actions = DialogActions();
         Task Finish(bool result) { UnmountDialog(overlay); tcs.TrySetResult(result); return Task.CompletedTask; }
@@ -446,9 +416,8 @@ public sealed partial class MainWindow
         var overlay = CreateDialogOverlay();
         var card = CreateDialogCard(560, 700);
         var root = CreateDialogLayout();
-        root.Children.Add(new TextBlock { Text = title, FontSize = 24, FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"), FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 48, 0) });
-        var body = new Border { Background = DialogBodyBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.25 : 1), CornerRadius = new CornerRadius(16), Padding = new Thickness(17), Child = new TextBlock { Text = message, FontSize = 14, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, LineHeight = 21 } };
-        body.Translation = new System.Numerics.Vector3(0, 0, 8);
+        root.Children.Add(CreateDialogHeader(title));
+        var body = new TextBlock { Text = message, FontSize = 13, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, LineHeight = 20 };
         var scroll = DialogScroll(body); Grid.SetRow(scroll, 1); root.Children.Add(scroll);
         var actions = DialogActions();
         Task Finish()
@@ -478,47 +447,8 @@ public sealed partial class MainWindow
         var card = CreateDialogCard(620, 620, 700);
         var root = CreateDialogLayout();
 
-        var header = new Grid { ColumnSpacing = 12, Margin = new Thickness(0, 0, 48, 0) };
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.ColumnDefinitions.Add(new ColumnDefinition());
-        var icon = new Border
-        {
-            Width = 38,
-            Height = 38,
-            CornerRadius = new CornerRadius(12),
-            Background = ThemeColor(72, 255, 171, 64),
-            BorderBrush = ThemeColor(120, 255, 196, 104),
-            BorderThickness = new Thickness(1),
-            Child = new FontIcon
-            {
-                Glyph = "\uE7BA",
-                FontFamily = new FontFamily("Segoe Fluent Icons"),
-                FontSize = 17,
-                Foreground = WarningBrush()
-            }
-        };
-        header.Children.Add(icon);
-
-        var headerText = new StackPanel { Spacing = 3 };
-        headerText.Children.Add(new TextBlock
-        {
-            Text = "Některé změny se nepodařilo potvrdit",
-            FontSize = 23,
-            FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"),
-            FontWeight = FontWeights.SemiBold,
-            Foreground = TextPrimaryBrush(),
-            TextWrapping = TextWrapping.Wrap
-        });
-        headerText.Children.Add(new TextBlock
-        {
-            Text = "Windows po aplikaci nevrátil očekávaný stav u některých položek.",
-            FontSize = 12.8,
-            Foreground = DialogSecondaryTextBrush(),
-            TextWrapping = TextWrapping.Wrap
-        });
-        Grid.SetColumn(headerText, 1);
-        header.Children.Add(headerText);
-        root.Children.Add(header);
+        root.Children.Add(CreateDialogHeader("Některé změny se nepodařilo potvrdit",
+            "Windows po aplikaci nevrátil očekávaný stav u některých položek.", WarningBrush()));
 
         var rows = new StackPanel { Spacing = 8 };
         foreach (string raw in failures.Take(8))
@@ -528,21 +458,10 @@ public sealed partial class MainWindow
                 .Replace("read-back nepotvrdil změnu", "Windows změnu po aplikaci nepotvrdil", StringComparison.OrdinalIgnoreCase)
                 .Replace("read-back", "ověření ve Windows", StringComparison.OrdinalIgnoreCase);
 
-            var item = new Border
+            var item = new TextBlock
             {
-                Background = DialogBodyBrush(),
-                BorderBrush = DialogNeutralBorderBrush(),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(14),
-                Padding = new Thickness(14, 12, 14, 12),
-                Child = new TextBlock
-                {
-                    Text = friendly,
-                    FontSize = 13.2,
-                    Foreground = TextPrimaryBrush(),
-                    TextWrapping = TextWrapping.Wrap,
-                    LineHeight = 20
-                }
+                Text = friendly, FontSize = 13, Foreground = WarningBrush(),
+                TextWrapping = TextWrapping.Wrap, LineHeight = 20
             };
             rows.Children.Add(item);
         }
@@ -571,805 +490,13 @@ public sealed partial class MainWindow
         var primary = StyledDialogButton("Zavřít", true, Finish);
         actions.Children.Add(primary);
 
-        var footer = new Border
-        {
-            Background = DialogInnerStrongBrush(),
-            BorderBrush = DialogNeutralBorderBrush(),
-            BorderThickness = new Thickness(0, 1, 0, 0),
-            CornerRadius = new CornerRadius(0, 0, 16, 16),
-            Padding = new Thickness(14, 12, 4, 0),
-            Margin = new Thickness(-4, 2, -4, -4),
-            Child = actions
-        };
-        Grid.SetRow(footer, 2);
-        root.Children.Add(footer);
+        Grid.SetRow(actions, 2);
+        root.Children.Add(actions);
 
         card.Child = root;
         MountDialog(overlay, card, () => { UnmountDialog(overlay); tcs.TrySetResult(true); });
         primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
             () => primary.Focus(FocusState.Programmatic));
         await tcs.Task;
-    }
-}
-
-// Progress overlay shared by long-running optimizer actions.
-public sealed partial class MainWindow
-{
-    private bool? _lastProgressVerifiedForSmoke;
-    private readonly SemaphoreSlim _progressOperationGate = new(1, 1);
-    private readonly object _progressOperationSync = new();
-    private CancellationTokenSource? _activeProgressCts;
-    private Action? _activeProgressClose;
-
-    internal void ShutdownActiveOperations()
-    {
-        CancelActiveProgressOperationForNavigation();
-    }
-
-    private void CancelActiveProgressOperationForNavigation()
-    {
-        Action? close = null;
-        lock (_progressOperationSync)
-        {
-            try { _activeProgressCts?.Cancel(); }
-            catch (ObjectDisposedException) { }
-            close = _activeProgressClose;
-        }
-
-        try { close?.Invoke(); }
-        catch (ObjectDisposedException) { }
-    }
-
-    private async Task<(bool Completed, T Result)> RunCancellableWithProgressAsync<T>(
-        string title,
-        string status,
-        Func<CancellationToken, Task<T>> work,
-        Func<T, bool>? isSuccess = null,
-        Func<T, string>? failureStatus = null,
-        Action<Action<string>>? liveStatusBinder = null)
-    {
-        if (!await _progressOperationGate.WaitAsync(0))
-        {
-            LogService.Info("ui", $"PROGRESS_OPERATION_DUPLICATE_BLOCKED title={title}");
-            return (false, default!);
-        }
-
-        using var cts = new CancellationTokenSource();
-        Grid? overlay = null;
-        Microsoft.UI.Xaml.DispatcherTimer? timer = null;
-        System.EventHandler<object>? activityTick = null;
-        bool popupClosed = false;
-        try
-        {
-            lock (_progressOperationSync) _activeProgressCts = cts;
-            overlay = CreateDialogOverlay(11000, 96);
-            var card = CreateDialogCard(520, 680, z: 36);
-            var stack = new StackPanel { Spacing = 14 };
-            var state = new TextBlock { Text = "APLIKUJI", FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = ProgressBrush() };
-            var statusText = new TextBlock { Text = status, FontSize = 13.6, Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap, LineHeight = 20 };
-            liveStatusBinder?.Invoke(message =>
-            {
-                if (string.IsNullOrWhiteSpace(message)) return;
-                DispatcherQueue.TryEnqueue(() =>
-                {
-                    if (!popupClosed && !string.Equals(statusText.Text, message, StringComparison.Ordinal))
-                        statusText.Text = message;
-                });
-            });
-            stack.Children.Add(state);
-            stack.Children.Add(new TextBlock { Text = title, FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
-            stack.Children.Add(statusText);
-            var activity = new Grid { ColumnSpacing = 6, Height = 6 };
-            var bars = new Border[4];
-            for (int i = 0; i < bars.Length; i++)
-            {
-                activity.ColumnDefinitions.Add(new ColumnDefinition());
-                bars[i] = new Border { CornerRadius = new CornerRadius(3), Background = _darkTheme ? GlassTrackBrush() : SurfaceAltBrush() };
-                Grid.SetColumn(bars[i], i);
-                activity.Children.Add(bars[i]);
-            }
-            stack.Children.Add(activity);
-            int activityIndex = 0;
-            int previousActivityIndex = -1;
-            Brush activityIdleBrush = _darkTheme ? GlassTrackBrush() : SurfaceAltBrush();
-            Brush activityActiveBrush = ProgressBrush();
-            timer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(360) };
-            activityTick = (_, _) =>
-            {
-                if (previousActivityIndex >= 0) bars[previousActivityIndex].Background = activityIdleBrush;
-                bars[activityIndex].Background = activityActiveBrush;
-                previousActivityIndex = activityIndex;
-                activityIndex = (activityIndex + 1) % bars.Length;
-            };
-            timer.Tick += activityTick;
-
-            void ClosePopup()
-            {
-                if (popupClosed) return;
-                popupClosed = true;
-                timer.Stop();
-                if (activityTick != null)
-                    timer.Tick -= activityTick;
-                try { cts.Cancel(); }
-                finally { UnmountDialog(overlay); }
-            }
-
-            lock (_progressOperationSync)
-            {
-                if (ReferenceEquals(_activeProgressCts, cts))
-                    _activeProgressClose = ClosePopup;
-            }
-
-            card.Child = stack;
-            MountDialog(overlay, card, ClosePopup);
-            timer.Start();
-            T result = await work(cts.Token);
-            if (popupClosed || cts.IsCancellationRequested)
-                return (false, default!);
-            bool verified = isSuccess?.Invoke(result) ?? true;
-            _lastProgressVerifiedForSmoke = verified;
-            string finalState = verified ? "OVĚŘENO ✓" : "CHYBA";
-            if (!string.Equals(state.Text, finalState, StringComparison.Ordinal)) state.Text = finalState;
-            state.Foreground = verified ? SuccessBrush() : WarningBrush();
-            foreach (var bar in bars) bar.Background = verified ? SuccessBrush() : WarningBrush();
-            if (!verified && failureStatus != null)
-            {
-                string message = failureStatus(result);
-                if (!string.IsNullOrWhiteSpace(message) && !string.Equals(statusText.Text, message, StringComparison.Ordinal)) statusText.Text = message;
-            }
-            timer.Stop();
-            await Task.Delay(verified ? 140 : 260, cts.Token);
-            return (true, result);
-        }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
-        {
-            _lastProgressVerifiedForSmoke = null;
-            return (false, default!);
-        }
-        finally
-        {
-            // Setup, backend and visual cleanup failures must all release single-flight.
-            popupClosed = true;
-            try
-            {
-                if (timer != null)
-                {
-                    timer.Stop();
-                    if (activityTick != null)
-                        timer.Tick -= activityTick;
-                }
-                if (overlay != null) UnmountDialog(overlay);
-            }
-            finally
-            {
-                lock (_progressOperationSync)
-                {
-                    if (ReferenceEquals(_activeProgressCts, cts))
-                    {
-                        _activeProgressCts = null;
-                        _activeProgressClose = null;
-                    }
-                }
-                _progressOperationGate.Release();
-            }
-        }
-    }
-
-    private async Task<bool> RunCancellableWithProgressAsync(
-        string title,
-        string status,
-        Func<CancellationToken, Task> work)
-    {
-        var result = await RunCancellableWithProgressAsync<object?>(
-            title, status, async token => { await work(token); return null; });
-        return result.Completed;
-    }
-
-    internal async Task RunProgressPredicateSmokeAsync()
-    {
-        // Cold standalone smoke must finish initial navigation before opening operations.
-        await ShowSectionAsync("overview");
-        // Progress lifecycle needs a fully loaded Overview, not identical pixels. Live telemetry
-        // legitimately changes gauge geometry/text between samples and must not block this smoke.
-        await WaitForVisualCaptureReadyAsync(_themePreference, "overview", requirePixelStability: false, requireSectionData: false);
-        int overlaysBefore = RootGrid.Children.Count;
-        bool setupFailed = false;
-        try
-        {
-            await RunCancellableWithProgressAsync(
-                "Progress setup failure smoke", "Synthetic setup error",
-                _ => Task.FromResult(1),
-                liveStatusBinder: _ => throw new InvalidOperationException("synthetic-progress-setup-error"));
-        }
-        catch (InvalidOperationException ex) when (ex.Message == "synthetic-progress-setup-error")
-        {
-            setupFailed = true;
-        }
-        if (!setupFailed || _progressOperationGate.CurrentCount != 1)
-            throw new InvalidOperationException("Progress setup exception leaked the single-flight gate.");
-        lock (_progressOperationSync)
-        {
-            if (_activeProgressCts != null || _activeProgressClose != null)
-                throw new InvalidOperationException("Progress setup exception retained active operation state.");
-        }
-        if (RootGrid.Children.Count != overlaysBefore)
-            throw new InvalidOperationException("Progress setup exception retained an overlay.");
-
-        _lastProgressVerifiedForSmoke = null;
-        _ = await RunCancellableWithProgressAsync(
-            "Progress smoke",
-            "Ověřuji úspěšný výsledek…",
-            _ => Task.FromResult(Array.Empty<string>()),
-            result => result.Length == 0);
-        if (_lastProgressVerifiedForSmoke != true)
-            throw new InvalidOperationException("Progress predicate smoke did not mark success as verified.");
-
-        _lastProgressVerifiedForSmoke = null;
-        _ = await RunCancellableWithProgressAsync(
-            "Progress smoke",
-            "Ověřuji chybový výsledek…",
-            _ => Task.FromResult(new[] { "synthetic-error" }),
-            result => result.Length == 0,
-            result => string.Join(" • ", result));
-        if (_lastProgressVerifiedForSmoke != false)
-            throw new InvalidOperationException("Progress predicate smoke incorrectly marked an error result as verified.");
-
-        var first = RunCancellableWithProgressAsync(
-            "Progress single-flight smoke",
-            "Držím první operaci…",
-            async token =>
-            {
-                await Task.Delay(TimeSpan.FromSeconds(5), token);
-                return 1;
-            });
-        await Task.Delay(80);
-        var duplicate = await RunCancellableWithProgressAsync(
-            "Progress duplicate smoke",
-            "Tato operace musí být zablokována…",
-            _ => Task.FromResult(2));
-        if (duplicate.Completed)
-            throw new InvalidOperationException("Progress single-flight dovolil druhou souběžnou operaci.");
-
-        CancelActiveProgressOperationForNavigation();
-        var firstResult = await first;
-        if (firstResult.Completed)
-            throw new InvalidOperationException("Navigační cancel nezrušil aktivní progress operaci.");
-
-        bool lateVerifierCalled = false;
-        var ignoresCancellation = RunCancellableWithProgressAsync(
-            "Progress stale-result smoke",
-            "Backend ignoruje cancel a vrátí pozdní výsledek…",
-            async _ =>
-            {
-                await Task.Delay(220, CancellationToken.None);
-                return 42;
-            },
-            result =>
-            {
-                lateVerifierCalled = true;
-                return result == 42;
-            });
-        await Task.Delay(60);
-        CancelActiveProgressOperationForNavigation();
-        var ignoredResult = await ignoresCancellation;
-        if (ignoredResult.Completed)
-            throw new InvalidOperationException("Pozdní výsledek backendu ignorujícího cancel byl chybně přijat.");
-        if (lateVerifierCalled)
-            throw new InvalidOperationException("Verifier se spustil nad stale výsledkem po zavření progress popupu.");
-        lock (_progressOperationSync)
-        {
-            if (_activeProgressCts != null || _activeProgressClose != null)
-                throw new InvalidOperationException("Progress lifecycle state nebyl po stale-result cancelu vyčištěn.");
-        }
-
-        foreach (bool failVerifier in new[] { false, true })
-        {
-            bool expectedFailure = false;
-            try
-            {
-                await RunCancellableWithProgressAsync<int>(
-                    "Progress exception recovery smoke", "Synthetic failure",
-                    _ => failVerifier ? Task.FromResult(1) : Task.FromException<int>(new InvalidOperationException("synthetic-progress-work-error")),
-                    _ => throw new InvalidOperationException("synthetic-progress-work-error"));
-            }
-            catch (InvalidOperationException ex) when (ex.Message == "synthetic-progress-work-error")
-            {
-                expectedFailure = true;
-            }
-            if (!expectedFailure || _progressOperationGate.CurrentCount != 1 || RootGrid.Children.Count != overlaysBefore)
-                throw new InvalidOperationException("Progress backend/verifier failure did not release resources.");
-        }
-
-        var finishing = RunCancellableWithProgressAsync("Progress completion cancel smoke", "Complete then cancel", _ => Task.FromResult(1));
-        CancelActiveProgressOperationForNavigation();
-        if ((await finishing).Completed)
-            throw new InvalidOperationException("Cancellation during the completion delay was accepted as success.");
-        if (_progressOperationGate.CurrentCount != 1 || RootGrid.Children.Count != overlaysBefore)
-            throw new InvalidOperationException("Completion cancel retained popup resources.");
-
-        LogService.Info("regression", "PROGRESS_PREDICATE_SMOKE_OK success=true failure=false singleFlight=true navigationCancel=true staleResultDiscarded=true setupFailureRecovery=true backendFailureRecovery=true verifierFailureRecovery=true completionCancel=true");
-    }
-}
-
-public sealed partial class MainWindow
-{
-    private async Task<bool> ShowStyledContentAsync(string title, string subtitle, UIElement content, string primaryText, string secondaryText = "Zrušit")
-    {
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var overlay = CreateDialogOverlay();
-        var card = CreateDialogCard(760, 720, 860);
-        var root = CreateDialogLayout();
-        var head = new StackPanel { Spacing = 5, Margin = new Thickness(0, 0, 48, 0) };
-        head.Children.Add(new TextBlock { Text = title, FontSize = 24, FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"), FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap });
-        head.Children.Add(new TextBlock { Text = subtitle, FontSize = 13.3, Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap });
-        root.Children.Add(head);
-        var body = new Border { Background = DialogBodyBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.25 : 1), CornerRadius = new CornerRadius(16), Padding = new Thickness(17), Child = content };
-        body.Translation = new System.Numerics.Vector3(0, 0, 8);
-        var scroll = DialogScroll(body); Grid.SetRow(scroll, 1); root.Children.Add(scroll);
-        bool closeOnly = string.Equals(primaryText, "Zavřít", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(primaryText, "OK", StringComparison.OrdinalIgnoreCase);
-        Task Finish(bool value) { UnmountDialog(overlay); tcs.TrySetResult(value); return Task.CompletedTask; }
-        var actions = DialogActions();
-        if (!closeOnly)
-            actions.Children.Add(StyledDialogButton(secondaryText, false, () => Finish(false)));
-        var primary = StyledDialogButton(
-            string.IsNullOrWhiteSpace(primaryText) ? "Zavřít" : primaryText,
-            true,
-            () => Finish(true));
-        actions.Children.Add(primary);
-        Grid.SetRow(actions, 2);
-        root.Children.Add(actions);
-        card.Child = root;
-        MountDialog(overlay, card, () => { UnmountDialog(overlay); tcs.TrySetResult(closeOnly); });
-        return await tcs.Task;
-    }
-}
-
-public sealed partial class MainWindow
-{
-    private async Task<bool> ShowTweakApplyConfirmationAsync(IReadOnlyList<TweakDefinition> dirty)
-    {
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var overlay = CreateDialogOverlay(alpha: 78);
-        var card = CreateDialogCard(760, 700, 840);
-        var root = CreateDialogLayout();
-
-        var headerGrid = new Grid { ColumnSpacing = 12, Margin = new Thickness(0, 0, 48, 0) };
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition());
-        var icon = new Border
-        {
-            Width = 38, Height = 34, CornerRadius = new CornerRadius(17),
-            Background = AccentSoftBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(1),
-            Child = new FontIcon { Glyph = "\uE73E", FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 15, Foreground = AccentBrush() }
-        };
-        headerGrid.Children.Add(icon);
-        var headerText = new StackPanel { Spacing = 3 };
-        headerText.Children.Add(new TextBlock { Text = "Potvrdit vybrané tweaky", FontSize = 24, FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"), FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
-        headerText.Children.Add(new TextBlock { Text = "Zkontroluj změny před aplikací.", FontSize = 13.3, Foreground = DialogSecondaryTextBrush() });
-        Grid.SetColumn(headerText, 1); headerGrid.Children.Add(headerText);
-        root.Children.Add(headerGrid);
-
-        var content = new StackPanel { Spacing = 0 };
-        var summary = new Grid { Padding = new Thickness(16, 14, 16, 14) };
-        summary.ColumnDefinitions.Add(new ColumnDefinition());
-        summary.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var summaryText = new StackPanel { Spacing = 2 };
-        summaryText.Children.Add(new TextBlock { Text = "Vybráno změn", FontSize = 13.3, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
-        summaryText.Children.Add(new TextBlock { Text = "Budou aplikovány pouze položky níže.", FontSize = 12.2, Foreground = DialogSecondaryTextBrush() });
-        summary.Children.Add(summaryText);
-        var countBadge = new Border
-        {
-            MinWidth = 34, Height = 32, Padding = new Thickness(9, 0, 9, 0), CornerRadius = new CornerRadius(16),
-            Background = AccentSoftBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(1),
-            Child = new TextBlock { Text = dirty.Count.ToString(), FontSize = 13.3, FontWeight = FontWeights.SemiBold, Foreground = AccentBrush(), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }
-        };
-        Grid.SetColumn(countBadge, 1); summary.Children.Add(countBadge);
-        content.Children.Add(summary);
-
-        var separator = new Border { Height = 1, Background = DialogNeutralBorderBrush(), Opacity = .7 };
-        content.Children.Add(separator);
-
-        var rows = new StackPanel();
-        int index = 0;
-        foreach (var tweak in dirty.Take(40))
-        {
-            index++;
-            var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(16, 12, 16, 12) };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.ColumnDefinitions.Add(new ColumnDefinition());
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var number = new Border
-            {
-                Width = 30, Height = 30, CornerRadius = new CornerRadius(15),
-                Background = DialogBodyBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(1),
-                Child = new TextBlock { Text = index.ToString(), FontSize = 11.5, Foreground = DialogSecondaryTextBrush(), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
-            };
-            row.Children.Add(number);
-            var label = new TextBlock { Text = tweak.Name, FontSize = 13.3, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
-            Grid.SetColumn(label, 1); row.Children.Add(label);
-            var state = new Border
-            {
-                MinWidth = 48, Height = 27, Padding = new Thickness(10, 0, 10, 0), CornerRadius = new CornerRadius(13.5),
-                Background = tweak.Pending ? AccentSoftBrush() : DialogInnerSurfaceBrush(),
-                BorderBrush = tweak.Pending ? DialogNeutralBorderBrush() : DialogNeutralBorderBrush(), BorderThickness = new Thickness(1),
-                Child = new TextBlock { Text = tweak.Pending ? "ZAP" : "VYP", FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = tweak.Pending ? AccentBrush() : DialogSecondaryTextBrush(), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
-            };
-            Grid.SetColumn(state, 2); row.Children.Add(state);
-            rows.Children.Add(row);
-            if (index < Math.Min(40, dirty.Count)) rows.Children.Add(new Border { Height = 1, Background = DialogNeutralBorderBrush(), Opacity = .45 });
-        }
-        if (dirty.Count > 40)
-            rows.Children.Add(new TextBlock { Text = $"…a dalších {dirty.Count - 40}", Margin = new Thickness(16, 10, 16, 12), FontSize = 12.2, Foreground = DialogSecondaryTextBrush() });
-        content.Children.Add(rows);
-
-        var body = new Border
-        {
-            Background = DialogBodyBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.25 : 1),
-            CornerRadius = new CornerRadius(18), Child = content
-        };
-        body.Translation = new System.Numerics.Vector3(0, 0, 8);
-
-        var bodyStack = new StackPanel { Spacing = 12 };
-        bodyStack.Children.Add(body);
-        bodyStack.Children.Add(new Border
-        {
-            Background = DialogBodyBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(13),
-            Padding = new Thickness(13, 10, 13, 10),
-            Child = new TextBlock { Text = "Po aplikaci se stav znovu ověří proti Windows. Neúspěšné změny se zobrazí zvlášť.", FontSize = 11.2, Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap }
-        });
-        if (dirty.Any(x => x.Risk == TweakRisk.Advanced))
-            bodyStack.Children.Add(new TextBlock { Text = "Některé změny jsou pokročilé a mohou ovlivnit zabezpečení nebo funkčnost Windows.", FontSize = 11.2, Foreground = WarningBrush(), TextWrapping = TextWrapping.Wrap });
-
-        var scroll = DialogScroll(bodyStack); Grid.SetRow(scroll, 1); root.Children.Add(scroll);
-
-        bool finished = false;
-        void Finish(bool value, string source)
-        {
-            if (finished) return;
-            finished = true;
-            LogService.Info("dialog", $"TWEAK_APPLY_CONFIRM_FINISH source={source} accepted={value} count={dirty.Count}");
-            UnmountDialog(overlay);
-            tcs.TrySetResult(value);
-        }
-
-        Button MakeActionButton(string text, bool primaryStyle)
-        {
-            var button = new Button
-            {
-                Content = text,
-                MinWidth = primaryStyle ? 116 : 98,
-                Height = 36,
-                Padding = new Thickness(16, 0, 16, 0),
-                FontSize = 12,
-                CornerRadius = new CornerRadius(12),
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Foreground = primaryStyle ? OnAccentTextBrush() : TextPrimaryBrush(),
-                Background = primaryStyle ? ButtonVioletBrush() : ButtonVioletSoftBrush(),
-                BorderBrush = DialogNeutralBorderBrush(),
-                BorderThickness = new Thickness(primaryStyle ? 1.4 : 1),
-                FontWeight = primaryStyle ? FontWeights.SemiBold : FontWeights.Medium,
-                
-            };
-            ApplyMaterialButtonAppearance(button, primaryStyle);
-            EnsureAccessibleButton(button, text);
-            AttachHoverMotion(button, primaryStyle ? 1.018f : 1.012f);
-            return button;
-        }
-
-        var actions = DialogActions();
-        actions.Margin = new Thickness(0);
-        var cancel = MakeActionButton("Zrušit", false);
-        cancel.Click += (_, _) => Finish(false, "cancel");
-        actions.Children.Add(cancel);
-        var primary = MakeActionButton("Použít vybrané", true);
-        primary.Click += (_, _) => Finish(true, "apply");
-        actions.Children.Add(primary);
-
-        var footer = new Border
-        {
-            Background = DialogInnerStrongBrush(),
-            BorderBrush = DialogNeutralBorderBrush(),
-            BorderThickness = new Thickness(0, 1, 0, 0),
-            CornerRadius = new CornerRadius(0, 0, 16, 16),
-            Padding = new Thickness(14, 12, 4, 0),
-            Margin = new Thickness(-4, 2, -4, -4),
-            Child = actions
-        };
-        Grid.SetRow(footer, 2); root.Children.Add(footer);
-        card.Child = root;
-        MountDialog(overlay, card, () => Finish(false, "close"));
-        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () => primary.Focus(FocusState.Programmatic));
-        return await tcs.Task;
-    }
-
-    private async Task<int> ShowStyledChoiceAsync(string title, string message, string primaryText, string secondaryText, string closeText = "Zrušit", string? subtitle = null)
-    {
-        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var overlay = CreateDialogOverlay();
-        var card = CreateDialogCard(610, 700);
-        var root = CreateDialogLayout();
-        var head = new StackPanel { Spacing = 5, Margin = new Thickness(0, 0, 48, 0) };
-        head.Children.Add(new TextBlock { Text = title, FontSize = 24, FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"), FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap });
-        if (!string.IsNullOrWhiteSpace(subtitle)) head.Children.Add(new TextBlock { Text = subtitle, FontSize = 13.3, Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap });
-        root.Children.Add(head);
-        var body = new Border { Background = DialogBodyBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.25 : 1), CornerRadius = new CornerRadius(16), Padding = new Thickness(17), Child = new TextBlock { Text = message, FontSize = 14, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, LineHeight = 21 } };
-        body.Translation = new System.Numerics.Vector3(0, 0, 8);
-        var scroll = DialogScroll(body); Grid.SetRow(scroll, 1); root.Children.Add(scroll);
-        Task Finish(int value) { UnmountDialog(overlay); tcs.TrySetResult(value); return Task.CompletedTask; }
-        var actions = DialogActions();
-        // The top-right X/Escape already owns the neutral close path.
-        // Never render a third footer close/cancel action: it looked like a random
-        // "Zavřít" button in choice popups and duplicated the window chrome.
-        actions.Children.Add(StyledDialogButton(secondaryText, false, () => Finish(2)));
-        var primary = StyledDialogButton(primaryText, true, () => Finish(1));
-        actions.Children.Add(primary);
-        Grid.SetRow(actions, 2); root.Children.Add(actions);
-        card.Child = root;
-        MountDialog(overlay, card, () => { UnmountDialog(overlay); tcs.TrySetResult(0); });
-        primary.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,
-            () => primary.Focus(FocusState.Programmatic));
-        return await tcs.Task;
-    }
-}
-
-public sealed partial class MainWindow
-{
-    private async Task<int> RunPowerProfileProgressPopupAsync(bool autoClose = false)
-    {
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var cts = new CancellationTokenSource();
-        var overlay = CreateDialogOverlay(12000, 96);
-        var card = CreateDialogCard(700, 680, z: 36);
-        var root = CreateDialogLayout();
-        var header = new StackPanel { Spacing = 8, Margin = new Thickness(0, 0, 48, 0) };
-        header.Children.Add(new TextBlock { Text = "Power Plan — Recommended", FontSize = 24, FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"), FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
-        var summary = new TextBlock { Text = "0 / 34 změn", FontSize = 13.3, Foreground = DialogSecondaryTextBrush() };
-        var current = new TextBlock { Text = "Připravuji…", FontSize = 13.5, Foreground = ProgressBrush(), TextWrapping = TextWrapping.Wrap };
-        var detail = new TextBlock { Text = "Čekám na dokončení operace…", FontSize = 12, Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap };
-        header.Children.Add(summary); header.Children.Add(current); header.Children.Add(detail);
-        var track = new Grid { Height = 7, Background = _darkTheme ? GlassTrackBrush() : SurfaceAltBrush(), HorizontalAlignment = HorizontalAlignment.Stretch };
-        var fill = new Border { Width = 0, Height = 7, CornerRadius = new CornerRadius(3.5), Background = ProgressBrush(), HorizontalAlignment = HorizontalAlignment.Left };
-        track.Children.Add(fill); header.Children.Add(track); root.Children.Add(header);
-        var middle = new StackPanel { Spacing = 10 };
-        middle.Children.Add(new TextBlock { Text = "Průběh změn", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = DialogSecondaryTextBrush() });
-        var logText = new TextBlock { FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 11.5, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap };
-        var logScroll = new ScrollViewer { Content = logText, Height = 300, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Background = _darkTheme ? DialogInnerSurfaceBrush() : SurfaceAltBrush(), Padding = new Thickness(12) };
-        middle.Children.Add(logScroll);
-        var middleScroll = DialogScroll(middle); Grid.SetRow(middleScroll, 1); root.Children.Add(middleScroll);
-        bool popupClosed = false;
-        bool finished = false;
-        void ClosePopup()
-        {
-            if (popupClosed) return;
-            popupClosed = true;
-            if (!finished) cts.Cancel();
-            UnmountDialog(overlay);
-            tcs.TrySetResult(true);
-        }
-
-        card.Child = root;
-        var topClose = MountDialog(overlay, card, ClosePopup);
-        var lines = new Queue<string>(128);
-        string? lastProgressLogEntry = null;
-        int exitCode = -1;
-        var progress = new Progress<PerformanceProfilesService.PowerProfileProgress>(p =>
-        {
-            if (popupClosed) return;
-            double width = track.ActualWidth > 0 ? track.ActualWidth : 520;
-            double targetWidth = width * Math.Clamp(p.Percent, 0, 100) / 100d;
-            if (Math.Abs(fill.Width - targetWidth) >= 0.5) fill.Width = targetWidth;
-            string summaryValue = $"{Math.Min(p.Current, 34)} / 34 změn • {p.Percent} %";
-            if (!string.Equals(summary.Text, summaryValue, StringComparison.Ordinal)) summary.Text = summaryValue;
-            if (!string.Equals(current.Text, p.Stage, StringComparison.Ordinal)) current.Text = p.Stage;
-            if (!string.Equals(detail.Text, p.Detail, StringComparison.Ordinal)) detail.Text = p.Detail;
-            if (p.Stage is "Aplikuji" or "Ověření")
-            {
-                string logEntry = (p.Stage == "Ověření" ? "✓ " : "• ") + p.Detail;
-                if (!string.Equals(lastProgressLogEntry, logEntry, StringComparison.Ordinal))
-                {
-                    lastProgressLogEntry = logEntry;
-                    lines.Enqueue(logEntry);
-                    while (lines.Count > 100) lines.Dequeue();
-                    string logValue = string.Join(Environment.NewLine, lines);
-                    if (!string.Equals(logText.Text, logValue, StringComparison.Ordinal)) logText.Text = logValue;
-                    DispatcherQueue.TryEnqueue(() =>
-                    {
-                        if (popupClosed) return;
-                        try { if (logScroll.XamlRoot != null) logScroll.ChangeView(null, logScroll.ScrollableHeight, null, true); } catch { }
-                    });
-                }
-            }
-        });
-        try
-        {
-            LogService.Info("POWER_PROGRESS_POPUP_START");
-            string result = await PerformanceProfilesService.ApplyPerformancePowerProfileAsync(progress, cts.Token);
-            if (popupClosed || cts.IsCancellationRequested)
-            {
-                exitCode = -2;
-                return exitCode;
-            }
-            PowerPlanStateService.InvalidateCache();
-            var snap = await PowerPlanStateService.ReadAsync(forceRefresh: true);
-            if (popupClosed || cts.IsCancellationRequested)
-            {
-                exitCode = -2;
-                return exitCode;
-            }
-            var critical = EvaluateCriticalPowerState(snap);
-            int total = critical.Total;
-            int active = Math.Max(0, total - critical.Drift);
-            exitCode = critical.ActiveOk && critical.Drift == 0 && total > 0 ? 0 : 2;
-            double finalWidth = track.ActualWidth > 0 ? track.ActualWidth : 520;
-            if (Math.Abs(fill.Width - finalWidth) >= 0.5) fill.Width = finalWidth;
-            string finalSummary = $"{active} / {total} critical ověřeno • 100 %";
-            string finalCurrent = exitCode == 0 ? "Hotovo — Recommended profil je aktivní" : "Finální ověření není kompletní";
-            string finalDetail = $"Finální ověření: {active}/{total} • aktivní plán {(critical.ActiveOk ? "OK" : "NE")} • {PerformanceProfilesService.GetCpuName()}";
-            if (!string.Equals(summary.Text, finalSummary, StringComparison.Ordinal)) summary.Text = finalSummary;
-            if (!string.Equals(current.Text, finalCurrent, StringComparison.Ordinal)) current.Text = finalCurrent;
-            if (!string.Equals(detail.Text, finalDetail, StringComparison.Ordinal)) detail.Text = finalDetail;
-            lines.Enqueue((exitCode == 0 ? "✓ " : "! ") + $"Ověření: {active}/{total} • aktivní plán {(critical.ActiveOk ? "OK" : "NE")}");
-            logText.Text = string.Join(Environment.NewLine, lines);
-            SystemInfoService.InvalidateDynamic();
-            LogService.Info($"POWER_PROGRESS_POPUP_OK activeGuid={critical.ActiveOk} critical={active}/{total} | " + result.Replace(Environment.NewLine, " | "));
-        }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
-        {
-            exitCode = -2;
-            LogService.Info("power", "Power Recommended popup cancelled by user.");
-        }
-        catch (Exception ex)
-        {
-            exitCode = -1;
-            if (!popupClosed)
-            {
-                current.Text = "Chyba při aplikaci Recommended profilu";
-                detail.Text = ex.Message;
-                lines.Enqueue("✕ " + ex.Message);
-                logText.Text = string.Join(Environment.NewLine, lines);
-            }
-            LogService.Error("Power progress popup failed", ex);
-        }
-        finished = true;
-
-        // A fully verified Recommended profile is a completed transient operation.
-        // Keep the success state visible briefly, then close automatically.
-        // Failures stay open so the user can inspect the read-back/log.
-        if (autoClose || exitCode == 0)
-        {
-            if (!autoClose) await Task.Delay(700);
-            overlay.Visibility = Visibility.Collapsed;
-            await Task.Delay(100);
-            try { UnmountDialog(overlay); } catch { }
-            return exitCode;
-        }
-
-        await tcs.Task;
-        return exitCode;
-    }
-
-}
-
-public sealed partial class MainWindow
-{
-    private async Task<int> RunNicProgressPopupAsync(bool autoClose = false, Func<CancellationToken, Task<string>>? applyWork = null)
-    {
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var cts = new CancellationTokenSource();
-        var overlay = CreateDialogOverlay(12000);
-        var card = CreateDialogCard(590, 680, z: 36);
-        var root = new StackPanel { Spacing = 16 };
-        var head = new Grid { ColumnSpacing = 14, Margin = new Thickness(0, 0, 48, 0) }; head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); head.ColumnDefinitions.Add(new ColumnDefinition());
-        head.Children.Add(new Border { Width = 44, Height = 44, CornerRadius = new CornerRadius(11), Background = _darkTheme ? DialogInnerSurfaceBrush() : SurfaceAltBrush(), BorderBrush = _darkTheme ? DialogNeutralBorderBrush() : null, BorderThickness = _darkTheme ? new Thickness(1) : new Thickness(0), Child = SectionIcon("network", 32) });
-        var titles = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
-        titles.Children.Add(new TextBlock { Text = "NIC Max Performance", FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
-        titles.Children.Add(new TextBlock { Text = "Realtek / Intel síťový profil", FontSize = 12, Foreground = DialogSecondaryTextBrush() });
-        Grid.SetColumn(titles, 1); head.Children.Add(titles); root.Children.Add(head);
-        root.Children.Add(new Border { Background = SectionCardBackgroundBrush(), BorderBrush = DialogNeutralBorderBrush(), BorderThickness = new Thickness(_darkTheme ? 1.15 : 1), CornerRadius = new CornerRadius(10), Padding = new Thickness(13), Child = new TextBlock { Text = "Recommended profil vypne podporované úsporné funkce adaptéru, zapne RSS a vypne Selective Suspend. Interrupt Moderation, Flow Control ani Packet/DMA Coalescing nemění.", FontSize = 13.5, Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap, LineHeight = 20 } });
-        var status = new TextBlock { Text = "Načítám síťový adaptér…", FontSize = 13, Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap }; root.Children.Add(status);
-        var segments = new Grid { ColumnSpacing = 6, Height = 6 }; for (int x = 0; x < 4; x++) segments.ColumnDefinitions.Add(new ColumnDefinition());
-        var bars = new Border[4]; for (int x = 0; x < 4; x++) { bars[x] = new Border { CornerRadius = new CornerRadius(3), Background = _darkTheme ? GlassTrackBrush() : SurfaceAltBrush() }; Grid.SetColumn(bars[x], x); segments.Children.Add(bars[x]); }
-        root.Children.Add(segments);
-        bool popupClosed = false;
-        bool finished = false;
-        void ClosePopup()
-        {
-            if (popupClosed) return;
-            popupClosed = true;
-            if (!finished) cts.Cancel();
-            UnmountDialog(overlay);
-            tcs.TrySetResult(true);
-        }
-
-        card.Child = root;
-        MountDialog(overlay, card, ClosePopup);
-        int exitCode = -1;
-        try
-        {
-            string[] steps = { "Načítám aktivní adaptér…", "Aplikuji Realtek / Intel vlastnosti…", "Restartuji síťový adaptér…", "Ověřuji dokončení profilu…" };
-            var applyTask = (applyWork ?? PerformanceProfilesService.ApplyNicPerformanceProfileAsync)(cts.Token);
-            int step = 0;
-            while (!applyTask.IsCompleted)
-            {
-                cts.Token.ThrowIfCancellationRequested();
-                if (popupClosed)
-                {
-                    exitCode = -2;
-                    return exitCode;
-                }
-
-                int currentStep = Math.Min(step, steps.Length - 1);
-                status.Text = steps[currentStep];
-                for (int i = 0; i <= currentStep; i++)
-                    bars[i].Background = ButtonVioletBrush();
-
-                step++;
-                await Task.WhenAny(applyTask, Task.Delay(500, cts.Token));
-            }
-
-            string backendResult = await applyTask;
-            cts.Token.ThrowIfCancellationRequested();
-            if (popupClosed)
-            {
-                exitCode = -2;
-                return exitCode;
-            }
-
-            bool partialFailure =
-                backendResult.Contains(" = Failed:", StringComparison.OrdinalIgnoreCase) ||
-                backendResult.Contains(" = Detection failed:", StringComparison.OrdinalIgnoreCase);
-
-            if (partialFailure)
-            {
-                exitCode = 2;
-                status.Text = "NIC profil byl aplikován jen částečně — některé ověření selhalo.";
-                LogService.Error("network", "NIC Recommended partial verification failure | " +
-                    backendResult.Replace(Environment.NewLine, " | "));
-            }
-            else
-            {
-                exitCode = 0;
-                foreach (var b in bars) b.Background = ButtonVioletBrush();
-                status.Text = "Hotovo — NIC Max Performance byl aplikován a ověřen.";
-            }
-        }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
-        {
-            exitCode = -2;
-            LogService.Info("network", "NIC Max Performance popup cancelled by user.");
-        }
-        catch (Exception ex)
-        {
-            exitCode = -1;
-            if (!popupClosed)
-            {
-                LogService.Error("NIC progress popup failed", ex);
-                status.Text = "Chyba: " + ex.Message;
-            }
-        }
-        finally
-        {
-            finished = true;
-        }
-
-        if (autoClose || exitCode == 0)
-        {
-            if (!autoClose) await Task.Delay(700);
-            if (!popupClosed) UnmountDialog(overlay);
-
-            // UnmountDialog now performs the iOS 27 exit animation asynchronously.
-            // Progress operations must not report completion until their modal is actually gone.
-            if (RootGrid.Children.Contains(overlay))
-            {
-                for (int i = 0; i < 12 && RootGrid.Children.Contains(overlay); i++)
-                    await Task.Delay(20);
-            }
-
-            return exitCode;
-        }
-
-        if (!popupClosed) await tcs.Task;
-        return exitCode;
     }
 }
