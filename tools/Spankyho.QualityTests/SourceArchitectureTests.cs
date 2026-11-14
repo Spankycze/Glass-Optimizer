@@ -51,7 +51,7 @@ public sealed class SourceArchitectureTests
                 "!ReferenceEquals(first.Result, await GetAsync().ConfigureAwait(false)))",
                 "if (ReferenceEquals(first.Result, refreshed) || refreshed.Length > TopCount)"
             ],
-            ["AiAutomaticProcessPriorityService.cs"] =
+            ["AiAutomaticProcessPriorityService.Part03.cs"] =
             [
                 "LastTrialResult = _lastCheckpoint.Result;"
             ],
