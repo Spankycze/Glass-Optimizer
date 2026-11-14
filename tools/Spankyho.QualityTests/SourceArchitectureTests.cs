@@ -70,7 +70,7 @@ public sealed class SourceArchitectureTests
                 "!string.IsNullOrWhiteSpace(value.Result) &&",
                 "value.Result.Length <= 320 &&"
             ],
-            ["AudioEnhancementsTweakService.cs"] =
+            ["AudioEnhancementsTweakService.Part02.cs"] =
             [
                 "if (!started.Wait(TimeSpan.FromSeconds(3)))",
                 "if (!waiting.Wait(TimeSpan.FromSeconds(2)) || !waiting.Result)",
@@ -445,7 +445,7 @@ public sealed class SourceArchitectureTests
             // action-specific launch and confirmation contract below.
             "ContextMenuNativeActions.cs",
             "GTweakMaintenanceService.cs",
-            "GpuDriverService.cs",
+            "GpuDriverService.Part02.cs",
             "NativeNicTuningService.Part03.cs",
             "PowerShellTweakerService.cs",
             "ProcessRunner.cs",
