@@ -26,16 +26,19 @@ public sealed partial class MainWindow
             try { await Task.Delay(180); await VerifyElementActiveMaterialAsync(card); }
             finally { RootGrid.Children.Remove(card); }
         });
-        await check("popup-inner-card-retains-active-material", async () =>
+        await check("popup-uses-opaque-surface", async () =>
         {
             var popup = MakeContinuationPopup((_, _) => Task.FromResult(new DesktopUpdateCompletion("Ready", "Close")));
             try
             {
+                if (popup.SystemBackdrop != null)
+                    throw new InvalidOperationException("Updater popup still owns a system backdrop.");
+                if (popup.Content is not Grid root || root.Background is not SolidColorBrush rootBrush || rootBrush.Color.A != 255)
+                    throw new InvalidOperationException("Updater root is not opaque.");
                 popup.ShowWithoutActivation(); await Task.Delay(180);
-                var elements = new List<SystemBackdropElement>();
-                CollectBackdropElements((DependencyObject)popup.Content, elements);
-                if (elements.Count != 1) throw new InvalidOperationException("Expected one inner backdrop, got " + elements.Count);
-                await VerifyElementActiveMaterialAsync(elements[0]);
+                if (root.Children.Count == 0 || root.Children[0] is not Border card ||
+                    card.Background is not SolidColorBrush cardBrush || cardBrush.Color.A != 255)
+                    throw new InvalidOperationException("Updater card is not opaque.");
             }
             finally { popup.Close(); }
         });
@@ -127,20 +130,41 @@ public sealed partial class MainWindow
             await InvokePopupPrimaryAsync(popup);
             if (PopupField<TextBlock>(popup, "_status").Text != "Aktualizaci se nepoda\u0159ilo st\u00e1hnout.")
                 throw new InvalidOperationException("Error label is corrupted: " + PopupField<TextBlock>(popup, "_status").Text);
-            // Actual error state is red, never the normal cyan status.
+            // Actual error state is red, never the normal green progress tone.
             var failed = ((SolidColorBrush)PopupField<TextBlock>(popup, "_percent").Foreground).Color;
             if (failed.R < 200 || failed.B > 190)
-                throw new InvalidOperationException("Download failure still uses the blue success accent.");
+                throw new InvalidOperationException("Download failure still uses the normal progress accent.");
             if (!PopupField<Button>(popup, "_primary").IsEnabled) throw new InvalidOperationException("Retry remains disabled.");
+            if (PopupField<TextBlock>(popup, "_detail").Visibility != Visibility.Visible)
+                throw new InvalidOperationException("Compact popup hides the failure details.");
             pending = InvokePopupPrimaryAsync(popup);
+            if (PopupField<TextBlock>(popup, "_detail").Visibility != Visibility.Collapsed)
+                throw new InvalidOperationException("Compact popup still shows redundant progress details.");
             var retryAccent = ((SolidColorBrush)PopupField<TextBlock>(popup, "_percent").Foreground).Color;
-            if (retryAccent.B < 230 || retryAccent.R > 110)
-                throw new InvalidOperationException("Retry did not reset the normal blue progress tone.");
+            if (retryAccent != Windows.UI.Color.FromArgb(255, 83, 252, 24) ||
+                ((SolidColorBrush)PopupField<TextBlock>(popup, "_status").Foreground).Color != Windows.UI.Color.FromArgb(255, 226, 238, 229) ||
+                ((SolidColorBrush)PopupField<Border>(popup, "_fill").Background).Color != Windows.UI.Color.FromArgb(255, 83, 252, 24))
+                throw new InvalidOperationException("Retry did not restore green progress and neutral status text.");
             await InvokePopupPrimaryAsync(popup);
             if (downloads != 2) throw new InvalidOperationException("Double click duplicated the download.");
             finish.SetResult(new DesktopUpdateCompletion("Ready", "Install", () => { completions++; return Task.CompletedTask; }));
             await pending; await InvokePopupPrimaryAsync(popup); await InvokePopupPrimaryAsync(popup);
             if (completions != 1) throw new InvalidOperationException("Completion action was not exactly once.");
+            int automaticDownloads = 0, automaticInstalls = 0;
+            var automatic = MakeContinuationPopup((_, _) =>
+            {
+                automaticDownloads++;
+                return Task.FromResult(new DesktopUpdateCompletion("Ready", "Install", null, null,
+                    (p, _) => { automaticInstalls++; p.Report(new DesktopUpdateProgress(98, "Installing")); return Task.CompletedTask; }));
+            });
+            try
+            {
+                await automatic.StartAutomaticUpdateAsync();
+                await automatic.StartAutomaticUpdateAsync();
+                if (automaticDownloads != 1 || automaticInstalls != 1)
+                    throw new InvalidOperationException("Automatic update needs confirmation or starts more than once.");
+            }
+            finally { automatic.Close(); }
         }
         finally { finish.TrySetResult(new DesktopUpdateCompletion("Ready", "Close")); if (pending != null) await pending; popup.Close(); }
     }
@@ -171,6 +195,11 @@ public sealed partial class MainWindow
 
     private static async Task VerifyPopupProgressBoundsAsync()
     {
+        const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
+        var smokeField = typeof(App).GetField("<IsSmokeUi>k__BackingField", flags)!;
+        var enabledField = typeof(UiMotionSettingsService).GetField("<Enabled>k__BackingField", flags)!;
+        var systemField = typeof(UiMotionSettingsService).GetField("_systemAnimationsEnabled", flags)!;
+        object? oldSmoke = smokeField.GetValue(null), oldEnabled = enabledField.GetValue(null), oldSystem = systemField.GetValue(null);
         IProgress<DesktopUpdateProgress>? progress = null;
         var finish = new TaskCompletionSource<DesktopUpdateCompletion>(TaskCreationOptions.RunContinuationsAsynchronously);
         var popup = new DesktopUpdateNotificationWindow("TEST", "Spankyho Optimizer", "15.4.733 - aktualizace",
@@ -180,17 +209,44 @@ public sealed partial class MainWindow
         try
         {
             popup.ShowWithoutActivation(); await Task.Delay(100); action = InvokePopupPrimaryAsync(popup);
+            // Keep the window off-screen but exercise production animation, not the smoke shortcut.
+            smokeField.SetValue(null, false); enabledField.SetValue(null, true); systemField.SetValue(null, true);
             progress!.Report(new DesktopUpdateProgress(42, "Stahovani", "Podrobny prubeh aktualizace a informace o velikosti souboru, ktere potrebuji dva radky v notifikaci."));
-            await Task.Delay(200);
+            await Task.Delay(350);
+            var animation = PopupField<Microsoft.UI.Xaml.Media.Animation.Storyboard>(popup, "_fillAnimation");
+            if (animation.GetCurrentState() == Microsoft.UI.Xaml.Media.Animation.ClockState.Active)
+            {
+                // Off-screen rendering can throttle frames; verify the completed animation, not a wall-clock guess.
+                var completed = new TaskCompletionSource<bool>();
+                animation.Completed += (_, _) => completed.TrySetResult(true);
+                if (await Task.WhenAny(completed.Task, Task.Delay(3000)) != completed.Task)
+                    throw new InvalidOperationException("Progress animation did not complete.");
+            }
             var root = (FrameworkElement)popup.Content; root.UpdateLayout();
+            var track = PopupField<Border>(popup, "_track");
+            double expectedFillWidth = (track.ActualWidth - 2) * .42;
+            double actualFillWidth = PopupField<Border>(popup, "_fill").ActualWidth;
+            if (expectedFillWidth <= 0 || Math.Abs(actualFillWidth - expectedFillWidth) > 2)
+                throw new InvalidOperationException($"Animated progress fill is incorrect: actual={actualFillWidth:F1} expected={expectedFillWidth:F1}.");
+            if (track.ActualHeight != 26 || track.CornerRadius.TopLeft != 13 ||
+                track.BorderThickness.Left != 1 ||
+                ((SolidColorBrush)track.Background).Color != Windows.UI.Color.FromArgb(255, 20, 36, 24) ||
+                ((SolidColorBrush)track.BorderBrush).Color != Windows.UI.Color.FromArgb(255, 48, 75, 54))
+                throw new InvalidOperationException("Progress capsule no longer matches the green reference style.");
             foreach (string name in new[] { "_primary", "_secondary" })
             {
                 var button = PopupField<Button>(popup, name);
                 var point = button.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0, 0));
                 if (button.ActualWidth <= 0 || button.ActualHeight <= 0 || point.Y < 0 || point.Y + button.ActualHeight > root.ActualHeight - 4)
                     throw new InvalidOperationException($"{name} clipped: top={point.Y:F1} height={button.ActualHeight:F1} window={root.ActualHeight:F1}");
+                if (root.ActualHeight - point.Y - button.ActualHeight > 20)
+                    throw new InvalidOperationException("Popup has unnecessary empty space below its buttons.");
             }
         }
-        finally { finish.TrySetResult(new DesktopUpdateCompletion("Ready", "Close")); if (action != null) await action; popup.Close(); }
+        finally
+        {
+            smokeField.SetValue(null, oldSmoke); enabledField.SetValue(null, oldEnabled); systemField.SetValue(null, oldSystem);
+            finish.TrySetResult(new DesktopUpdateCompletion("Ready", "Close")); if (action != null) await action; popup.Close();
+        }
     }
 }

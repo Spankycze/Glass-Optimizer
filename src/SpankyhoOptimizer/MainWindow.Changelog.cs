@@ -19,6 +19,12 @@ public sealed partial class MainWindow
     private string ChangelogPath =>
         Path.Combine(AppContext.BaseDirectory, "Assets", "Changelog.md");
 
+    private static string ChangelogRowVersionLabel(string title)
+    {
+        int dash = title.IndexOf('\u2014');
+        return dash > 0 ? title[..dash].Trim() : title;
+    }
+
     private string LoadBundledChangelog()
     {
         try
@@ -273,9 +279,7 @@ public sealed partial class MainWindow
                     if (i < items.Count)
                     {
                         string title = items[i].Title;
-                        string version = title;
-                        int dash = title.IndexOf('—');
-                        if (dash > 0) version = title[..dash].Trim();
+                        string version = ChangelogRowVersionLabel(title);
                         SetOverviewTextIfChanged(versions[i], version);
                         SetOverviewTextIfChanged(rows[i],
                             FormatOverviewInlineChangelogRow(title, items[i].Detail));

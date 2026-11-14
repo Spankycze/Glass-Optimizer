@@ -31,14 +31,7 @@ public sealed partial class MainWindow
         var overlay = CreateDialogOverlay(13000, 96);
         var card = CreateDialogCard(760, 680, z: 36);
         var root = CreateDialogLayout();
-        var header = new StackPanel { Spacing = 8, Margin = new Thickness(0, 0, 48, 0) };
-        header.Children.Add(new TextBlock
-        {
-            Text = revert ? "Obnova Windows AI" : "Windows AI — přesný průběh",
-            FontSize = 21,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = TextPrimaryBrush()
-        });
+        var header = CreateDialogHeader(revert ? "Obnova Windows AI" : "Windows AI — průběh");
         var summary = new TextBlock { Text = $"0 / {selected.Length} modulů", FontSize = 12.5, Foreground = TextSecondaryBrush() };
         var current = new TextBlock { Text = "Připravuji…", FontSize = 13.5, Foreground = TextSecondaryBrush(), TextWrapping = TextWrapping.Wrap };
         header.Children.Add(summary); header.Children.Add(current);
@@ -94,7 +87,7 @@ public sealed partial class MainWindow
             finally { UnmountDialog(overlay); }
         }
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
+        var buttons = DialogActions();
         var cancel = StyledDialogButton("Zrušit", false, () => { ClosePopup(); return Task.CompletedTask; });
         buttons.Children.Add(cancel); Grid.SetRow(buttons, 2); root.Children.Add(buttons);
         card.Child = root;

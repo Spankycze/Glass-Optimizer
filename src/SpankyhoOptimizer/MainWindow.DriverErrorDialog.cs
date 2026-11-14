@@ -17,56 +17,7 @@ public sealed partial class MainWindow
 
         var root = new StackPanel { Spacing = 14 };
 
-        var header = new Grid { ColumnSpacing = 12, Margin = new Thickness(0, 0, 46, 0) };
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.ColumnDefinitions.Add(new ColumnDefinition());
-
-        var icon = new Border
-        {
-            Width = 42,
-            Height = 42,
-            CornerRadius = new CornerRadius(12),
-            Background = ThemeColor(30, 255, 184, 74),
-            BorderBrush = WarningBrush(),
-            BorderThickness = new Thickness(1),
-            VerticalAlignment = VerticalAlignment.Top,
-            Child = new FontIcon
-            {
-                Glyph = "\uE7BA",
-                FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons"),
-                FontSize = 18,
-                Foreground = WarningBrush()
-            }
-        };
-        header.Children.Add(icon);
-
-        var titleStack = new StackPanel { Spacing = 5 };
-        Grid.SetColumn(titleStack, 1);
-        titleStack.Children.Add(new TextBlock
-        {
-            Text = "Ovladače",
-            FontSize = 21,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = TextPrimaryBrush()
-        });
-        titleStack.Children.Add(new Border
-        {
-            HorizontalAlignment = HorizontalAlignment.Left,
-            CornerRadius = new CornerRadius(7),
-            Padding = new Thickness(7, 2, 7, 2),
-            Background = ThemeColor(30, 255, 184, 74),
-            BorderBrush = WarningBrush(),
-            BorderThickness = new Thickness(1),
-            Child = new TextBlock
-            {
-                Text = "NAČTENÍ SELHALO",
-                FontSize = 10.5,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = WarningBrush()
-            }
-        });
-        header.Children.Add(titleStack);
-        root.Children.Add(header);
+        root.Children.Add(CreateDialogHeader("Ovladače", "Načtení selhalo", WarningBrush()));
 
         root.Children.Add(new TextBlock
         {

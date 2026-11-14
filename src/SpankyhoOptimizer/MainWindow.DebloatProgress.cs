@@ -19,8 +19,7 @@ public sealed partial class MainWindow
         var overlay = CreateDialogOverlay(13000, 96);
         var card = CreateDialogCard(700, 680, z: 36);
         var root = CreateDialogLayout();
-        var header = new StackPanel { Spacing = 8, Margin = new Thickness(0, 0, 48, 0) };
-        header.Children.Add(new TextBlock { Text = "Debloater V3 — průběh", FontSize = 21, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
+        var header = CreateDialogHeader("Debloater V3 — průběh");
         var summary = new TextBlock { Text = $"0 / {apps.Length}", Foreground = TextSecondaryBrush() };
         var current = new TextBlock { Text = "Připravuji…", FontSize = 13.5, Foreground = ProgressBrush(), TextWrapping = TextWrapping.Wrap };
         header.Children.Add(summary); header.Children.Add(current);
@@ -66,7 +65,7 @@ public sealed partial class MainWindow
             UnmountDialog(overlay);
         }
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
+        var buttons = DialogActions();
         cancel = StyledDialogButton("Zrušit", false, () => { ClosePopup(); return Task.CompletedTask; });
         buttons.Children.Add(cancel); Grid.SetRow(buttons, 2); root.Children.Add(buttons);
         card.Child = root;

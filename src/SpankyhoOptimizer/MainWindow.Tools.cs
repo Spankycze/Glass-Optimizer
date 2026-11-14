@@ -332,27 +332,7 @@ public sealed partial class MainWindow
         var check = await AppUpdateService.CheckAsync();
         status.Text = check.Message;
         if (!check.Available || check.Manifest == null) return;
-        string note = string.IsNullOrWhiteSpace(check.Manifest.Changelog) ? "" : "\n\n" + check.Manifest.Changelog;
-        if (!await ShowStyledConfirmAsync("Aktualizace aplikace", $"Dostupná verze {RuntimeVersionInfo.PublicVersion(check.Manifest.Version)}.{note}", "Stáhnout", "Později", "SHA-256 bude ověřen")) return;
-        try
-        {
-            var progressResult = await RunCancellableWithProgressAsync(
-                "Stahuji aktualizaci",
-                "Stahuji a ověřuji installer…",
-                token => AppUpdateService.DownloadAsync(check.Manifest, token));
-            if (!progressResult.Completed)
-            {
-                LogService.Info("update", "Application update download cancelled by user.");
-                return;
-            }
-            string path = progressResult.Result;
-            if (await ShowStyledConfirmAsync("Aktualizace stažena", "Installer je ověřený. Spustit transakční update a ukončit Optimizer?", "Spustit", "Později", path))
-            {
-                AppUpdateService.LaunchInstallerForUpdate(path, check.Manifest.Sha256);
-                Close();
-            }
-        }
-        catch (Exception ex) { await ShowStyledInfoAsync("Aktualizace", ex.Message); }
+        ShowAppUpdateDesktopNotification(check.Manifest, 0);
     }
 
     private async Task ShowSelfDiagnosticsAsync()

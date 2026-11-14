@@ -88,80 +88,6 @@ internal sealed class OptimizerGlassBackdrop : SystemBackdrop
     }
 }
 
-internal sealed class UpdatePopupGlassBackdrop : SystemBackdrop
-{
-    private DesktopAcrylicController? _controller;
-    private IDisposable? _elementTarget;
-    private SystemBackdropConfiguration? _defaultConfiguration;
-    private SystemBackdropConfiguration? _configuration;
-
-    protected override void OnTargetConnected(ICompositionSupportsSystemBackdrop target, XamlRoot root)
-    {
-        base.OnTargetConnected(target, root);
-        _elementTarget = target as IDisposable;
-        if (!DesktopAcrylicController.IsSupported()) return;
-
-        _controller = new DesktopAcrylicController
-        {
-            Kind = DesktopAcrylicKind.Thin,
-            // Lighter smoked-glass toast: subdued neutral charcoal tint
-            // lets more actual desktop acrylic show through. No blue bars.
-            TintColor = Windows.UI.Color.FromArgb(255, 23, 28, 37),
-            TintOpacity = .045f,
-            LuminosityOpacity = .11f,
-            FallbackColor = Windows.UI.Color.FromArgb(0, 0, 0, 0)
-        };
-        _defaultConfiguration = GetDefaultSystemBackdropConfiguration(target, root);
-        // WinUI owns and updates its default object on every activation transition.
-        // Never pass that mutable object to a controller with an always-active material policy.
-        var configuration = _configuration = new SystemBackdropConfiguration
-        {
-            Theme = _defaultConfiguration.Theme,
-            IsHighContrast = _defaultConfiguration.IsHighContrast
-        };
-        configuration.IsInputActive = true;
-        _controller.SetSystemBackdropConfiguration(configuration);
-        _controller.AddSystemBackdropTarget(target);
-    }
-
-    protected override void OnDefaultSystemBackdropConfigurationChanged(ICompositionSupportsSystemBackdrop target, XamlRoot root)
-    {
-        base.OnDefaultSystemBackdropConfigurationChanged(target, root);
-        if (_configuration == null) return;
-        var defaults = GetDefaultSystemBackdropConfiguration(target, root);
-        _defaultConfiguration = defaults;
-        // Focus changes notify every backdrop (including each Overview card).
-        // The independent active-material policy means most notifications do
-        // not change any pixel. Avoid three redundant WinRT/compositor writes
-        // per native Acrylic controller unless configuration actually changed.
-        if (_configuration.Theme != defaults.Theme)
-            _configuration.Theme = defaults.Theme;
-        if (_configuration.IsHighContrast != defaults.IsHighContrast)
-            _configuration.IsHighContrast = defaults.IsHighContrast;
-        if (!_configuration.IsInputActive)
-            _configuration.IsInputActive = true;
-    }
-
-    internal void ReleaseDetachedElementTarget()
-    {
-        var target = _elementTarget;
-        _elementTarget = null;
-        target?.Dispose();
-    }
-    protected override void OnTargetDisconnected(ICompositionSupportsSystemBackdrop target)
-    {
-        if (_controller != null)
-        {
-            _controller.RemoveSystemBackdropTarget(target);
-            _controller.Dispose();
-            _controller = null;
-        }
-        _defaultConfiguration = null;
-        _configuration = null;
-        base.OnTargetDisconnected(target);
-    }
-}
-
 public sealed partial class MainWindow
 {
     private static bool UseGlassChrome => _darkTheme && !IsSolidDarkTheme;
@@ -402,9 +328,8 @@ public sealed partial class MainWindow
         CheckGradient(GlassBlueEdgeBrush(), "primary-action-edge", 140);
 
         if (DialogModalCardBrush() is not AcrylicBrush acrylic ||
-            acrylic.TintOpacity > 0.24 ||
-            acrylic.TintLuminosityOpacity > 0.28)
-            throw new InvalidOperationException("Dialog acrylic contract regressed.");
+            acrylic.TintOpacity != 0 || acrylic.TintLuminosityOpacity != 0 || acrylic.FallbackColor.A > 96)
+            throw new InvalidOperationException("Dialog must preserve background colors without adding a dark tint.");
 
         LogService.Info("visual-qa", "GLASS_SEMANTIC_SURFACE_CONTRACT_OK");
     }

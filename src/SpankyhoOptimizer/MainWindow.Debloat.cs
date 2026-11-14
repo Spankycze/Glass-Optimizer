@@ -18,6 +18,7 @@ public sealed partial class MainWindow
     private IReadOnlyList<InstalledAppInfo>? _debloatRowsSnapshot;
     private DebloatRowViewModel[]? _debloatRowsCache;
     private CancellationToken _debloatActionToken;
+    private Action? _debloatSelectionChanged;
 
     private DebloatRowViewModel[] GetDebloatRows(IReadOnlyList<InstalledAppInfo> apps)
     {
@@ -25,7 +26,11 @@ public sealed partial class MainWindow
         var rows = apps.OrderBy(x => x.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .Select(app => new DebloatRowViewModel(app,
                 _debloatKeep.TryGetValue(app.PackageFullName, out var saved) ? saved : app.Protected || !app.Recommended,
-                (vm, keep) => _debloatKeep[vm.Source.PackageFullName] = keep)).ToArray();
+                (vm, keep) =>
+                {
+                    _debloatKeep[vm.Source.PackageFullName] = keep;
+                    _debloatSelectionChanged?.Invoke();
+                })).ToArray();
         _debloatRowsSnapshot = apps;
         return _debloatRowsCache = rows;
     }
@@ -55,6 +60,12 @@ public sealed partial class MainWindow
             AreDebloatSummariesEquivalent(first, [sample with { Recommended = true }]) ||
             AreDebloatSummariesEquivalent(first, [sample with { Protected = true }]))
             throw new InvalidOperationException("Debloat summary equality missed metadata/selection drift.");
+        var row = new DebloatRowViewModel(sample, keep: true, (_, _) => { });
+        if (row.Remove || row.StateText != "PONECHAT")
+            throw new InvalidOperationException("Debloat remove checkbox started inverted.");
+        row.Remove = true;
+        if (row.Keep || row.StateText != "ODEBRAT")
+            throw new InvalidOperationException("Debloat remove checkbox did not invert the keep state.");
         LogService.Info("debloat",
             "DEBLOAT_SUMMARY_EQUALITY_SMOKE_OK unchanged=true publisherChange=true recommendedChange=true protectedChange=true countChange=true");
     }
@@ -241,12 +252,8 @@ public sealed partial class MainWindow
 
         token.ThrowIfCancellationRequested();
         var source = GetDebloatRows(apps);
-        int keepCount = 0;
         foreach (var vm in source)
-        {
             _debloatKeep[vm.Source.PackageFullName] = vm.Keep;
-            if (vm.Keep) keepCount++;
-        }
         long rowsMs = perf.ElapsedMilliseconds - snapshotMs;
 
         var repeater = new ItemsRepeater
@@ -258,44 +265,178 @@ public sealed partial class MainWindow
         };
         var list = new ScrollViewer
         {
-            MaxHeight = 680,
+            MaxHeight = 520,
             VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Content = repeater
         };
 
-        long listMs = perf.ElapsedMilliseconds - snapshotMs - rowsMs;
+        int filterMode = 0;
+        string query = string.Empty;
+        var filterButtons = new Button[3];
+        var filterStrip = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var countText = new TextBlock
+        {
+            FontSize = 11.5,
+            Foreground = TextSecondaryBrush(),
+            TextWrapping = TextWrapping.Wrap
+        };
+        var search = new TextBox
+        {
+            PlaceholderText = "Hledat aplikaci…",
+            MinWidth = 210,
+            MaxWidth = 260,
+            Height = 36,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12, 4, 12, 4),
+            Background = SectionCardBackgroundBrush(),
+            BorderBrush = SectionBorderBrush()
+        };
+        search.HorizontalAlignment = HorizontalAlignment.Right;
+        var removeButton = PrimaryQuickButton("Odebrat vybrané", () => RemoveSelectedDebloatAsync(source, token));
+        removeButton.MinWidth = 170;
+
+        bool Matches(DebloatRowViewModel row)
+        {
+            if (filterMode == 0 && !row.Source.Recommended) return false;
+            if (filterMode == 2 && !row.Remove) return false;
+            if (query.Length == 0) return true;
+            return row.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                   row.Source.Publisher.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                   row.Source.Reason.Contains(query, StringComparison.OrdinalIgnoreCase);
+        }
+
+        void UpdateFilterButtons()
+        {
+            int selected = source.Count(x => x.Remove && IsDebloatSelectable(x.Source));
+            filterButtons[0].Content = $"Doporučené  {source.Count(x => x.Source.Recommended)}";
+            filterButtons[1].Content = $"Vše  {source.Length}";
+            filterButtons[2].Content = $"Vybrané  {selected}";
+            for (int i = 0; i < filterButtons.Length; i++)
+            {
+                bool on = i == filterMode;
+                filterButtons[i].Background = on ? AccentSoftBrush() : SectionCardBackgroundBrush();
+                filterButtons[i].BorderBrush = on ? AccentBrush() : SectionBorderBrush();
+                filterButtons[i].FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+                filterButtons[i].Opacity = on ? 1 : .82;
+            }
+        }
+
+        void UpdateCount()
+        {
+            int visible = source.Count(Matches);
+            int selected = source.Count(x => x.Remove && IsDebloatSelectable(x.Source));
+            countText.Text = $"Zobrazeno {visible} z {source.Length} • vybráno {selected}";
+            removeButton.IsEnabled = selected > 0;
+            UpdateFilterButtons();
+        }
+
+        void RefreshList()
+        {
+            repeater.ItemsSource = source.Where(Matches).ToArray();
+            UpdateCount();
+        }
+
+        Button MakeFilterButton(int mode)
+        {
+            var button = new Button { MinHeight = 34 };
+            ApplyPillButtonAppearance(button);
+            button.Padding = new Thickness(12, 5, 12, 5);
+            button.Click += (_, _) =>
+            {
+                filterMode = mode;
+                RefreshList();
+            };
+            filterButtons[mode] = button;
+            return button;
+        }
+
+        filterStrip.Children.Add(MakeFilterButton(0));
+        filterStrip.Children.Add(MakeFilterButton(1));
+        filterStrip.Children.Add(MakeFilterButton(2));
+        search.TextChanged += (_, _) =>
+        {
+            query = search.Text?.Trim() ?? string.Empty;
+            RefreshList();
+        };
+
+        var filterBar = new Grid { ColumnSpacing = 10 };
+        filterBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        filterBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        filterBar.Children.Add(filterStrip);
+        Grid.SetColumn(search, 1);
+        filterBar.Children.Add(search);
+
+        var summary = new TextBlock
+        {
+            FontSize = 12.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = TextPrimaryBrush()
+        };
+        var summaryHint = new TextBlock
+        {
+            Text = "Před odebráním se vytvoří bod obnovení.",
+            FontSize = 10.5,
+            Foreground = TextSecondaryBrush(),
+            TextWrapping = TextWrapping.Wrap
+        };
+        var summaryStack = new StackPanel { Spacing = 2 };
+        summaryStack.Children.Add(summary);
+        summaryStack.Children.Add(summaryHint);
+        var footerGrid = new Grid { ColumnSpacing = 12 };
+        footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        footerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        footerGrid.Children.Add(summaryStack);
+        Grid.SetColumn(removeButton, 1);
+        removeButton.VerticalAlignment = VerticalAlignment.Center;
+        footerGrid.Children.Add(removeButton);
+        var footer = new Border
+        {
+            Background = SectionCardBackgroundBrush(),
+            BorderBrush = SectionBorderBrush(),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(14, 10, 14, 10),
+            Child = footerGrid
+        };
+
+        _debloatSelectionChanged = () =>
+        {
+            int selected = source.Count(x => x.Remove && IsDebloatSelectable(x.Source));
+            summary.Text = selected == 0 ? "Zatím nic nevybráno" : $"Vybráno {selected} aplikací";
+            UpdateCount();
+        };
+        int recommended = apps.Count(x => x.Recommended);
+        int protectedCount = apps.Count(x => x.Protected);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(PrimaryQuickButton("Doporučené odebrání", () => OpenDebloatKeepManagerAsync(_debloatActionToken)));
-        actions.Children.Add(QuickButton("Ruční výběr", () => OpenDebloatManagerAsync(_debloatActionToken)));
         actions.Children.Add(QuickButton("Obnovit", () =>
         {
             InstalledAppService.InvalidateCache();
             InvalidateDebloatPageCache();
             return ShowSectionAsync("debloat");
         }));
-
-        int recommended = 0;
-        int protectedCount = 0;
-        foreach (var app in apps)
-        {
-            if (app.Protected) protectedCount++;
-            else if (app.Recommended) recommended++;
-        }
         root.Children.Add(BuildModernSectionHero(
             "debloat",
             "Debloater",
-            "Aplikace, seznam ponechaných položek a doporučené čištění s ochranou systémových balíků.",
-            "SPRÁVCE APLIKACÍ",
+            "Zaškrtni, co chceš odebrat. Doporučené položky jsou předvybrané a nic se neodebere bez potvrzení.",
+            "APLIKACE K ODEBRÁNÍ",
             $"{apps.Count} aplikací • {recommended} doporučených • {protectedCount} chráněných",
             actions));
-        root.Children.Add(BuildDashboardMetricGrid(
-            BuildDashboardMetric("Aplikace", apps.Count.ToString(), "Nainstalované balíky"),
-            BuildDashboardMetric("Doporučené", recommended.ToString(), "Bezpečné čištění", "SpankySuccessBrush"),
-            BuildDashboardMetric("Chráněné", protectedCount.ToString(), "Nelze odstranit", "SpankyWarningBrush"),
-            BuildDashboardMetric("Ponechat", keepCount.ToString(), "Chráněno před odebráním")));
-        root.Children.Add(BuildSectionSurface("debloat", "Nainstalované aplikace", "Jednoduchý přehled bez zbytečných filtrů", list));
+
+        var body = new StackPanel { Spacing = 9 };
+        body.Children.Add(filterBar);
+        body.Children.Add(countText);
+        body.Children.Add(list);
+        body.Children.Add(footer);
+        root.Children.Add(BuildSectionSurface(
+            "debloat",
+            "Aplikace k odebrání",
+            "Zaškrtnuté položky se odeberou až po potvrzení a vytvoření bodu obnovení.",
+            body));
+        _debloatSelectionChanged();
+        RefreshList();
+        long listMs = perf.ElapsedMilliseconds - snapshotMs - rowsMs;
         ContentStack.Children.Add(root);
         long totalMs = perf.ElapsedMilliseconds;
         long composeMs = totalMs - snapshotMs - rowsMs - listMs;

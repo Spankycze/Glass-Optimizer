@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.UI.Text;
@@ -10,41 +11,54 @@ namespace SpankyhoOptimizer;
 
 public sealed partial class MainWindow
 {
-    private InfoBar? _actionFeedbackBar;
+    private readonly List<DesktopStatusNotificationWindow> _desktopStatusNotifications = new();
 
     private void ShowActionFeedback(string action, ActionFeedbackKind kind, string detail = "")
     {
         string area = string.IsNullOrWhiteSpace(_section) ? "app" : _section;
         ActionFeedbackService.Record(area, action, kind, detail);
-        var bar = new InfoBar
+        if (!DispatcherQueue.HasThreadAccess)
         {
-            IsOpen = true,
-            IsClosable = true,
-            Title = kind switch
+            DispatcherQueue.TryEnqueue(() => ShowActionFeedback(action, kind, detail));
+            return;
+        }
+
+        try
+        {
+            // Feedback is a tray-style popup now; cap runaway bursts instead of
+            // stacking an unbounded number of native windows.
+            while (_desktopStatusNotifications.Count >= 3)
             {
-                ActionFeedbackKind.Verified => "Applied • Verified",
-                ActionFeedbackKind.RestartRequired => "Applied • Restart required",
-                ActionFeedbackKind.Unsupported => "Unsupported",
-                ActionFeedbackKind.Failed => "Failed",
-                ActionFeedbackKind.Applied => "Applied",
-                _ => "Status"
-            },
-            Message = string.IsNullOrWhiteSpace(detail) ? action : action + " • " + detail,
-            Severity = kind switch
-            {
-                ActionFeedbackKind.Verified => InfoBarSeverity.Success,
-                ActionFeedbackKind.RestartRequired => InfoBarSeverity.Warning,
-                ActionFeedbackKind.Unsupported => InfoBarSeverity.Warning,
-                ActionFeedbackKind.Failed => InfoBarSeverity.Error,
-                _ => InfoBarSeverity.Informational
-            },
-            Margin = new Thickness(0, 0, 0, 10)
-        };
-        if (_actionFeedbackBar != null && ContentStack.Children.Contains(_actionFeedbackBar))
-            ContentStack.Children.Remove(_actionFeedbackBar);
-        _actionFeedbackBar = bar;
-        ContentStack.Children.Insert(0, bar);
+                var oldest = _desktopStatusNotifications[0];
+                _desktopStatusNotifications.RemoveAt(0);
+                try { oldest.Close(); } catch { }
+            }
+
+            string body = string.IsNullOrWhiteSpace(detail) ? action : action + " \u2022 " + detail;
+            var window = new DesktopStatusNotificationWindow(
+                ActionFeedbackTitle(kind),
+                body,
+                kind,
+                _desktopUpdateNotifications.Count + _desktopStatusNotifications.Count);
+            _desktopStatusNotifications.Add(window);
+            window.Closed += (_, _) => _desktopStatusNotifications.Remove(window);
+            window.ShowWithoutActivation();
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("ui", "Status popup could not be shown: " + action, ex);
+        }
     }
+
+    private static string ActionFeedbackTitle(ActionFeedbackKind kind) => kind switch
+    {
+        ActionFeedbackKind.Verified => "Hotovo \u2022 ov\u011b\u0159eno",
+        ActionFeedbackKind.RestartRequired => "Pou\u017eito \u2022 nutn\u00fd restart",
+        ActionFeedbackKind.Unsupported => "Nepodporov\u00e1no",
+        ActionFeedbackKind.Failed => "Akce selhala",
+        ActionFeedbackKind.Applied => "Pou\u017eito",
+        _ => "Informace"
+    };
 
 
     private UIElement BuildPageSummaryStrip(params (string Label, string Value, string Brush)[] items)

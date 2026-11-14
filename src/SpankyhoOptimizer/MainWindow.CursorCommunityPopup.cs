@@ -18,8 +18,7 @@ public sealed partial class MainWindow
 
     private static readonly string[] CommunityCursorCategories =
     {
-        "All", "Minimal", "macOS", "Retro", "Pixel & Gaming",
-        "Neon", "Glass", "Cute", "Animated"
+        "All", "Minimal", "Neon", "Glass", "Cute", "Pixel", "Sci-Fi", "Animated"
     };
 
     internal string RunCommunityCursorPopupLifecycleSmoke()
@@ -59,7 +58,6 @@ public sealed partial class MainWindow
         // Use the shared glass scrim so this modal cannot drift back to a black wall.
         overlay.Background = GlassOverlayBrush(78);
         var card = CreateDialogCard(560, 760);
-        card.Padding = new Thickness(24);
         var root = new Grid
         {
             RowSpacing = 12,
@@ -70,17 +68,8 @@ public sealed partial class MainWindow
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var header = new StackPanel { Name = "CursorHeader", Spacing = 4, Margin = new Thickness(0, 0, 36, 0) };
-        header.Children.Add(new TextBlock
-        {
-            Text = "Community Cursor Library", FontSize = 20, FontWeight = FontWeights.SemiBold,
-            Foreground = TextPrimaryBrush(), TextWrapping = TextWrapping.Wrap
-        });
-        header.Children.Add(new TextBlock
-        {
-            Text = "Vyber pack a použij ho ve Windows.", FontSize = 12,
-            Foreground = DialogSecondaryTextBrush(), TextWrapping = TextWrapping.Wrap
-        });
+        var header = CreateDialogHeader("Kurzory", "Vyber cursor pack s náhledem a použij ho ve Windows.");
+        header.Name = "CursorHeader";
         root.Children.Add(header);
         var tools = new Grid { Name = "CursorSearch", ColumnSpacing = 12 };
         tools.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -88,7 +77,7 @@ public sealed partial class MainWindow
         var search = new TextBox
         {
             Name = "CursorQuery", MinWidth = 160,
-            PlaceholderText = "Hledat pack nebo autora...",
+            PlaceholderText = "Hledat cursor pack...",
             CornerRadius = new CornerRadius(18),
             Padding = new Thickness(14, 7, 14, 7),
             Background = DialogInnerSurfaceBrush(),
@@ -147,13 +136,7 @@ public sealed partial class MainWindow
             Name = "CursorActions",
             RowSpacing = 10,
             ColumnSpacing = 10,
-            VerticalAlignment = VerticalAlignment.Center,
-            Background = DialogBodyBrush(),
-            CornerRadius = new CornerRadius(22),
-            BorderBrush = DialogNeutralBorderBrush(),
-            BorderThickness = new Thickness(1),
-            Padding = new Thickness(12),
-            MinHeight = 54
+            VerticalAlignment = VerticalAlignment.Center
         };
         actionBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         actionBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -272,7 +255,10 @@ public sealed partial class MainWindow
 
             string query = search.Text?.Trim() ?? string.Empty;
             var filtered = packs.Where(p =>
-                    (selectedCategory == "All" || p.Category.Equals(selectedCategory, StringComparison.OrdinalIgnoreCase)) &&
+                    (selectedCategory == "All" ||
+                     (selectedCategory == "Animated"
+                        ? p.IsAnimated
+                        : p.Category.Equals(selectedCategory, StringComparison.OrdinalIgnoreCase))) &&
                     (query.Length == 0 ||
                      p.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                      p.Author.Contains(query, StringComparison.OrdinalIgnoreCase)))
@@ -282,7 +268,7 @@ public sealed partial class MainWindow
             page = Math.Clamp(page, 0, pageCount - 1);
             var visible = filtered.Skip(page * PageSize).Take(PageSize).ToArray();
 
-            countText.Text = $"{filtered.Length} packů";
+            countText.Text = $"{filtered.Length} packů kurzorů";
             if (prevButton != null) prevButton.IsEnabled = page > 0;
             if (nextButton != null) nextButton.IsEnabled = page < pageCount - 1;
 
@@ -378,7 +364,7 @@ public sealed partial class MainWindow
             Name = "CursorClose",
             Content = "Zavřít",
             MinWidth = 118,
-            Height = 38,
+            Height = 36,
             Padding = new Thickness(18, 0, 18, 0),
             Background = _darkTheme ? GlassSurfaceElevatedBrush() : SurfaceElevatedBrush(),
             Foreground = TextPrimaryBrush(),
@@ -388,8 +374,8 @@ public sealed partial class MainWindow
             HorizontalAlignment = HorizontalAlignment.Right
         };
         ApplyMaterialButtonAppearance(closeActionButton);
-        closeActionButton.Padding = new Thickness(18, 0, 18, 0);
-        closeActionButton.CornerRadius = new CornerRadius(19);
+        closeActionButton.Padding = new Thickness(16, 0, 16, 0);
+        closeActionButton.CornerRadius = new CornerRadius(12);
         closeActionButton.Click += (_, _) =>
         {
             LogService.Info("cursor", "COMMUNITY_CLOSE_CLICK");
@@ -404,7 +390,7 @@ public sealed partial class MainWindow
             }
         };
         EnsureAccessibleButton(closeActionButton, "Zavřít knihovnu kurzorů");
-        Grid.SetColumn(closeActionButton, 2);
+        Grid.SetColumn(closeActionButton, 1);
         Grid.SetRow(closeActionButton, 1);
         actionBar.Children.Add(closeActionButton);
 
@@ -412,7 +398,7 @@ public sealed partial class MainWindow
         {
             Content = "Použít vybraný",
             MinWidth = 170,
-            Height = 38,
+            Height = 36,
             Padding = new Thickness(18, 0, 18, 0),
             Background = AccentBrush(),
             Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
@@ -422,8 +408,8 @@ public sealed partial class MainWindow
             IsEnabled = selectedPack != null
         };
         ApplyMaterialButtonAppearance(applyActionButton, true);
-        applyActionButton.Padding = new Thickness(18, 0, 18, 0);
-        applyActionButton.CornerRadius = new CornerRadius(19);
+        applyActionButton.Padding = new Thickness(16, 0, 16, 0);
+        applyActionButton.CornerRadius = new CornerRadius(12);
         async Task ApplySelectedCursorAsync()
         {
             if (closed || applying) return;
@@ -504,7 +490,7 @@ public sealed partial class MainWindow
         }
         applyActionButton.Click += (_, _) => _ = ApplySelectedCursorAsync();
         EnsureAccessibleButton(applyActionButton, "Použít vybraný cursor pack");
-        Grid.SetColumn(applyActionButton, 1);
+        Grid.SetColumn(applyActionButton, 2);
         Grid.SetRow(applyActionButton, 1);
         actionBar.Children.Add(applyActionButton);
 

@@ -22,10 +22,10 @@ public sealed partial class MainWindow
 
         FrameworkElement hero = BuildModernSectionHero(
             "powershell",
-            "PowerShell",
-            "Chris Titus profil, Titus AI, shell health a doporučené PowerShell / CMD nástroje.",
+            "Titus PowerShell",
+            "Chris Titus PowerShell profil pro PowerShell 7. Pouze tento profil, žádné Titus AI ani doplňkové shell nástroje.",
             "TERMINAL",
-            "ChrisTitusTech • PowerShell Profile • Titus AI",
+            "ChrisTitusTech • powershell-profile",
             actions);
 
         ContentStack.Children.Add(hero);

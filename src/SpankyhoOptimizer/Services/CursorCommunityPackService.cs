@@ -12,6 +12,11 @@ public sealed record CommunityCursorPack(
 {
     public string? PreviewPath => ResolveRolePath("Arrow") ?? ResolveRolePath("Hand") ?? ResolveRolePath("IBeam") ?? ResolveRolePath("Wait");
 
+    public int AnimatedRoleCount =>
+        Directory.Exists(Folder) ? Directory.EnumerateFiles(Folder, "*.ani").Count() : 0;
+
+    public bool IsAnimated => AnimatedRoleCount > 0;
+
     public string? ResolveRolePath(string role)
     {
         string ini = Path.Combine(Folder, "pack.ini");
@@ -28,7 +33,6 @@ public static class CursorCommunityPackService
     private const string CursorKeyPath = @"Control Panel\Cursors";
     private const string AppKeyPath = @"Software\SpankyhoOptimizer\Cursor";
     private const uint SpiSetCursors = 0x0057;
-    private const uint SpifUpdateIniFile = 0x01;
 
     private static string PersistentRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -40,6 +44,12 @@ public static class CursorCommunityPackService
     {
         "Arrow","Help","AppStarting","Wait","Crosshair","IBeam","NWPen","No",
         "SizeNS","SizeWE","SizeNWSE","SizeNESW","SizeAll","UpArrow","Hand","Pin","Person"
+    };
+
+    private static readonly HashSet<string> CuratedExtraPackIds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "modern-inverted", "glass-glow", "vision-black", "nailong", "clawd",
+        "openzone-black", "openzone-white"
     };
 
     private static readonly Lazy<CommunityCursorPack[]> BundledPacks = new(LoadBundledPacksCore, true);
@@ -56,8 +66,11 @@ public static class CursorCommunityPackService
         {
             string ini = Path.Combine(dir, "pack.ini");
             if (!File.Exists(ini)) continue;
-            var values = ReadIni(ini);
             string id = Path.GetFileName(dir);
+            // Curated GitHub catalog: Bibata family plus verified MIT packs.
+            if (!id.StartsWith("bibata-", StringComparison.OrdinalIgnoreCase) &&
+                !CuratedExtraPackIds.Contains(id)) continue;
+            var values = ReadIni(ini);
             list.Add(new CommunityCursorPack(
                 id,
                 Get(values, "name") ?? id,
@@ -343,8 +356,9 @@ public static class CursorCommunityPackService
         RegistryKey SelectKey(CursorMutation change) => change.Metadata ? app : key;
         void Refresh()
         {
-            // Avoid synchronous WM_SETTINGCHANGE broadcasts to unrelated apps.
-            if (!SystemParametersInfo(SpiSetCursors, 0, IntPtr.Zero, SpifUpdateIniFile))
+            // HKCU already holds the new scheme. SPIF_UPDATEINIFILE fails from this
+            // elevated WinUI process on current Windows builds; a flags-0 reload is enough.
+            if (!SystemParametersInfo(SpiSetCursors, 0, IntPtr.Zero, 0))
                 throw new System.ComponentModel.Win32Exception(
                     Marshal.GetLastWin32Error(), "Windows cursor scheme refresh selhal.");
         }

@@ -17,8 +17,13 @@ public sealed class DebloatRowViewModel : INotifyPropertyChanged
     public string Subtitle { get; }
     public string BadgeText { get; }
     public ImageSource? IconSource { get; private set; }
-    public string StateText => Source.Protected ? "CHRÁNĚNO" : _keep ? "PONECHAT" : "ODSTRANIT";
+    public string StateText => Source.Protected ? "CHRÁNĚNO" : _keep ? "PONECHAT" : "ODEBRAT";
     public bool CanEdit => !Source.Protected;
+    public bool Remove
+    {
+        get => !_keep;
+        set => Keep = !value;
+    }
 
     public DebloatRowViewModel(InstalledAppInfo source, bool keep, Action<DebloatRowViewModel, bool> changed)
     {
@@ -26,8 +31,15 @@ public sealed class DebloatRowViewModel : INotifyPropertyChanged
         _keep = keep;
         _changed = changed;
         DisplayName = source.DisplayName;
-        Subtitle = $"{source.CategoryLabel} • {source.RiskLabel} • {source.Publisher}";
-        BadgeText = source.Protected ? "Protected" : source.Recommended ? "Recommended" : source.RiskLabel;
+        string risk = source.Risk switch
+        {
+            DebloatRisk.Safe => "Bezpečné",
+            DebloatRisk.Optional => "Volitelné",
+            DebloatRisk.Advanced => "Pokročilé",
+            _ => "Chráněné"
+        };
+        Subtitle = $"{source.CategoryLabel} • {risk} • {source.Publisher}";
+        BadgeText = source.Protected ? "CHRÁNĚNO" : source.Recommended ? "DOPORUČENÉ" : risk.ToUpperInvariant();
         if (!string.IsNullOrWhiteSpace(source.LogoPath))
         {
             try
@@ -77,6 +89,7 @@ public sealed class DebloatRowViewModel : INotifyPropertyChanged
             if (_keep == value) return;
             _keep = value;
             PropertyChanged?.Invoke(this, new(nameof(Keep)));
+            PropertyChanged?.Invoke(this, new(nameof(Remove)));
             PropertyChanged?.Invoke(this, new(nameof(StateText)));
             _changed(this, value);
         }

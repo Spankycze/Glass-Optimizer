@@ -85,8 +85,22 @@ public sealed partial class MainWindow
         await FlushOverviewUiForSmokeAsync();
         string[] versions = _overviewHistoryTimes.Select(x => x.Text).ToArray();
         string[] details = _overviewHistoryRows.Select(x => x.Text).ToArray();
-        if (!versions.Any(x => x.Contains("15.4.")))
-            throw new InvalidOperationException("Changelog preview was not populated.");
+        // Compare the visible rows with the bundled changelog itself; a fixed
+        // historical version would silently go stale with every release.
+        var preview = LoadChangelogPreview(4);
+        if (preview.Count == 0)
+            throw new InvalidOperationException("Changelog preview is empty.");
+        if (versions.Length < preview.Count || details.Length < preview.Count)
+            throw new InvalidOperationException("Changelog preview rows are missing.");
+        for (int i = 0; i < preview.Count; i++)
+        {
+            string expected = ChangelogRowVersionLabel(preview[i].Title);
+            if (!string.Equals(versions[i], expected, StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    $"Changelog preview row {i} shows '{versions[i]}', expected '{expected}'.");
+            if (string.IsNullOrWhiteSpace(details[i]) || details[i] == "Bez dal\u0161\u00ed historie")
+                throw new InvalidOperationException($"Changelog preview row {i} has no release notes.");
+        }
         var refs = _overviewTextRefs;
         var snapshot = HardwareSnapshotService.GetOverviewAsync(false, CancellationToken.None);
         await CompleteOverviewDashboardAsync(snapshot, refs.Cpu, refs.Gpu, refs.Ram, refs.Disk,

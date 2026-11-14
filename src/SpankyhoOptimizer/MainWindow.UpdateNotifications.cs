@@ -57,10 +57,20 @@ public sealed partial class MainWindow
     }
 
     private void ShowAppUpdateDesktopNotification(AppUpdateManifest manifest, int stackIndex)
+        => SafeTaskService.Forget(RunAutomaticAppUpdatePopupAsync(manifest, stackIndex), "update", "Automatic application update");
+
+    internal static async Task<bool> RunAutomaticAppUpdatePopupAsync(AppUpdateManifest manifest, int stackIndex = 0)
     {
+        using var updateMutex = new Mutex(false, @"Local\GlassOptimizerAutomaticUpdatePopup");
+        bool ownsMutex;
+        try { ownsMutex = updateMutex.WaitOne(TimeSpan.Zero); }
+        catch (AbandonedMutexException) { ownsMutex = true; }
+        if (!ownsMutex) return false;
+        try
+        {
         var window = new DesktopUpdateNotificationWindow(
             "Spanky Update",
-            "Glass Optimizer",
+            "Je k dispozici nová aktualizace",
             "Nová verze " + manifest.Version,
             string.IsNullOrWhiteSpace(manifest.Changelog)
                 ? "Je dostupná nová verze Optimizeru. Installer se před spuštěním kryptograficky ověří."
@@ -69,7 +79,7 @@ public sealed partial class MainWindow
             {
                 var progress = new Progress<AppUpdateDownloadProgress>(p =>
                 {
-                    int percent = p.Percent < 0 ? 3 : Math.Clamp(p.Percent, 0, 48);
+                    int percent = p.Percent < 0 ? 3 : Math.Clamp(p.Percent, 0, 100) * 48 / 100;
                     string detail = p.Total.HasValue
                         ? $"{p.Received / 1048576d:0.0} / {p.Total.Value / 1048576d:0.0} MB"
                         : $"{p.Received / 1048576d:0.0} MB";
@@ -87,19 +97,44 @@ public sealed partial class MainWindow
                     "Nainstalovat",
                      null,
                      "SHA-256 + podpis manifestu ověřen.",
-                      (installProgress, installToken) =>
+                      async (installProgress, installToken) =>
                       {
-                          installToken.ThrowIfCancellationRequested();
-                          installProgress.Report(new DesktopUpdateProgress(98, "Spouštím tichou instalaci…", Path.GetFileName(path)));
-                          AppUpdateService.LaunchInstallerForUpdate(path, manifest.Sha256, silent: true);
-                          installProgress.Report(new DesktopUpdateProgress(100, "Installer převzal aktualizaci.", "Aplikace se nyní bezpečně nahradí."));
-                          return Task.CompletedTask;
+                           installToken.ThrowIfCancellationRequested();
+                           installProgress.Report(new DesktopUpdateProgress(50, "Spouštím tichou instalaci…"));
+                           using var installer = AppUpdateService.LaunchInstallerForUpdate(path, manifest.Sha256, silent: true);
+                           using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+                           try
+                           {
+                               using var wait = CancellationTokenSource.CreateLinkedTokenSource(installToken, timeout.Token);
+                               await installer.WaitForExitAsync(wait.Token);
+                            }
+                            catch (OperationCanceledException) when (installToken.IsCancellationRequested)
+                            {
+                               try { await installer.WaitForExitAsync(timeout.Token); }
+                               catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                               {
+                                   try { installer.Kill(entireProcessTree: true); } catch { }
+                                   throw new TimeoutException("Po zrušení popupu instalátor nedokončil práci do 30 minut.");
+                               }
+                               throw;
+                            }
+                           catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                           {
+                               try { installer.Kill(entireProcessTree: true); } catch { }
+                               throw new TimeoutException("Instalátor nedokončil práci do 30 minut.");
+                           }
+                           if (!AppUpdateService.IsSuccessfulInstallerExitCode(installer.ExitCode))
+                               throw new InvalidOperationException($"Instalace aktualizace selhala ({installer.ExitCode}).");
                       });
             },
             stackIndex);
 
-        TrackDesktopUpdateWindow(window);
-        window.ShowWithoutActivation();
+        var closed = new TaskCompletionSource<bool>();
+        window.Closed += (_, _) => closed.TrySetResult(window.CompletedSuccessfully);
+        await window.StartAutomaticUpdateAsync();
+        return await closed.Task;
+        }
+        finally { updateMutex.ReleaseMutex(); }
     }
 
     private void ShowExostenzaDesktopNotification(GpuDriverInfo gpu, DriverReleaseInfo release, int stackIndex)
@@ -202,27 +237,90 @@ public sealed partial class MainWindow
         window.Closed += (_, _) => _desktopUpdateNotifications.Remove(window);
     }
 
-    public async Task RunDesktopUpdateNotificationSmokeAsync()
+    internal async Task RunDesktopStatusNotificationSmokeAsync(bool visualPreview = false)
+    {
+        var window = new DesktopStatusNotificationWindow(
+            "Hotovo \u2022 ov\u011b\u0159eno",
+            "Stavov\u00e1 notifikace v oznamovac\u00ed oblasti. Nic se neaktivuje ani nem\u011bn\u00ed.",
+            ActionFeedbackKind.Verified,
+            visualPreview: visualPreview);
+        var closed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        window.Closed += (_, _) => closed.TrySetResult(true);
+        window.ShowWithoutActivation();
+        if (visualPreview)
+        {
+            // Render the popup itself for visual QA, then let the 7 s auto-hide close it.
+            await Task.Delay(450);
+            string dir = Path.Combine(LogService.Root, "visual-current");
+            Directory.CreateDirectory(dir);
+            await SaveVisualSnapshotAsync(window.PreviewElement, Path.Combine(dir, "status-popup.png"));
+            LogService.Info("visual-qa", "VISUAL_STATUS_POPUP_CAPTURE_OK");
+            await closed.Task;
+            return;
+        }
+        await Task.Delay(250);
+        if (!window.IsShownWithoutActivation())
+            throw new InvalidOperationException("Status popup is not visible or lost its no-activate style.");
+        if (window.PopupWidth <= 0 || window.PopupHeight <= 0)
+            throw new InvalidOperationException($"Status popup has no measurable size ({window.PopupWidth}x{window.PopupHeight}).");
+        if (window.HoldsForeground())
+            throw new InvalidOperationException("Status popup took the foreground window.");
+        await Task.Delay(300);
+        if (window.HoldsForeground())
+            throw new InvalidOperationException("Status popup took the foreground window after showing.");
+        window.Close();
+        if (await Task.WhenAny(closed.Task, Task.Delay(3000)) != closed.Task)
+            throw new InvalidOperationException("Status popup did not close.");
+        LogService.Info("ui", $"DESKTOP_STATUS_NOTIFICATION_SMOKE_OK size={window.PopupWidth}x{window.PopupHeight}");
+    }
+
+    public async Task RunDesktopUpdateNotificationSmokeAsync(bool visualPreview = false, bool exostenzaPreview = false)
     {
         var window = new DesktopUpdateNotificationWindow(
-            "Spanky Update",
-            "Desktop update popup",
-            "Smoke 15.4",
-            "Glass upozornění s reálným průběhem a tlačítky Stáhnout / Později.",
+            exostenzaPreview ? "Exostenza Edition" : "Spanky Update",
+            exostenzaPreview ? "NVIDIA ovladač — simulace" : visualPreview ? "Nová aktualizace — simulace" : "Desktop update popup",
+            visualPreview ? "SIMULACE" : "Smoke 15.4",
+            visualPreview ? "Pouze náhled. Nic se nestahuje ani neinstaluje." : "Glass upozornění s reálným průběhem a tlačítky Stáhnout / Později.",
             async (progress, token) =>
             {
-                for (int i = 0; i <= 100; i += 20)
+                for (int i = 0; i <= (visualPreview ? 48 : 100); i += (visualPreview ? 2 : 20))
                 {
                     token.ThrowIfCancellationRequested();
-                    progress.Report(new DesktopUpdateProgress(i, $"Testuji progress… {i} %", $"{i * 1.7:0.0} MB"));
-                    await Task.Delay(80, token);
+                    progress.Report(new DesktopUpdateProgress(i, visualPreview ? "Stahuji aktualizaci…" : $"Testuji progress… {i} %", visualPreview ? $"{i / 48d * 61.4:0.0} / 61,4 MB — simulace" : $"{i * 1.7:0.0} MB"));
+                    await Task.Delay(visualPreview ? 250 : 80, token);
+                }
+                if (visualPreview)
+                {
+                    progress.Report(new DesktopUpdateProgress(49, "Ověřuji stažený installer…", "Simulace kontroly SHA-256"));
+                    await Task.Delay(1000, token);
+                    return new DesktopUpdateCompletion("Aktualizace je připravená k instalaci.", "Nainstalovat", null,
+                        "Pouze simulace — instalátor se nespustí.",
+                        async (installProgress, installToken) =>
+                        {
+                            for (int percent = 50; percent <= 100; percent += 2)
+                            {
+                                installToken.ThrowIfCancellationRequested();
+                                installProgress.Report(new DesktopUpdateProgress(percent, "Náhled instalace…", "SIMULACE — žádné změny systému"));
+                                await Task.Delay(200, installToken);
+                            }
+                            await Task.Delay(1000, installToken);
+                        });
                 }
                 return new DesktopUpdateCompletion("Smoke hotový.", "Zavřít", () => Task.CompletedTask, "Desktop glass updater OK");
-            });
+            }, visualPreview: visualPreview);
 
         TrackDesktopUpdateWindow(window);
+        var closed = new TaskCompletionSource<bool>();
+        window.Closed += (_, _) => closed.TrySetResult(true);
         IntPtr foregroundBefore = GetForegroundWindow();
         window.ShowWithoutActivation();
+        if (visualPreview)
+        {
+            // Keep the interactive preview visible until the user closes it.
+            SafeTaskService.Forget(window.StartAutomaticUpdateAsync(), "update", "Automatic update preview");
+            await closed.Task;
+            return;
+        }
         await Task.Delay(180);
         IntPtr foregroundAfter = GetForegroundWindow();
         if (foregroundBefore != IntPtr.Zero && foregroundAfter != foregroundBefore)

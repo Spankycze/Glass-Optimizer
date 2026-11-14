@@ -55,9 +55,12 @@ public sealed partial class MainWindow
         InvalidateDefenderPageCache(includeStaticShell: true);
         if (_defenderPageCache != null ||
             _defenderStaticHero != null ||
-            _defenderStaticMetrics != null ||
+            _defenderStaticStatus != null ||
+            _defenderStatusRows.Count > 0 ||
             _defenderModulesHost != null ||
-            _defenderActionsHost != null)
+            _defenderModulesCard != null ||
+            _defenderActionsHost != null ||
+            _defenderActionsCard != null)
             throw new InvalidOperationException("Defender cache lifetime cleanup incomplete.");
 
         // Include every newly budgeted page: cleanup must drop the cached XAML trees.

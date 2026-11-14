@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using SpankyhoOptimizer.Services;
@@ -10,6 +12,15 @@ namespace SpankyhoOptimizer;
 
 public sealed partial class MainWindow
 {
+    private static readonly (string Id, string Label)[] DefenderStatusModules =
+    {
+        ("def.rt", "Real-time ochrana"),
+        ("def.cloud", "Cloud protection"),
+        ("def.net", "Network Protection"),
+        ("def.smartscreen", "SmartScreen"),
+        ("def.firewall", "Firewall")
+    };
+
     private StackPanel? _defenderModulesHost;
     private bool _defenderModulesQueued;
     private int _defenderModulesIndex;
@@ -21,7 +32,11 @@ public sealed partial class MainWindow
         const string defenderCatalogKey = "defender|";
         if (!_tweakCache.TryGetValue(defenderCatalogKey, out _tweaks))
             _tweakCache[defenderCatalogKey] = _tweaks = CatalogService.GetTweaks("defender");
-        if (TryAttachDefenderPageCache())
+
+        var phase = System.Diagnostics.Stopwatch.StartNew();
+        bool tamper = WindowsActions.IsTamperProtectionOn();
+        long tamperMs = phase.ElapsedMilliseconds;
+        if (TryAttachDefenderPageCache(tamper))
         {
             if (_defenderModulesHost != null && _defenderModulesHost.Children.Count < _tweaks.Count)
             {
@@ -29,19 +44,13 @@ public sealed partial class MainWindow
                 ScheduleDefenderModules(token);
             }
             if (_defenderActionsHost is { Children.Count: 0 })
-                ScheduleDefenderActions(WindowsActions.IsTamperProtectionOn(), token);
+                ScheduleDefenderActions(tamper, token);
+            UpdateDefenderStaticStatus();
             return;
         }
-        var phase = System.Diagnostics.Stopwatch.StartNew();
-
-        bool tamper = WindowsActions.IsTamperProtectionOn();
-        long tamperMs = phase.ElapsedMilliseconds;
-        int loaded = _tweaks.Count(x => x.IsLoaded);
-        int active = _tweaks.Count(x => x.IsLoaded && x.Current);
-        long countsEndMs = phase.ElapsedMilliseconds;
 
         long heroMs = 0;
-        long metricsMs = 0;
+        long statusMs = 0;
         bool deferStaticShell = _defenderStaticHero == null || _defenderStaticTamper != tamper;
         if (deferStaticShell)
         {
@@ -57,18 +66,18 @@ public sealed partial class MainWindow
                     return;
 
                 var shellPerf = System.Diagnostics.Stopwatch.StartNew();
-                EnsureDefenderStaticShell(tamper, loaded, active);
+                EnsureDefenderStaticShell(tamper);
                 staticShellHost.Children.Add(_defenderStaticHero!);
                 long deferredHeroMs = shellPerf.ElapsedMilliseconds;
-                staticShellHost.Children.Add(_defenderStaticMetrics!);
-                long deferredMetricsMs = shellPerf.ElapsedMilliseconds - deferredHeroMs;
+                staticShellHost.Children.Add(_defenderStaticStatus!);
+                long deferredStatusMs = shellPerf.ElapsedMilliseconds - deferredHeroMs;
                 LogService.Info("performance",
-                    $"DEFENDER_STATIC_SHELL_DEFERRED heroMs={deferredHeroMs} metricsMs={deferredMetricsMs} totalMs={shellPerf.ElapsedMilliseconds}");
+                    $"DEFENDER_STATIC_SHELL_DEFERRED heroMs={deferredHeroMs} statusMs={deferredStatusMs} totalMs={shellPerf.ElapsedMilliseconds}");
             });
         }
         else
         {
-            AttachDefenderStaticShell(tamper, loaded, active, out heroMs, out metricsMs);
+            AttachDefenderStaticShell(tamper, out heroMs, out statusMs);
         }
         long shellMs = phase.ElapsedMilliseconds - tamperMs;
 
@@ -84,10 +93,11 @@ public sealed partial class MainWindow
                 defenderModulesShellHost.Children.Count > 0)
                 return;
 
-            defenderModulesShellHost.Children.Add(BuildDashboardExpander(
-                "Ochranné moduly",
+            _defenderModulesCard = BuildDashboardExpander(
+                "Pokročilé moduly",
                 "Real-time • behavior • cloud • PUA • Network Protection • CFA • SmartScreen • Firewall",
-                _defenderModulesHost));
+                _defenderModulesHost);
+            defenderModulesShellHost.Children.Add(_defenderModulesCard);
         });
         long modulesMs = phase.ElapsedMilliseconds - tamperMs - shellMs;
 
@@ -103,16 +113,17 @@ public sealed partial class MainWindow
                 defenderActionsShellHost.Children.Count > 0)
                 return;
 
-            defenderActionsShellHost.Children.Add(BuildDashboardExpander(
-                "Disable / Restore",
+            _defenderActionsCard = BuildDashboardExpander(
+                "Pokročilé akce",
                 "Vratné akce • bod obnovení • následná kontrola",
-                _defenderActionsHost));
+                _defenderActionsHost);
+            defenderActionsShellHost.Children.Add(_defenderActionsCard);
         });
         long actionsMs = phase.ElapsedMilliseconds - tamperMs - shellMs - modulesMs;
         long tailStartMs = phase.ElapsedMilliseconds;
         UpdateDirtyState();
         long dirtyMs = phase.ElapsedMilliseconds - tailStartMs;
-        CaptureDefenderPageCache();
+        CaptureDefenderPageCache(tamper);
         long captureMs = phase.ElapsedMilliseconds - tailStartMs - dirtyMs;
         ScheduleDefenderModules(token);
         ScheduleDefenderActions(tamper, token);
@@ -143,22 +154,17 @@ public sealed partial class MainWindow
         }
         long kickoffMs = phase.ElapsedMilliseconds - tailStartMs - dirtyMs - captureMs - scheduleMs - staleMs;
         LogService.Info("performance",
-            $"DEFENDER_UI_PHASE tamperMs={tamperMs} countsMs={countsEndMs - tamperMs} heroMs={heroMs} metricsMs={metricsMs} shellMs={shellMs} modulesMs={modulesMs} actionsMs={actionsMs} dirtyMs={dirtyMs} captureMs={captureMs} scheduleMs={scheduleMs} staleMs={staleMs} kickoffMs={kickoffMs} totalMs={phase.ElapsedMilliseconds} tweaks={_tweaks.Count}");
+            $"DEFENDER_UI_PHASE tamperMs={tamperMs} heroMs={heroMs} statusMs={statusMs} shellMs={shellMs} modulesMs={modulesMs} actionsMs={actionsMs} dirtyMs={dirtyMs} captureMs={captureMs} scheduleMs={scheduleMs} staleMs={staleMs} kickoffMs={kickoffMs} totalMs={phase.ElapsedMilliseconds} tweaks={_tweaks.Count}");
     }
 
-    private void EnsureDefenderStaticShell(bool tamper, int loaded, int active)
+    private void EnsureDefenderStaticShell(bool tamper)
     {
-        if (_defenderStaticHero == null || _defenderStaticTamper != tamper)
+        if (_defenderStaticHero == null || _defenderStaticStatus == null || _defenderStaticTamper != tamper)
         {
             if (_defenderStaticHero?.Parent is Panel p1) p1.Children.Remove(_defenderStaticHero);
-            if (_defenderStaticMetrics?.Parent is Panel p2) p2.Children.Remove(_defenderStaticMetrics);
+            if (_defenderStaticStatus?.Parent is Panel p2) p2.Children.Remove(_defenderStaticStatus);
             _defenderStaticHero = null;
-            _defenderStaticMetrics = null;
-            _defenderTamperValue = null;
-            _defenderTamperDetail = null;
-            _defenderModulesValue = null;
-            _defenderReadBackValue = null;
-            _defenderActiveValue = null;
+            _defenderStaticStatus = null;
             _defenderStaticTamper = tamper;
 
             var heroActions = new StackPanel
@@ -167,105 +173,130 @@ public sealed partial class MainWindow
                 Spacing = 8,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            if (tamper)
-                heroActions.Children.Add(QuickButton("Windows Security", () =>
-                {
-                    ProcessRunner.Open("windowsdefender://threatsettings");
-                    return Task.CompletedTask;
-                }));
-            heroActions.Children.Add(QuickButton("Vypnout Defender AV", RunDefenderDisableAsync));
+            heroActions.Children.Add(QuickButton("Otevřít Windows Security", () =>
+            {
+                ProcessRunner.Open("windowsdefender://threatsettings");
+                return Task.CompletedTask;
+            }));
 
             _defenderStaticHero = BuildModernSectionHero(
                 "defender",
                 "Microsoft Defender",
-                "Stav ochrany, moduly a vratné změny s následným ověřením. Tamper Protection se neobchází.",
+                "Stav ochrany z reálného read-backu Windows. Pokročilé moduly i vratné akce jsou níže.",
                 "SECURITY",
-                tamper ? "Tamper Protection zapnutý" : "Tamper Protection vypnutý / nezjištěný",
+                tamper ? "Tamper Protection zapnutý" : "Tamper Protection nezjištěný",
                 heroActions);
 
-            var tamperMetric = BuildDashboardMetric(
-                "Tamper",
-                tamper ? "ON" : "OFF / N/A",
-                tamper ? "Změny mohou být blokované" : "Bez aktivního Tamper locku",
-                tamper ? "SpankyWarningBrush" : "SpankySuccessBrush");
-            var modulesMetric = BuildDashboardMetric("Moduly", _tweaks.Count.ToString(), "Defender + security nastavení");
-            var readBackMetric = BuildDashboardMetric("Ověření", $"{loaded}/{_tweaks.Count}", "Načtený skutečný stav");
-            var activeMetric = BuildDashboardMetric("Změny", active.ToString(), "Aktivní tweak hodnoty");
-
-            _defenderStaticMetrics = BuildDashboardMetricGrid(
-                tamperMetric,
-                modulesMetric,
-                readBackMetric,
-                activeMetric);
-
-            if (!TryGetDashboardMetricText(tamperMetric, 1, out _defenderTamperValue) ||
-                !TryGetDashboardMetricText(tamperMetric, 2, out _defenderTamperDetail) ||
-                !TryGetDashboardMetricText(modulesMetric, 1, out _defenderModulesValue) ||
-                !TryGetDashboardMetricText(readBackMetric, 1, out _defenderReadBackValue) ||
-                !TryGetDashboardMetricText(activeMetric, 1, out _defenderActiveValue))
-                throw new InvalidOperationException("Defender static metric refs could not be captured.");
+            _defenderStaticStatus = BuildDefenderProtectionCard();
         }
 
-        UpdateDefenderStaticMetrics(tamper, loaded, active);
+        UpdateDefenderStaticStatus();
     }
 
-    private void UpdateDefenderStaticMetrics(bool tamper, int loaded, int active)
+    private Border BuildDefenderProtectionCard()
     {
-        if (_defenderTamperValue == null ||
-            _defenderTamperDetail == null ||
-            _defenderModulesValue == null ||
-            _defenderReadBackValue == null ||
-            _defenderActiveValue == null)
-            return;
+        _defenderStatusRows.Clear();
+        var stack = new StackPanel { Spacing = 6 };
 
-        _defenderTamperValue.Text = tamper ? "ON" : "OFF / N/A";
-        _defenderTamperValue.Foreground = tamper
+        var header = new Grid { ColumnSpacing = 10 };
+        header.ColumnDefinitions.Add(new ColumnDefinition());
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = "Stav ochrany",
+            FontSize = 13.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = TextPrimaryBrush()
+        });
+        _defenderStatusSummary = new TextBlock
+        {
+            FontSize = 11.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = TextSecondaryBrush(),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(_defenderStatusSummary, 1);
+        header.Children.Add(_defenderStatusSummary);
+        stack.Children.Add(header);
+
+        foreach (var module in DefenderStatusModules)
+        {
+            var row = new Grid { ColumnSpacing = 10 };
+            row.ColumnDefinitions.Add(new ColumnDefinition());
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.Children.Add(new TextBlock
+            {
+                Text = module.Label,
+                FontSize = 12.5,
+                Foreground = TextPrimaryBrush(),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            });
+            var value = new TextBlock
+            {
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = TextSecondaryBrush(),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(value, 1);
+            row.Children.Add(value);
+            _defenderStatusRows[module.Id] = value;
+            stack.Children.Add(row);
+        }
+
+        return BuildDashboardCard(stack, new Thickness(16, 12, 16, 12));
+    }
+
+    private void UpdateDefenderStaticStatus()
+    {
+        if (_defenderStatusRows.Count == 0) return;
+        int off = 0;
+        int unknown = 0;
+        foreach (var module in DefenderStatusModules)
+        {
+            if (!_defenderStatusRows.TryGetValue(module.Id, out var value)) continue;
+            var tweak = _tweaks.FirstOrDefault(x => x.Id == module.Id);
+            if (tweak is not { IsLoaded: true })
+            {
+                unknown++;
+                value.Text = "Nezjištěno";
+                value.Foreground = TextSecondaryBrush();
+            }
+            else if (tweak.Current)
+            {
+                off++;
+                value.Text = "Vypnuto";
+                value.Foreground = UiBrush("SpankyWarningBrush");
+            }
+            else
+            {
+                value.Text = "Zapnuto";
+                value.Foreground = UiBrush("SpankySuccessBrush");
+            }
+        }
+
+        if (_defenderStatusSummary == null) return;
+        _defenderStatusSummary.Text = unknown > 0
+            ? $"Nezjištěno: {unknown}/{DefenderStatusModules.Length}"
+            : off > 0
+                ? $"{off} z {DefenderStatusModules.Length} vypnuto"
+                : "Vše zapnuto";
+        _defenderStatusSummary.Foreground = off > 0
             ? UiBrush("SpankyWarningBrush")
-            : UiBrush("SpankySuccessBrush");
-        _defenderTamperDetail.Text = tamper
-            ? "Změny mohou být blokované"
-            : "Bez aktivního Tamper locku";
-        _defenderModulesValue.Text = _tweaks.Count.ToString();
-        _defenderReadBackValue.Text = $"{loaded}/{_tweaks.Count}";
-        _defenderActiveValue.Text = active.ToString();
+            : unknown > 0 ? TextSecondaryBrush() : UiBrush("SpankySuccessBrush");
     }
 
-    private void PrewarmDefenderStaticShell(bool tamper)
-    {
-        const string defenderCatalogKey = "defender|";
-        if (!_tweakCache.TryGetValue(defenderCatalogKey, out var tweaks))
-            _tweakCache[defenderCatalogKey] = tweaks = CatalogService.GetTweaks("defender");
-        int loaded = tweaks.Count(x => x.IsLoaded);
-        int active = tweaks.Count(x => x.IsLoaded && x.Current);
-        var previousTweaks = _tweaks;
-        try
-        {
-            _tweaks = tweaks;
-            EnsureDefenderStaticShell(tamper, loaded, active);
-            _defenderStaticHero!.Measure(new Windows.Foundation.Size(1100, 190));
-            _defenderStaticMetrics!.Measure(new Windows.Foundation.Size(1100, 180));
-        }
-        finally
-        {
-            _tweaks = previousTweaks;
-        }
-    }
-
-    private void AttachDefenderStaticShell(
-        bool tamper,
-        int loaded,
-        int active,
-        out long heroMs,
-        out long metricsMs)
+    private void AttachDefenderStaticShell(bool tamper, out long heroMs, out long statusMs)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        EnsureDefenderStaticShell(tamper, loaded, active);
+        EnsureDefenderStaticShell(tamper);
 
         ContentStack.Children.Add(_defenderStaticHero!);
         heroMs = sw.ElapsedMilliseconds;
 
-        ContentStack.Children.Add(_defenderStaticMetrics!);
-        metricsMs = sw.ElapsedMilliseconds - heroMs;
+        ContentStack.Children.Add(_defenderStaticStatus!);
+        statusMs = sw.ElapsedMilliseconds - heroMs;
     }
 
     private void ScheduleDefenderModules(CancellationToken token)
@@ -363,13 +394,16 @@ public sealed partial class MainWindow
 
     internal async Task RunDefenderDeferredActionsSmokeAsync()
     {
-        InvalidateDefenderPageCache();
+        InvalidateDefenderPageCache(includeStaticShell: true);
         await ShowSectionAsync("defender");
-        int expectedActions = WindowsActions.IsTamperProtectionOn() ? 3 : 2;
+        bool tamper = WindowsActions.IsTamperProtectionOn();
+        int expectedActions = tamper ? 3 : 2;
         int expectedModules = _tweaks.Count;
         for (int i = 0; i < 40 &&
              ((_defenderActionsHost?.Children.Count ?? 0) < expectedActions ||
-              (_defenderModulesHost?.Children.Count ?? 0) < expectedModules); i++)
+              (_defenderModulesHost?.Children.Count ?? 0) < expectedModules ||
+              _defenderModulesCard == null ||
+              _defenderActionsCard == null); i++)
             await Task.Delay(25);
 
         int actualActions = _defenderActionsHost?.Children.Count ?? 0;
@@ -378,8 +412,21 @@ public sealed partial class MainWindow
             throw new InvalidOperationException($"Deferred Defender actions incomplete: expected={expectedActions} actual={actualActions}.");
         if (actualModules < expectedModules)
             throw new InvalidOperationException($"Deferred Defender modules incomplete: expected={expectedModules} actual={actualModules}.");
+        if (_defenderStatusRows.Count != DefenderStatusModules.Length ||
+            _defenderStatusRows.Values.Any(x => string.IsNullOrWhiteSpace(x.Text)))
+            throw new InvalidOperationException("Defender protection status rows are incomplete.");
+        AssertDefenderAdvancedCard(_defenderModulesCard, "modules");
+        AssertDefenderAdvancedCard(_defenderActionsCard, "actions");
         LogService.Info("performance",
-            $"DEFENDER_DEFERRED_ACTIONS_SMOKE_OK actions={actualActions} modules={actualModules}");
+            $"DEFENDER_DEFERRED_ACTIONS_SMOKE_OK actions={actualActions} modules={actualModules} statusRows={_defenderStatusRows.Count}");
+    }
+
+    private static void AssertDefenderAdvancedCard(Border? card, string name)
+    {
+        if (card?.Child is not Expander expander)
+            throw new InvalidOperationException($"Defender advanced {name} expander is missing.");
+        if (expander.IsExpanded)
+            throw new InvalidOperationException($"Defender advanced {name} expander must start collapsed.");
     }
 
     private async Task DetectDefenderAndRefreshAsync(
@@ -399,6 +446,7 @@ public sealed partial class MainWindow
                     generation != _navigationGeneration ||
                     _section != "defender") return;
                 RefreshCards();
+                UpdateDefenderStaticStatus();
                 if (_defenderPageCache != null)
                     _defenderPageRevisionStamp = CurrentTweakRevisionStamp();
             });
@@ -425,44 +473,79 @@ public sealed partial class MainWindow
     {
         if (WindowsActions.IsTamperProtectionOn())
         {
-            await ShowMessageAsync("Defender", "Tamper Protection je zapnutý. Optimizer ho nebude obcházet. Pokud chceš měnit Defender, proveď to přes podporované Windows Security nastavení.");
+            // The warning card already explains the block; do not open a modal.
+            ShowActionFeedback(
+                "Defender AV",
+                ActionFeedbackKind.Unsupported,
+                "Tamper Protection je zapnutý. Optimizer ho neobchází; změny proveď přes Windows Security.");
             return;
         }
         if (!await ShowStyledConfirmAsync("Vypnout Defender AV?", "Sníží se ochrana proti malwaru. Firewall zůstane beze změny. Pokračovat?", "Vypnout", "Zrušit", "Advanced Defender")) return;
-        await WindowsActions.EnsureRecentRestorePointAsync("Spankyho Optimizer - Before Defender changes");
-        await WindowsActions.MaxDisableDefenderAsync();
-        InvalidateDefenderPageCache();
-        var verify = CatalogService.GetDefenderTweaks().Where(x => x.Id != "def.firewall").ToList();
-        await _engine.DetectAsync(verify);
-        int confirmed = verify.Count(x => x.IsLoaded && x.Current);
-        int unknown = verify.Count(x => !x.IsLoaded);
-        string resultText = $"Ověření dokončeno: {confirmed}/{verify.Count} požadovaných změn je potvrzených. Nezjištěno: {unknown}.";
-        ShowActionFeedback(
-            "Defender AV",
-            confirmed == verify.Count && unknown == 0 ? ActionFeedbackKind.Verified : ActionFeedbackKind.Info,
-            resultText);
-        await ShowMessageAsync("Defender", resultText + " UI se obnoví podle skutečného stavu Windows.");
-        await ShowSectionAsync("defender");
+        try
+        {
+            if (!await WindowsActions.EnsureRecentRestorePointAsync("Spankyho Optimizer - Before Defender changes"))
+            {
+                ShowActionFeedback(
+                    "Defender AV",
+                    ActionFeedbackKind.Failed,
+                    "Bod obnovení se nepodařilo vytvořit, takže se Defender nemění.");
+                return;
+            }
+
+            await WindowsActions.MaxDisableDefenderAsync();
+            var verify = CatalogService.GetDefenderTweaks().Where(x => x.Id != "def.firewall").ToList();
+            await _engine.DetectAsync(verify);
+            int confirmed = verify.Count(x => x.IsLoaded && x.Current);
+            int unknown = verify.Count(x => !x.IsLoaded);
+            string resultText = $"Ověření dokončeno: {confirmed}/{verify.Count} požadovaných změn je potvrzených. Nezjištěno: {unknown}.";
+            ShowActionFeedback(
+                "Defender AV",
+                confirmed == verify.Count && unknown == 0 ? ActionFeedbackKind.Verified : ActionFeedbackKind.Info,
+                resultText);
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("Defender disable failed", ex);
+            ShowActionFeedback("Defender AV", ActionFeedbackKind.Failed, "Vypnutí Defenderu selhalo: " + ex.Message);
+        }
+        finally
+        {
+            await RefreshDefenderPageAsync();
+        }
     }
 
     private async Task RunDefenderRestoreAsync()
     {
-        await WindowsActions.RestoreDefenderAsync();
-        InvalidateDefenderPageCache();
-        var verify = CatalogService.GetDefenderTweaks();
-        await _engine.DetectAsync(verify);
-        int remaining = verify.Count(x => x.IsLoaded && x.Current);
-        int unknown = verify.Count(x => !x.IsLoaded);
-        string resultText = remaining == 0 && unknown == 0
-            ? "Nastavení Defenderu bylo vráceno a ověřeno."
-            : $"Obnova proběhla, ale aktivních zůstává {remaining} položek a nezjištěných je {unknown}.";
-        ShowActionFeedback(
-            "Defender — obnova",
-            remaining == 0 && unknown == 0 ? ActionFeedbackKind.Verified : ActionFeedbackKind.Info,
-            resultText);
-        await ShowMessageAsync("Defender", resultText + " UI zobrazí skutečný stav Windows.");
-        await ShowSectionAsync("defender");
+        try
+        {
+            await WindowsActions.RestoreDefenderAsync();
+            var verify = CatalogService.GetDefenderTweaks();
+            await _engine.DetectAsync(verify);
+            int remaining = verify.Count(x => x.IsLoaded && x.Current);
+            int unknown = verify.Count(x => !x.IsLoaded);
+            string resultText = remaining == 0 && unknown == 0
+                ? "Nastavení Defenderu bylo vráceno a ověřeno."
+                : $"Obnova proběhla, ale aktivních zůstává {remaining} položek a nezjištěných je {unknown}.";
+            ShowActionFeedback(
+                "Defender — obnova",
+                remaining == 0 && unknown == 0 ? ActionFeedbackKind.Verified : ActionFeedbackKind.Info,
+                resultText);
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("Defender restore failed", ex);
+            ShowActionFeedback("Defender — obnova", ActionFeedbackKind.Failed, "Obnova Defenderu selhala: " + ex.Message);
+        }
+        finally
+        {
+            await RefreshDefenderPageAsync();
+        }
     }
 
+    private async Task RefreshDefenderPageAsync()
+    {
+        InvalidateDefenderPageCache(includeStaticShell: true);
+        if (_section == "defender")
+            await ShowSectionAsync("defender");
+    }
 }
-

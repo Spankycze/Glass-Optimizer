@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using SpankyhoOptimizer.Services;
+using SpankyhoOptimizer.ViewModels;
 
 namespace SpankyhoOptimizer;
 
@@ -70,109 +71,36 @@ public sealed partial class MainWindow
         if (!persisted.SequenceEqual(expected, StringComparer.OrdinalIgnoreCase))
             throw new InvalidDataException("Debloater keep-list read-back nepotvrdil uložené výjimky.");
     }
-    private async Task OpenDebloatKeepManagerAsync(CancellationToken token)
+    private async Task RemoveSelectedDebloatAsync(IReadOnlyList<DebloatRowViewModel> rows, CancellationToken token)
     {
         int operationGeneration = _navigationGeneration;
-        var apps = await InstalledAppService.GetInstalledAsync(token, includeLogos: false);
-        token.ThrowIfCancellationRequested();
-        var candidates = apps.Where(x => x.Recommended && IsDebloatSelectable(x))
-            .OrderBy(x => x.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToArray();
-        if (candidates.Length == 0) { await ShowStyledInfoAsync("Debloater", "Nebyly nalezeny žádné Recommended položky k odebrání."); return; }
-        var keep = candidates.ToDictionary(x => x.PackageFullName, x => _debloatKeep.TryGetValue(x.PackageFullName, out var saved) && saved, StringComparer.OrdinalIgnoreCase);
-        // Controls are scoped to this dialog; do not retain a closed dialog in MainWindow.
-        var keepBoxes = new Dictionary<string, CheckBox>(StringComparer.OrdinalIgnoreCase);
-        var root = new StackPanel { Spacing = 8 };
-        root.Children.Add(new TextBlock { Text = "Zaškrtni pouze aplikace, které chceš PONECHAT. Nezaškrtnuté Recommended položky budou připravené k odebrání.", TextWrapping = TextWrapping.Wrap, Foreground = TextPrimaryBrush() });
-        root.Children.Add(new TextBlock
+        var chosen = rows.Where(x => x.Remove && IsDebloatSelectable(x.Source))
+            .Select(x => x.Source)
+            .OrderBy(x => x.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+        if (chosen.Length == 0)
         {
-            Text = $"Trvale uložené výjimky: {keep.Count(x => x.Value)}",
-            Foreground = TextSecondaryBrush(),
-            FontSize = 12
-        });
-        bool suppressKeepEvents = false;
-        bool saveInProgress = false;
-        Task pendingSave = Task.CompletedTask;
-        Button? resetButton = null;
-        void SetSaving(bool saving)
-        {
-            saveInProgress = saving;
-            foreach (var box in keepBoxes.Values) box.IsEnabled = !saving;
-            if (resetButton is not null) resetButton.IsEnabled = !saving;
+            await ShowStyledInfoAsync("Debloater", "Nejdřív zaškrtni aplikace, které chceš odebrat.");
+            return;
         }
-        async Task UpdateKeepAsync(CheckBox box, string package, bool shouldKeep)
+        // Persist the user's exceptions before any destructive action.
+        try { await SaveDebloatKeepStoreAsync(); }
+        catch (Exception ex)
         {
-            if (suppressKeepEvents || saveInProgress) return;
-            bool previous = keep[package];
-            keep[package] = shouldKeep;
-            _debloatKeep[package] = shouldKeep;
-            SetSaving(true);
-            try
-            {
-                await SaveDebloatKeepStoreAsync();
-            }
-            catch (Exception ex)
-            {
-                LogService.Error("debloat", "Debloat keep-list save failed", ex);
-                keep[package] = previous;
-                _debloatKeep[package] = previous;
-                suppressKeepEvents = true;
-                try { box.IsChecked = previous; }
-                finally { suppressKeepEvents = false; }
-                ShowActionFeedback("Debloater", ActionFeedbackKind.Failed, ex.Message);
-            }
-            finally { SetSaving(false); }
+            LogService.Error("debloat", "Debloat selection save failed", ex);
+            ShowActionFeedback("Debloater", ActionFeedbackKind.Failed, ex.Message);
+            await ShowStyledInfoAsync("Debloater — odebrání zastaveno", "Výběr se nepodařilo bezpečně uložit. Odebrání aplikací bylo zrušeno.");
+            return;
         }
-        foreach (var app in candidates)
-        {
-            var cb = new CheckBox { Content = app.DisplayName, IsChecked = keep[app.PackageFullName], Tag = app.PackageFullName };
-            cb.Checked += (_, _) => pendingSave = UpdateKeepAsync(cb, app.PackageFullName, true);
-            cb.Unchecked += (_, _) => pendingSave = UpdateKeepAsync(cb, app.PackageFullName, false);
-            keepBoxes[app.PackageFullName] = cb;
-            root.Children.Add(cb);
-        }
-
-        async Task ResetKeepAsync()
-        {
-            if (saveInProgress) return;
-            SetSaving(true);
-            var previous = _debloatKeep.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
-            try
-            {
-                foreach (var key in _debloatKeep.Keys.ToArray()) _debloatKeep[key] = false;
-                await SaveDebloatKeepStoreAsync();
-                foreach (var key in keep.Keys.ToArray()) keep[key] = false;
-                suppressKeepEvents = true;
-                try
-                {
-                    foreach (var box in keepBoxes.Values) box.IsChecked = false;
-                }
-                finally { suppressKeepEvents = false; }
-                ShowActionFeedback("Debloater", ActionFeedbackKind.Verified, "Uložené výjimky byly resetovány a ověřeny.");
-            }
-            catch (Exception ex)
-            {
-                foreach (var pair in previous) _debloatKeep[pair.Key] = pair.Value;
-                LogService.Error("debloat", "Debloat keep-list reset failed", ex);
-                ShowActionFeedback("Debloater", ActionFeedbackKind.Failed, ex.Message);
-            }
-            finally { SetSaving(false); }
-        }
-        resetButton = QuickButton("Reset uložených výjimek", () =>
-        {
-            pendingSave = ResetKeepAsync();
-            return pendingSave;
-        });
-        root.Children.Add(resetButton);
-
-        if (!await ShowStyledContentAsync("Co chceš ponechat?", $"Recommended kandidáti: {candidates.Length}", new ScrollViewer { Content = root, MaxHeight = 560 }, "Pokračovat")) return;
-        // A user can click Continue while a save is in flight: wait for
-        // verified persistence (including any rollback) before choosing apps.
-        await pendingSave;
-        var chosen = candidates.Where(x => !keep[x.PackageFullName]).ToArray();
-        if (chosen.Length == 0) return;
+        if (token.IsCancellationRequested || operationGeneration != _navigationGeneration ||
+            _section != "debloat") return;
+        if (chosen.Any(x => x.Risk == DebloatRisk.Advanced) &&
+            !await ShowStyledConfirmAsync("Pokročilé balíky",
+                "Výběr obsahuje Microsoft balíky mimo doporučené. Mohou být navázané na další funkce Windows.",
+                "Pokračovat", "Zrušit", "Debloater")) return;
         string preview = string.Join("\n", chosen.Take(24).Select(x => "• " + x.DisplayName));
         if (chosen.Length > 24) preview += $"\n… a dalších {chosen.Length - 24}";
-        if (!await ShowStyledConfirmAsync($"Odebrat {chosen.Length} Recommended aplikací?", preview, "Spustit", "Zrušit", "Před změnou se vytvoří Restore Point")) return;
+        if (!await ShowStyledConfirmAsync($"Odebrat {chosen.Length} aplikací?", preview, "Spustit", "Zrušit", "Před změnou se vytvoří Restore Point")) return;
         if (token.IsCancellationRequested || operationGeneration != _navigationGeneration ||
             _section != "debloat") return;
         // A failed restore point must never be silently ignored before a
@@ -188,19 +116,9 @@ public sealed partial class MainWindow
         if (token.IsCancellationRequested || operationGeneration != _navigationGeneration ||
             _section != "debloat") return;
         bool refreshCompleted = await RunDebloatProgressAsync(chosen, token);
-        // Canceled or unverified operations leave their result visible.
-        // The progress dialog already invalidates the inventory/page caches;
-        // manual Obnovit will perform a fresh scan when the user is ready.
         if (refreshCompleted && !token.IsCancellationRequested &&
             operationGeneration == _navigationGeneration && _section == "debloat")
             await ShowSectionAsync("debloat");
-    }
-
-    private async Task OpenDebloatManagerAsync(CancellationToken token)
-    {
-        var apps = await InstalledAppService.GetInstalledAsync(token, includeLogos: false);
-        token.ThrowIfCancellationRequested();
-        await ShowInstalledDebloatDialogAsync(apps, token);
     }
 
     private FrameworkElement BuildInstalledAppRow(InstalledAppInfo app, CheckBox check)

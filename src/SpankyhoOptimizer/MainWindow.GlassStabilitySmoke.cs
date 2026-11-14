@@ -184,9 +184,19 @@ public sealed partial class MainWindow
             (_, _) => Task.FromResult(new DesktopUpdateCompletion("Ready", "Close")));
         try
         {
+            if (popup.SystemBackdrop != null)
+                throw new InvalidOperationException("Updater popup still owns a system backdrop.");
             popup.ShowWithoutActivation();
             await Task.Delay(250);
-            await Check("popup-acrylic-retains-active-state", () => VerifyAcrylicFocusTransitionAsync(popup));
+            await Check("popup-opaque-surface-remains-opaque", () =>
+            {
+                if (popup.Content is not Grid root || root.Background is not SolidColorBrush rootBrush || rootBrush.Color.A != 255)
+                    throw new InvalidOperationException("Updater root became transparent.");
+                if (root.Children.Count == 0 || root.Children[0] is not Border card ||
+                    card.Background is not SolidColorBrush cardBrush || cardBrush.Color.A != 255)
+                    throw new InvalidOperationException("Updater card became transparent.");
+                return Task.CompletedTask;
+            });
         }
         finally { popup.Close(); }
         await Check("closed-popup-ignores-late-completion", VerifyClosedPopupCompletionAsync);

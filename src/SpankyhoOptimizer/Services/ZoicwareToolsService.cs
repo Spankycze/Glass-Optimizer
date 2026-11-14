@@ -110,9 +110,9 @@ public static class ZoicwareToolsService
             ? Array.Empty<string>()
             : request.Option.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (!request.AllOptions && !request.RunWinUpdateRepair && options.Any(option => !AiOptions.Contains(option)) && request.InstallClassicApps is not { Length: > 0 })
-            throw new ArgumentOutOfRangeException(nameof(request.Option));
+            throw new ArgumentOutOfRangeException(nameof(request));
         string[] apps = request.InstallClassicApps ?? Array.Empty<string>();
-        if (apps.Any(app => !ClassicApps.Contains(app))) throw new ArgumentOutOfRangeException(nameof(request.InstallClassicApps));
+        if (apps.Any(app => !ClassicApps.Contains(app))) throw new ArgumentOutOfRangeException(nameof(request));
         if (request.ExcludeOptions && (request.AllOptions || options.Length == 0))
             throw new ArgumentException("ExcludeOptions vyžaduje alespoň jednu volbu a nesmí být použito s AllOptions.", nameof(request));
         string sourceScript = await RefreshRemoveWindowsAiAsync(token);

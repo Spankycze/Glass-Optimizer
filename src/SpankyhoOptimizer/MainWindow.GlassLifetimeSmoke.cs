@@ -44,17 +44,15 @@ public sealed partial class MainWindow
     private static async Task VerifyPopupNativeDetachAsync()
     {
         var popup = MakeContinuationPopup((_, _) => Task.FromResult(new DesktopUpdateCompletion("Ready", "Close")));
-        var elements = new System.Collections.Generic.List<SystemBackdropElement>();
         try
         {
+            if (popup.SystemBackdrop != null)
+                throw new InvalidOperationException("Popup unexpectedly owns a native backdrop.");
             popup.ShowWithoutActivation();
             await Task.Delay(100);
-            CollectBackdropElements((DependencyObject)popup.Content, elements);
-            if (elements.Count != 1) throw new InvalidOperationException("Popup native material was not present.");
+            if (popup.Content is not Grid root || root.Background is not SolidColorBrush rootBrush || rootBrush.Color.A != 255)
+                throw new InvalidOperationException("Popup root is not opaque.");
             popup.Close();
-            await Task.Delay(100);
-            if (elements[0].SystemBackdrop != null)
-                throw new InvalidOperationException("Closed popup still retains its inner native backdrop instead of releasing it on the UI thread.");
         }
         finally { popup.Close(); }
     }

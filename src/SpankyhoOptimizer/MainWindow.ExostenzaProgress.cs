@@ -18,20 +18,7 @@ public sealed partial class MainWindow
         var overlay = CreateDialogOverlay(12500);
         var card = CreateDialogCard(600, 680, z: 36);
         var root = new StackPanel { Spacing = 16 };
-        var head = new Grid { ColumnSpacing = 14, Margin = new Thickness(0, 0, 48, 0) };
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        head.ColumnDefinitions.Add(new ColumnDefinition());
-        head.Children.Add(new Border
-        {
-            Width = 48,
-            Height = 48,
-            CornerRadius = new CornerRadius(14),
-            Background = AccentSoftBrush(),
-            Child = SidebarIcon("gpu", 22)
-        }); var titles = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
-        titles.Children.Add(new TextBlock { Text = "Exostenza Edition", FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = TextPrimaryBrush() });
-        titles.Children.Add(new TextBlock { Text = "Community NVIDIA driver — one-click instalace", FontSize = 12, Foreground = TextSecondaryBrush() });
-        Grid.SetColumn(titles, 1); head.Children.Add(titles); root.Children.Add(head);
+        root.Children.Add(CreateDialogHeader("Exostenza Edition", "Community NVIDIA driver — one-click instalace"));
         root.Children.Add(new Border
         {
             Background = DialogInnerSurfaceBrush(),
