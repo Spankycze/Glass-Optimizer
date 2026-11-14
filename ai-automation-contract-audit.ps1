@@ -2,21 +2,16 @@ $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
 $svc=Join-Path $root 'src\SpankyhoOptimizer\Services'
 
-# Read the whole type, including its partial files, so contract checks follow splits.
-function Read-TypeSource([string]$dir,[string]$name){
-  $files=@(Get-ChildItem -Path (Join-Path $dir ($name + '*.cs')) -File | Sort-Object Name)
-  if($files.Count -eq 0){ throw "AI_AUTOMATION_CONTRACT_FAIL missing source $name" }
-  ($files | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
-}
+. (Join-Path $root 'tools\source-set.ps1')
 
 $scope=Get-Content (Join-Path $svc 'AiRuntimeScopePolicy.cs') -Raw
 $guard=Get-Content (Join-Path $svc 'AiAutomaticMutationGuard.cs') -Raw
 $measured=Get-Content (Join-Path $svc 'AiTweakMeasuredRuntime.cs') -Raw
 $security=Get-Content (Join-Path $svc 'AiSecurityHardeningService.cs') -Raw
-$manager=Read-TypeSource $svc 'AiSystemResourceManagerService'
-$power=Read-TypeSource $svc 'AdaptivePowerRuntimeService'
-$fan=Read-TypeSource $svc 'FanProfileService'
-$ui=Read-TypeSource (Join-Path $root 'src\SpankyhoOptimizer') 'MainWindow.AiSystemRuntime'
+$manager=Get-SpankyAiSystemSource $root
+$power=Get-SpankySourceText (Join-Path $svc 'AdaptivePowerRuntimeService.cs')
+$fan=Get-SpankySourceText (Join-Path $svc 'FanProfileService.cs')
+$ui=Get-SpankySourceText (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.AiSystemRuntime.cs')
 
 function Need([bool]$ok,[string]$message){ if(-not $ok){ throw "AI_AUTOMATION_CONTRACT_FAIL $message" } }
 

@@ -1,12 +1,7 @@
 param([switch]$KeepStaging,[switch]$ForceRestore,[switch]$SkipRuntimeTest,[switch]$AllowOptimizerShutdown,[switch]$PublishLocalUpdateBridge)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
-function Get-SourceSet([string]$dir,[string[]]$patterns){
-  $files=@()
-  foreach($p in $patterns){ $files += @(Get-ChildItem -Path (Join-Path $root $dir) -File -Filter $p) }
-  if($files.Count -eq 0){ throw ("Release source guard missing {0} in {1}" -f ($patterns -join ","),$dir) }
-  (($files | Sort-Object Name | ForEach-Object { [IO.File]::ReadAllText($_.FullName,[Text.Encoding]::UTF8) }) -join "`n")
-}
+. (Join-Path $root 'tools\source-set.ps1')
 # Exclusive filesystem lease prevents simultaneous release builds sharing cache/staging.
 $releaseLeasePath=Join-Path $root '.ai-state\release-exclusive.lock'
 [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($releaseLeasePath)) | Out-Null
@@ -277,7 +272,7 @@ $expectedAssemblyName='Spankyho_Optimizer_V'+($displayVersion -replace '\.','_')
 $appProjectText=[IO.File]::ReadAllText($app,[Text.Encoding]::UTF8)
 $coreProjectText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer.Core\SpankyhoOptimizer.Core.csproj'),[Text.Encoding]::UTF8)
 $installerProjectText=[IO.File]::ReadAllText($installer,[Text.Encoding]::UTF8)
-$appSourceText=Get-SourceSet 'src\SpankyhoOptimizer' @('App.cs','App.Cli.*.cs','App.Lifecycle.cs','App.LaunchCore.cs','App.Smoke.cs')
+$appSourceText=Get-SpankyAppSource $root
 $installerMainText=[IO.File]::ReadAllText((Join-Path $root 'installer\InstallerMain.cs'),[Text.Encoding]::UTF8)
 foreach($projectText in @($appProjectText,$coreProjectText,$installerProjectText)){
   if($projectText -match '<Version>[^<]+</Version>'){throw 'Version consistency gate failed: project-local <Version> detected; use Directory.Build.props only.'}
@@ -334,7 +329,7 @@ foreach($staleBrowserAsset in @('browsers.svg')){
 }
 Write-Host 'OPTIMIZER_BROWSER_SCOPE_GUARD_OK uiFiles=0 staleSidebarAssets=0'
 
-$mainWindowSource=Get-SourceSet 'src\SpankyhoOptimizer' @('MainWindow.cs','MainWindow.Navigation.cs','MainWindow.SectionState.cs','MainWindow.SectionCore.cs','MainWindow.Render.cs','MainWindow.TweakCards.cs','MainWindow.Dialogs.cs')
+$mainWindowSource=Get-SpankyMainWindowSource $root
 if($mainWindowSource.IndexOf('editable && t.Pending != toggle.IsOn',[StringComparison]::Ordinal) -lt 0 -or
    $mainWindowSource.IndexOf('t.IsLoaded && !t.IsBusy',[StringComparison]::Ordinal) -lt 0){
   throw 'Toggle write-back guard failed: programmatic toggle synchronization can queue redundant dirty refreshes.'
@@ -353,7 +348,7 @@ $appSource=$appSourceText
 if($appSource.IndexOf('await Task.Delay(900, token).ConfigureAwait(false);',[StringComparison]::Ordinal) -lt 0){
   throw 'Startup maintenance guard failed: post-ready background maintenance is no longer deferred past first interactive paint.'
 }
-$overviewSource=Get-SourceSet 'src\SpankyhoOptimizer' @('MainWindow.OverviewDashboard.cs','MainWindow.OverviewDashboard.*.cs')
+$overviewSource=Get-SpankyOverviewDashboardSource $root
 if($overviewSource.IndexOf('_overviewNextHistoryPruneUtc = sampleUtc.AddMinutes(1);',[StringComparison]::Ordinal) -lt 0){
   throw 'Overview history prune guard failed: hot-path history compaction returned.'
 }

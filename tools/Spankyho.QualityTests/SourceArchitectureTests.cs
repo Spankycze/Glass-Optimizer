@@ -4,7 +4,8 @@ namespace Spankyho.QualityTests;
 
 public sealed class SourceArchitectureTests
 {
-    // Source architecture checks read whole types, including their partial files.
+    // Type files (App.cs, MainWindow.cs, ...) are read together with every sibling that
+    // declares the same partial type; page slices read only their own "name.*.cs" parts.
     private static string ReadSource(params string[] parts)
     {
         string full = Path.Combine(parts);
@@ -12,29 +13,33 @@ public sealed class SourceArchitectureTests
             return File.ReadAllText(full);
 
         string folder = Path.GetDirectoryName(full)!;
-        string baseName = Path.GetFileNameWithoutExtension(full);
-        IEnumerable<string> patterns;
-        if (string.Equals(baseName, "MainWindow", StringComparison.Ordinal))
+        string stem = Path.GetFileNameWithoutExtension(full);
+        string text = File.ReadAllText(full);
+        Match declaration = Regex.Match(text, @"(?:class|struct|record|interface)\s+([A-Za-z_]\w*)");
+        string? type = declaration.Success ? declaration.Groups[1].Value : null;
+        bool typeFile = type is not null && string.Equals(stem, type, StringComparison.Ordinal);
+
+        var builder = new System.Text.StringBuilder(text);
+        foreach (string file in Directory.GetFiles(folder, "*.cs").OrderBy(f => f, StringComparer.Ordinal))
         {
-            patterns = ["MainWindow.cs", "MainWindow.Navigation.cs", "MainWindow.SectionState.cs",
-                        "MainWindow.SectionCore.cs", "MainWindow.Render.cs", "MainWindow.TweakCards.cs",
-                        "MainWindow.Dialogs.cs"];
-        }
-        else if (string.Equals(baseName, "App", StringComparison.Ordinal))
-        {
-            patterns = ["App.cs", "App.Cli.*.cs", "App.Lifecycle.cs", "App.LaunchCore.cs", "App.Smoke.cs"];
-        }
-        else
-        {
-            patterns = [baseName + ".cs", baseName + ".*.cs"];
+            if (string.Equals(file, full, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            string other = File.ReadAllText(file);
+            if (typeFile)
+            {
+                if (!Regex.IsMatch(other, @"partial\s+(?:class|struct|record|interface)\s+" + Regex.Escape(type!) + @""))
+                    continue;
+            }
+            else if (!Path.GetFileName(file).StartsWith(stem + ".", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            builder.Append((char)10).Append(other);
         }
 
-        List<string> files = [];
-        foreach (string pattern in patterns)
-            files.AddRange(Directory.GetFiles(folder, pattern));
-        return string.Concat(files.Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(f => f, StringComparer.Ordinal)
-            .Select(File.ReadAllText));
+        return builder.ToString();
     }
 
     private static readonly Dictionary<string, string[]> ReviewedSyncAccessLines = new(StringComparer.OrdinalIgnoreCase)
