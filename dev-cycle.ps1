@@ -131,7 +131,7 @@ if($Mode -eq 'SelfTest'){
     $appUiSmokeText=(Get-SpankyAppSource $root)
     $glassMotionSmokeText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\MainWindow.GlassSettingsSmoke.cs'))
     $motionServiceText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\Services\UiMotionSettingsService.cs'))
-    $contextMenuText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\MainWindow.ContextMenu.cs'))
+    $contextMenuText=(Get-SpankySourceText (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.ContextMenu.cs'))
     $upstreamServiceText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\Services\UpstreamSourceUpdateService.cs'))
     $contextMenuServiceText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\Services\ContextMenuService.cs'))
     $shortcutServiceText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\Services\ShortcutAppearanceService.cs'))
@@ -216,7 +216,7 @@ if($Mode -eq 'SelfTest'){
     }
     Write-Host 'DEV_CYCLE_SHORTCUT_OVERLAY_ISOLATION_GUARD_OK realRegistryReadOnly=true shellRefreshSkipped=true'
     $processRunnerText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\Services\ProcessRunner.cs'))
-    $windowsActionsText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\Services\WindowsActions.cs'))
+    $windowsActionsText=(Get-SpankySourceText (Join-Path $root 'src\SpankyhoOptimizer\Services\WindowsActions.cs'))
     $hardwareCacheText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\Services\PersistentHardwareCacheService.cs'))
     $aiSelfText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\Services\AiSelfOptimizationService.cs'))
     $aiSystemText=(Get-SpankyAiSystemSource $root)
@@ -228,7 +228,7 @@ if($Mode -eq 'SelfTest'){
     $fixerCacheText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\MainWindow.FixerPageCache.cs'))
     $powerNetworkText=(Get-SpankyPowerNetworkSource $root)
     $toolsText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\MainWindow.Tools.cs'))
-    $contextMenuText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\MainWindow.ContextMenu.cs'))
+    $contextMenuText=(Get-SpankySourceText (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.ContextMenu.cs'))
     if($processRunnerText.Contains('Environment.SetEnvironmentVariable("PATH"') -or
        -not $processRunnerText.Contains('Child process PATH was not hardened to trusted Windows directories.') -or
        -not $processRunnerText.Contains('HardenEnvironment(probe)') -or

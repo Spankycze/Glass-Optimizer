@@ -2,7 +2,7 @@ $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $root 'tools\source-set.ps1')
 $context=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\Services\ContextMenuService.cs') -Raw
-$ui=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.ContextMenu.cs') -Raw
+$ui=Get-SpankySourceText (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.ContextMenu.cs')
 $modernizer=Get-SpankyWindowsModernizerSource $root
 
 $required=@(
