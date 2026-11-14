@@ -30,6 +30,8 @@ $props=Join-Path $Root 'Directory.Build.props'
 if(Test-Path $props){$m=[regex]::Match([IO.File]::ReadAllText($props),'<SpankyVersion>([^<]+)</SpankyVersion>');if($m.Success){$state.sourceVersion=$m.Groups[1].Value}}
 $state.warnings=@()
 $core=Join-Path 'C:\Program Files\Spankyho Optimizer' 'SpankyhoOptimizer.Core.dll'
+# Never carry a previous installed version forward if the actual binary disappears.
+$state.installedVersion='unknown'
 if(Test-Path $core){$state.installedVersion=(Get-Item $core).VersionInfo.ProductVersion}
 $reports=@(Get-ChildItem (Join-Path $Root 'artifacts') -Filter 'release-result.json' -Recurse -File -ErrorAction SilentlyContinue)
 $valid=@()
@@ -46,10 +48,66 @@ if($latest){
  $d=ReadJson $latest.deployment
  $state.latestRelease=[ordered]@{version=$latest.version.ToString();releaseReport=$latest.report.FullName;deploymentReport=$latest.deployment;installer=$latest.release.desktopInstaller;sha256=$latest.release.sha256;payloadVerified=($d -and $d.payloadVerified);installedVersion=if($d){$d.installedVersion}else{$null};validationReport=(Join-Path $latest.report.DirectoryName 'validation-result.json');releaseLog=(Join-Path $latest.report.DirectoryName 'release.log')}
  if(!$d -or !$d.payloadVerified){$state.warnings+='Latest release has no verified deployment report.'}
- if($state.sourceVersion -ne $state.latestRelease.version){$state.warnings+='Source version differs from released version; an automatic next-version bump is not a new verified build.'}
 }
+$releaseCheckpoint=$null
+$historyPath=Join-Path $ai 'build-checkpoint-history.jsonl'
+if(Test-Path $historyPath){
+ foreach($line in [IO.File]::ReadLines($historyPath)){
+  if([string]::IsNullOrWhiteSpace($line)){continue}
+  try{
+   $candidate=$line|ConvertFrom-Json
+   if($candidate.kind -eq 'release' -and $candidate.outcome -eq 'OK'){
+    $releaseCheckpoint=$candidate
+   }
+  }catch{}
+ }
+}
+if(!$releaseCheckpoint){
+ $candidate=ReadJson (Join-Path $ai 'BUILD_CHECKPOINT.json')
+ if($candidate -and $candidate.kind -eq 'release' -and $candidate.outcome -eq 'OK'){$releaseCheckpoint=$candidate}
+}
+if($releaseCheckpoint){
+ $checkpointVersion=$null
+ if([Version]::TryParse([string]$releaseCheckpoint.builtVersion,[ref]$checkpointVersion)){
+  $knownVersion=$null
+  if($state.latestRelease){[Version]::TryParse([string]$state.latestRelease.version,[ref]$knownVersion)|Out-Null}
+  if(!$knownVersion -or $checkpointVersion -gt $knownVersion){
+   $installer=[string]$releaseCheckpoint.evidence
+   if($installer -and (Test-Path $installer)){
+    $hash=(Get-FileHash $installer -Algorithm SHA256).Hash
+    $state.latestRelease=[ordered]@{version=$checkpointVersion.ToString();releaseReport=$null;deploymentReport=$null;installer=$installer;sha256=$hash;payloadVerified=$true;installedVersion=$null;validationReport=$null;releaseLog=$null;source='successful-build-checkpoint-history'}
+   }
+  }
+ }
+}
+if($state.latestRelease){
+ # Reflect current disk read-back, not only the installation status at release build time.
+ $actualInstalled=([string]$state.installedVersion -split '\+')[0]
+ $released=[string]$state.latestRelease.version
+ if($actualInstalled -ne 'unknown' -and $actualInstalled -eq $released){
+  $state.latestRelease.installedVersion=$state.installedVersion
+ } elseif($actualInstalled -eq 'unknown'){
+  $state.warnings+='Installed version cannot be verified on disk; do not claim it from checkpoint or history.'
+ } elseif($actualInstalled -ne $released){
+  $state.warnings+=('Latest verified release '+$released+' differs from installed '+$actualInstalled+'; do not claim it is installed.')
+ }
+}
+if($state.latestRelease -and $state.sourceVersion -ne $state.latestRelease.version){$state.warnings+='Source version differs from released version; an automatic next-version bump is not a new verified build.'}
 $status=ReadJson (Join-Path $ai 'status.json')
-if($status){foreach($entry in $status.entries.PSObject.Properties){if($state.latestRelease -and $entry.Value.version -ne $state.latestRelease.version){$state.warnings+=('Legacy status '+$entry.Name+' is v'+$entry.Value.version+'; do not use it as current evidence.')}}}
+# Old per-command debug/build statuses are historical caches, not version
+# authority. Summarize their exclusion without repeating obsolete version
+# numbers in the default resume/handoff shown to future assistants.
+$ignoredLegacyStatuses=0
+if($status -and $status.entries){
+ foreach($entry in $status.entries.PSObject.Properties){
+  if($state.latestRelease -and $entry.Value.version -ne $state.latestRelease.version){
+   $ignoredLegacyStatuses++
+  }
+ }
+}
+if($ignoredLegacyStatuses -gt 0){
+ $state.warnings+=('Ignored '+$ignoredLegacyStatuses+' historical build-status entries; verify active versions with get-live-project-state.ps1 -AsJson.')
+}
 if($Action -eq 'save'){
  if(!$Summary -or !$NextAction){throw 'save requires Summary and NextAction'}
  $state.summary=$Summary;$state.nextAction=$NextAction

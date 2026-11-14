@@ -3,6 +3,17 @@ $script:SpankySrc=Join-Path $script:SpankyRoot 'src\SpankyhoOptimizer'
 $script:SpankyCache=Join-Path $script:SpankyRoot 'artifacts\.cache'
 New-Item $script:SpankyCache -ItemType Directory -Force | Out-Null
 
+function Update-SpankyBuildCheckpoint([string]$Kind,[string]$Version='',[string]$Evidence=''){
+  try {
+    $scriptPath=Join-Path $script:SpankyRoot 'update-build-checkpoint.ps1'
+    if(Test-Path $scriptPath){
+      & $scriptPath -Kind $Kind -Version $Version -Outcome 'OK' -Evidence $Evidence | Out-Host
+    }
+  } catch {
+    Write-Warning ('Build checkpoint update failed: '+$_.Exception.Message)
+  }
+}
+
 function Test-SpankyFullBuildFresh {
   $state=Join-Path $script:SpankyCache 'full-source.fp'
   if(-not(Test-Path $state)){return $false}
@@ -49,6 +60,7 @@ function Save-SpankyTestState([switch]$Full){
   $fp=Get-SpankyFingerprint
   Set-Content (Join-Path $script:SpankyCache 'test-quick.fp') $fp -NoNewline
   if($Full){Set-Content (Join-Path $script:SpankyCache 'test-full.fp') $fp -NoNewline}
+  Update-SpankyBuildCheckpoint $(if($Full){'test-full'}else{'test-quick'})
 }
 function Test-SpankyTestFresh([switch]$Full){
   $name=$(if($Full){'test-full.fp'}else{'test-quick.fp'})
@@ -147,6 +159,18 @@ function Get-SpankyRestoreInputHash([string[]]$paths,[string]$versionPropsPath){
   } finally {$sha.Dispose()}
 }
 
+function Get-SpankyNormalizedVersionPropsHash {
+  if(-not(Test-Path $script:SpankyVersionProps)){return 'NO_VERSION_PROPS'}
+  $text=[IO.File]::ReadAllText($script:SpankyVersionProps,[Text.Encoding]::UTF8)
+  # A release only bumps these two values. Version stamps must rebuild the
+  # assemblies, but they must not invalidate XAML/structural reuse and force
+  # the full fallback build on the next iteration.
+  $text=[regex]::Replace($text,'<SpankyVersion>[^<]+</SpankyVersion>','<SpankyVersion>__VERSION__</SpankyVersion>')
+  $text=[regex]::Replace($text,'<SpankyPublicVersion>[^<]+</SpankyPublicVersion>','<SpankyPublicVersion>__VERSION__</SpankyPublicVersion>')
+  $sha=[Security.Cryptography.SHA256]::Create()
+  try{return (($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))|ForEach-Object{$_.ToString('X2')}) -join '')}finally{$sha.Dispose()}
+}
+
 function Get-SpankyFingerprint([switch]$Structural){
   $key=$(if($Structural){'full-structural'}else{'full-source'})
   if($script:SpankyFingerprintMemo.ContainsKey($key)){return $script:SpankyFingerprintMemo[$key]}
@@ -154,8 +178,20 @@ function Get-SpankyFingerprint([switch]$Structural){
   if(Test-Path $script:SpankyCoreSrc){$files+=@(Get-SpankySourceTreeFiles $script:SpankyCoreSrc)}
   if(Test-Path $script:SpankyRuntimeHostSrc){$files+=@(Get-SpankySourceTreeFiles $script:SpankyRuntimeHostSrc)}
   if(Test-Path $script:SpankyVersionProps){$files+=@(Get-Item $script:SpankyVersionProps)}
-  if($Structural){$files=$files|Where-Object{$_.Extension -in '.xaml','.csproj','.props','.targets','.manifest'}}
-  $value=Get-SpankyHashForFiles $files
+  if($Structural){
+    $files=$files|Where-Object{
+      $_.Extension -in '.xaml','.csproj','.props','.targets','.manifest' -and
+      -not $_.FullName.Equals($script:SpankyVersionProps,[StringComparison]::OrdinalIgnoreCase)
+    }
+    $value=Get-SpankyHashForFiles $files
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try{
+      $bytes=[Text.Encoding]::UTF8.GetBytes($value+'|'+(Get-SpankyNormalizedVersionPropsHash))
+      $value=(($sha.ComputeHash($bytes)|ForEach-Object{$_.ToString('X2')}) -join '')
+    }finally{$sha.Dispose()}
+  } else {
+    $value=Get-SpankyHashForFiles $files
+  }
   $script:SpankyFingerprintMemo[$key]=$value
   return $value
 }
@@ -226,6 +262,7 @@ function Save-SpankyFullBuildState {
   Set-Content (Join-Path $script:SpankyCache 'ui-source.fp') (Get-SpankyUiFingerprint) -NoNewline
   Set-Content (Join-Path $script:SpankyCache 'core-source.fp') (Get-SpankyCoreFingerprint) -NoNewline
   Remove-Item (Join-Path $script:SpankyCache 'fast-only.pending') -Force -ErrorAction SilentlyContinue
+  Update-SpankyBuildCheckpoint 'build'
 }
 function Test-SpankyUiFresh {
   $state=Join-Path $script:SpankyCache 'ui-source.fp'; if(-not(Test-Path $state)){return $false}
@@ -235,10 +272,18 @@ function Test-SpankyCoreFresh {
   $state=Join-Path $script:SpankyCache 'core-source.fp'; if(-not(Test-Path $state)){return $false}
   return ((Get-Content $state -Raw).Trim() -eq (Get-SpankyCoreFingerprint))
 }
+function Test-SpankyCoreOutputFresh {
+  $state=Join-Path $script:SpankyCache 'core-built.fp'; if(-not(Test-Path $state)){return $false}
+  return ((Get-Content $state -Raw).Trim() -eq (Get-SpankyCoreFingerprint))
+}
+function Save-SpankyCoreOutputState {
+  Set-Content (Join-Path $script:SpankyCache 'core-built.fp') (Get-SpankyCoreFingerprint) -NoNewline
+}
 function Save-SpankyCoreFastState {
   Set-Content (Join-Path $script:SpankyCache 'full-source.fp') (Get-SpankyFingerprint) -NoNewline
   Set-Content (Join-Path $script:SpankyCache 'full-source.meta') (Get-SpankyMetadataFingerprint) -NoNewline
   Set-Content (Join-Path $script:SpankyCache 'core-source.fp') (Get-SpankyCoreFingerprint) -NoNewline
   Set-Content (Join-Path $script:SpankyCache 'ui-source.fp') (Get-SpankyUiFingerprint) -NoNewline
   Remove-Item (Join-Path $script:SpankyCache 'fast-only.pending') -Force -ErrorAction SilentlyContinue
+  Update-SpankyBuildCheckpoint 'build-core-fast'
 }

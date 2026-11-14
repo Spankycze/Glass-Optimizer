@@ -1,0 +1,5 @@
+is_global = true
+global_level = 100
+
+# Deep audit reports analyzer diagnostics, while regression-gate decides what is new.
+dotnet_analyzer_diagnostic.severity = warning

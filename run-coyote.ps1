@@ -11,6 +11,16 @@ dotnet build $rewriterProj -c Release --nologo
 if($LASTEXITCODE -ne 0){throw 'Coyote rewriter build failed'}
 
 $src=Join-Path $root 'tools\ConcurrencyTests\bin\Release\net10.0-windows10.0.26100.0\ConcurrencyTests.dll'
+$srcDir=Split-Path -Parent $src
+# Coyote/Mono.Cecil resolves managed runtime dependencies next to the assembly being rewritten.
+# LibreHardwareMonitor is runtime-specific in the normal build output, so stage its managed DLL
+# beside the harness without changing application packaging.
+$lhm=Join-Path $srcDir 'LibreHardwareMonitorLib.dll'
+if(-not (Test-Path $lhm)){
+  $lhmSource=Join-Path $root '.buildcache\staged-debug\LibreHardwareMonitorLib.dll'
+  if(-not (Test-Path $lhmSource)){throw 'LibreHardwareMonitorLib.dll missing for Coyote resolver'}
+  Copy-Item $lhmSource $lhm -Force
+}
 $rewriter=Join-Path $root 'tools\CoyoteRewriter\bin\Release\net10.0\CoyoteRewriter.dll'
 Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $out|Out-Null

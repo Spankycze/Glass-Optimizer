@@ -33,9 +33,15 @@ function Step([string]$Name,[scriptblock]$Action,[string]$BlockedPattern='',[swi
   if($status -eq 'FAIL'){throw ($Name+' failed: '+$msg)}
 }
 
+Step 'changed-files' { & (Join-Path $root 'changed-files-gate.ps1') }
+Step 'dependency-audit' { & (Join-Path $root 'dependency-audit.ps1') }
+Step 'duplication-audit' { & (Join-Path $root 'duplication-audit.ps1') }
 Step 'project-index' { & (Join-Path $root 'project-index.ps1') }
 Step 'roslyn-custom' { dotnet run --project (Join-Path $root 'tools\RoslynAudit\RoslynAudit.csproj') -c Release -- $root (Join-Path $outDir 'roslyn-audit.json') }
 Step 'extended-analyzers' { & (Join-Path $root 'extended-analyzers.ps1') }
+Step 'analyzer-regression' { & (Join-Path $root 'analyzer-regression-gate.ps1') }
+Step 'size-regression' { & (Join-Path $root 'size-regression.ps1') }
+Step 'startup-regression' { & (Join-Path $root 'startup-regression.ps1') }
 Step 'analyzer-timing' { & (Join-Path $root 'analyzer-timing.ps1') -Quick }
 Step 'api-compat' { & (Join-Path $root 'api-compat-gate.ps1') }
 Step 'sdk-upgrade-gate' { & (Join-Path $root 'sdk-upgrade-gate.ps1') }

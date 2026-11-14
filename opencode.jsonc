@@ -1,0 +1,71 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    {
+      "package": "context-goblin@0.2.3",
+      "options": {
+        "compactToolOutputs": true,
+        "compactToolOutputThresholdChars": 12000,
+        "compactToolOutputKeepStartChars": 4000,
+        "compactToolOutputKeepEndChars": 2000
+      }
+    },
+    "opencode-windows-encoding@6.1.0",
+    "opencode-roslyn@0.1.1",
+    "opencode-update-notifier@0.4.0",
+    "@dietrichgebert/ponytail@5.3.3"
+  ],
+  "mcp": {
+    "servers": {
+      "context7": {
+        "type": "remote",
+        "url": "https://mcp.context7.com/mcp",
+        "pool": true
+      },
+      "microsoft_learn": {
+        "type": "remote",
+        "url": "https://learn.microsoft.com/api/mcp",
+        "timeout": 60000,
+        "pool": true
+      },
+      "nuget": {
+        "type": "local",
+        "command": [
+          "C:\\Program Files\\dotnet\\dnx.cmd",
+          "NuGet.Mcp.Server@1.4.23",
+          "--yes"
+        ],
+        "timeout": 120000,
+        "pool": true,
+        "cwd": "C:\\Users\\spnka"
+      }
+    }
+  },
+  "agent": {
+    "rychly": {
+      "description": "Rychlý úsporný režim pro krátké otázky bez externích MCP nástrojů a bez zápisů",
+      "mode": "primary",
+      "model": "modelflare-gpt/glm-5.3-flash",
+      "system": "Odpovídej stručně česky. Jsi úsporný read-only agent pro jednoduché otázky. Nepoužívej shell, neměň soubory a nezadávej nákladné podúkoly. Pokud zadání vyžaduje externí MCP, změny kódu nebo hluboké ověřování, vysvětli omezení a doporuč plného agenta; neimprovizuj neověřené výsledky.",
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "execute",
+          "resource": "*",
+          "effect": "deny"
+        }
+      ]
+    }
+  },
+  "compaction": {
+    "auto": true,
+    "buffer": "20%",
+    "keep": {
+      "tokens": 8000
+    }
+  }
+}

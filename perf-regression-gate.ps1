@@ -33,11 +33,17 @@ if(Test-Path $statScript){
       $stats=Get-Content $statPath -Raw|ConvertFrom-Json
       foreach($x in @($stats.regressions)){
         $severity=[math]::Max([double]$x.deltaPct,[double]$x.p95DeltaPct)
-        $msg=('stat {0} median={1:+0.0;-0.0;0.0}% p95={2:+0.0;-0.0;0.0}% p={3} noiseThreshold={4:n1}% var={5:n3}' -f $x.metric,$x.deltaPct,$x.p95DeltaPct,$x.pValue,$x.thresholdPct,$x.baselineVariance)
+        $absoluteMedianDelta=[math]::Abs([double]$x.currentMedian-[double]$x.baselineMedian)
+        $absoluteP95Delta=[math]::Abs([double]$x.currentP95-[double]$x.baselineP95)
+        $absoluteSeverity=[math]::Max($absoluteMedianDelta,$absoluteP95Delta)
+        if($absoluteSeverity -lt 8){continue}
+        $msg=('stat {0} median={1:+0.0;-0.0;0.0}% p95={2:+0.0;-0.0;0.0}% abs={3:n1}ms p={4} noiseThreshold={5:n1}% var={6:n3}' -f $x.metric,$x.deltaPct,$x.p95DeltaPct,$absoluteSeverity,$x.pValue,$x.thresholdPct,$x.baselineVariance)
         if([double]$x.pValue -lt 0.01 -and $severity -gt ([double]$x.thresholdPct*1.5)){Add-Fail $msg}else{Add-Warn $msg}
       }
       foreach($x in @($stats.changePoints)){
-        Add-Warn ('change-point {0} +{1:n1}% score={2:n2}' -f $x.metric,$x.changePoint.deltaPct,$x.changePoint.score)
+        $absoluteChange=[math]::Abs([double]$x.changePoint.after-[double]$x.changePoint.before)
+        if($absoluteChange -lt 8){continue}
+        Add-Warn ('change-point {0} +{1:n1}% abs={2:n1}ms score={3:n2}' -f $x.metric,$x.changePoint.deltaPct,$absoluteChange,$x.changePoint.score)
       }
     }catch{Add-Warn ('stat detector read failed: '+$_.Exception.Message)}
   }

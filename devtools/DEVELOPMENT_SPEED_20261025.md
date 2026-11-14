@@ -1,0 +1,11 @@
+# Spankyho Optimizer — measured development speed and cache reliability (2026-10-25)
+
+## Verified changes
+- Discovered real failure in build-fast.ps1 structural/XAML fallback: build-dev.ps1 called .Trim() on missing dev-restore.sha256 file and threw null-method error. Fixed by mapping missing or zero-length restore cache to the empty string (cache miss, safe restore), not an exception. New devtools/test-dev-restore-cache.ps1 checked missing/empty/present-trimmed cache cases, 3/3 PASS, without modifying real cache file.
+- Retested actual build-fast.ps1: before fix failed; after fix full structural fallback completed successfully in 28,390ms (DEV_BUILD_OK), no app shutdown. After state became fresh, two real no-op builds returned cache-hit in 924ms and 679ms. These timings compare different work states; do not describe them as equivalent build speedups.
+- Measured regular WinUI Release dotnet build --no-restore twice: 37,473ms initial, 17,731ms warm; standalone Core Release no-restore build 1266/367/318ms. Core incremental no-restore is already cheap; maintain existing build-fast XAML reuse, core-ref verification, DevDrive cache and strict build-release gates. The existing tools/BuildTimeGuard.ps1 -Mode SelfTest passed; last strict release history v16.206.0 published GUI/service phase totals and regression checks, no duplicate release guard.
+- Added devtools/measure-dev.ps1 and npm perf:core/perf:quality/perf:graphics/perf:workflow. Actual CoreBuild median246.22ms (3 warm runs), QualityTests 5,228.03ms, Graphics median305.73ms (3 runs), DevCycleSelfTest 750.05ms. Bounded atomic JSON history .ai-state/dev-performance-history.json; after 3 prior samples per target warn only on >40% and >2s regression. Doesn't modify release gate or installed user settings.
+- Retain task-aware dev-cycle.ps1 Plan/Quick/Verify/Release/SelfTest; no duplicate new changed-file router. No release pipeline steps removed; no speculative CPU/RAM/FPS claims.
+
+## State
+- Source16.207.0 is still UNRELEASED with previous safe power-plan parser improvements and focused regression tests. Last verified installed release16.206.0. There was no new Optimizer installer or OS/powercfg operation in this developer-tooling work. Existing native Dark Glass UI, user running programs and dirty Git tree preserved.

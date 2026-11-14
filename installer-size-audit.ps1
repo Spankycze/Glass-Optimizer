@@ -1,7 +1,7 @@
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $cache=Join-Path $root 'artifacts\.cache\app-publish'
-$payload=Join-Path $root 'installer\payload.zip'
+$payload=Join-Path $root 'installer\payload.tar.zst'
 $releaseDir=Join-Path $root 'artifacts\release'
 $offline=Get-ChildItem $releaseDir -Filter '*_Offline.exe' -File -ErrorAction SilentlyContinue|Sort-Object LastWriteTime -Descending|Select-Object -First 1
 if(-not $offline){$offline=Get-ChildItem (Join-Path $root 'artifacts\.cache') -Filter 'Spankyho_Optimizer_V*_Setup.exe' -File -ErrorAction SilentlyContinue|Sort-Object LastWriteTime -Descending|Select-Object -First 1}

@@ -1,0 +1,6 @@
+# Explicitly reviewed API retirements, 2026-10-09. Exact old signatures; never wildcard.
+# FirefoxAdvanced / BrowserCache: old browser optimization was removed from this app.
+# PowerShellTweaker: old section was replaced by PowerShell Center.
+# WindowsModernizerSnapshot / Firefox-related methods: legacy Firefox Dynamic removed.
+# WindowsActions.RemoveAppPackageAsync: unsafe direct package removal retired; do not restore.
+# This is NOT the public API baseline. Future unrelated removals still fail the gate.

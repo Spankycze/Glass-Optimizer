@@ -7,6 +7,8 @@ foreach($flag in @('--visual-layout-smoke','--visual-size-smoke','--page-scroll-
  if($p.ExitCode -ne 0){throw "$flag exit=$($p.ExitCode)"}
  Write-Output "UI_FINAL_OK $flag"
 }
-& '.\ui-redesign-audit.ps1'
-# ui-redesign-audit is a PowerShell script and throws on a protected hash mismatch.
+& '.\ui-holistic-audit.ps1'
+if(-not $?){throw 'Holistic UI audit failed'}
+& '.\black-surface-audit.ps1'
+if(-not $?){throw 'Black surface audit failed'}
 Write-Output 'UI_FINAL_VALIDATION_OK'

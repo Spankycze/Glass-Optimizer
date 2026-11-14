@@ -31,12 +31,39 @@ New-Item -ItemType Directory -Force $cacheRoot | Out-Null
 if($useDev){
   $env:NPM_CONFIG_CACHE=Join-Path $cacheRoot 'npm'
   $env:UV_CACHE_DIR=Join-Path $cacheRoot 'uv'
-  foreach($p in @($env:NPM_CONFIG_CACHE,$env:UV_CACHE_DIR)){
-    New-Item -ItemType Directory -Force $p | Out-Null
+  foreach($scopedToolCacheDirectory in @($env:NPM_CONFIG_CACHE,$env:UV_CACHE_DIR)){
+    New-Item -ItemType Directory -Force $scopedToolCacheDirectory | Out-Null
   }
 }else{
   Remove-Item Env:NPM_CONFIG_CACHE -ErrorAction SilentlyContinue
   Remove-Item Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
+}
+# Scoped to the invoking build process and its children: do NOT change
+# the user's global TEMP/TMP, existing NuGet packages or project output paths.
+# `obj` is still referenced by WinUI/XBF release guards on C:.
+if($useDev){
+  $buildCacheRoot=Join-Path $cacheRoot 'SpankyhoOptimizer'
+  $devTemp=Join-Path $buildCacheRoot 'Temp'
+  $devHttpCache=Join-Path $buildCacheRoot 'NuGetHttpCache'
+  try {
+    foreach($devCacheDirectory in @($buildCacheRoot,$devTemp,$devHttpCache)){
+      New-Item -ItemType Directory -Path $devCacheDirectory -Force -ErrorAction Stop | Out-Null
+    }
+    # Relocate only the Core project's MSBuild intermediate files. The WinUI
+    # project's obj folder is explicitly used by release XBF/asset guards.
+    $devCoreObj=Join-Path $buildCacheRoot 'CoreObj'
+    New-Item -ItemType Directory -Path $devCoreObj -Force -ErrorAction Stop | Out-Null
+    # Apply path changes only after all target directories are ready.
+    $env:TEMP=$devTemp
+    $env:TMP=$devTemp
+    # HTTP response cache is independent of the 9+ GB package installation
+    # store. Keep installed global packages on C: for --no-restore builds.
+    $env:NUGET_HTTP_CACHE_PATH=$devHttpCache
+    $env:SPANKY_CORE_DEV_OBJ=$devCoreObj
+    Write-Host ('DEV_DRIVE_BUILD_CACHE_OK temp='+$devTemp+' nugetHttp='+$devHttpCache+' coreObj='+$devCoreObj+' packages=unchanged')
+  }catch{
+    Write-Warning ('Dev Drive build cache is not available; retaining inherited paths: '+$_.Exception.Message)
+  }
 }
 # Keep NuGet on its existing package root because current builds use --no-restore.
 Remove-Item Env:NUGET_PACKAGES -ErrorAction SilentlyContinue

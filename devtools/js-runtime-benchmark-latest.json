@@ -1,0 +1,193 @@
+{
+  "Time": "2026-10-25T10:42:41.1464547+01:00",
+  "Project": "V:\\ChatGPT Projects\\Spankyho Optimizer",
+  "Node": "v26.12.1",
+  "Bun": "1.4.4",
+  "Rounds": 5,
+  "OutputsIdentical": true,
+  "Files": 70,
+  "OutputHash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+  "LockfileUnchanged": true,
+  "Runs": [
+    {
+      "Task": "assets",
+      "Runtime": "node",
+      "Round": 1,
+      "Ms": 96.15,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "assets",
+      "Runtime": "bun",
+      "Round": 1,
+      "Ms": 180.49,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "assets",
+      "Runtime": "bun",
+      "Round": 2,
+      "Ms": 102.37,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "assets",
+      "Runtime": "node",
+      "Round": 2,
+      "Ms": 67.01,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "assets",
+      "Runtime": "node",
+      "Round": 3,
+      "Ms": 82.76,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "assets",
+      "Runtime": "bun",
+      "Round": 3,
+      "Ms": 106.06,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "assets",
+      "Runtime": "bun",
+      "Round": 4,
+      "Ms": 102.04,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "assets",
+      "Runtime": "node",
+      "Round": 4,
+      "Ms": 66.15,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "assets",
+      "Runtime": "node",
+      "Round": 5,
+      "Ms": 74.05,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "assets",
+      "Runtime": "bun",
+      "Round": 5,
+      "Ms": 103.46,
+      "Files": 70,
+      "Hash": "66CC6E5C62126D7BE741A1696155E58875EF3E6E55C78624ED08AECC8FAE4C36",
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "node",
+      "Round": 1,
+      "Ms": 379.21,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "bun",
+      "Round": 1,
+      "Ms": 357.83,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "bun",
+      "Round": 2,
+      "Ms": 195.17,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "node",
+      "Round": 2,
+      "Ms": 251.74,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "node",
+      "Round": 3,
+      "Ms": 262.22,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "bun",
+      "Round": 3,
+      "Ms": 223.4,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "bun",
+      "Round": 4,
+      "Ms": 230.69,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "node",
+      "Round": 4,
+      "Ms": 236.39,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "node",
+      "Round": 5,
+      "Ms": 236.17,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    },
+    {
+      "Task": "smoke",
+      "Runtime": "bun",
+      "Round": 5,
+      "Ms": 214.42,
+      "Files": null,
+      "Hash": null,
+      "Exit": 0
+    }
+  ]
+}
