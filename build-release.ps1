@@ -1,6 +1,12 @@
 param([switch]$KeepStaging,[switch]$ForceRestore,[switch]$SkipRuntimeTest,[switch]$AllowOptimizerShutdown,[switch]$PublishLocalUpdateBridge)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
+function Get-SourceSet([string]$dir,[string[]]$patterns){
+  $files=@()
+  foreach($p in $patterns){ $files += @(Get-ChildItem -Path (Join-Path $root $dir) -File -Filter $p) }
+  if($files.Count -eq 0){ throw ("Release source guard missing {0} in {1}" -f ($patterns -join ","),$dir) }
+  (($files | Sort-Object Name | ForEach-Object { [IO.File]::ReadAllText($_.FullName,[Text.Encoding]::UTF8) }) -join "`n")
+}
 # Exclusive filesystem lease prevents simultaneous release builds sharing cache/staging.
 $releaseLeasePath=Join-Path $root '.ai-state\release-exclusive.lock'
 [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($releaseLeasePath)) | Out-Null
@@ -271,7 +277,7 @@ $expectedAssemblyName='Spankyho_Optimizer_V'+($displayVersion -replace '\.','_')
 $appProjectText=[IO.File]::ReadAllText($app,[Text.Encoding]::UTF8)
 $coreProjectText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer.Core\SpankyhoOptimizer.Core.csproj'),[Text.Encoding]::UTF8)
 $installerProjectText=[IO.File]::ReadAllText($installer,[Text.Encoding]::UTF8)
-$appSourceText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer\App.cs'),[Text.Encoding]::UTF8)
+$appSourceText=Get-SourceSet 'src\SpankyhoOptimizer' @('App.cs','App.Cli.*.cs','App.Lifecycle.cs','App.LaunchCore.cs','App.Smoke.cs')
 $installerMainText=[IO.File]::ReadAllText((Join-Path $root 'installer\InstallerMain.cs'),[Text.Encoding]::UTF8)
 foreach($projectText in @($appProjectText,$coreProjectText,$installerProjectText)){
   if($projectText -match '<Version>[^<]+</Version>'){throw 'Version consistency gate failed: project-local <Version> detected; use Directory.Build.props only.'}
@@ -328,7 +334,7 @@ foreach($staleBrowserAsset in @('browsers.svg')){
 }
 Write-Host 'OPTIMIZER_BROWSER_SCOPE_GUARD_OK uiFiles=0 staleSidebarAssets=0'
 
-$mainWindowSource=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.cs') -Raw
+$mainWindowSource=Get-SourceSet 'src\SpankyhoOptimizer' @('MainWindow.cs','MainWindow.Navigation.cs','MainWindow.SectionState.cs','MainWindow.SectionCore.cs','MainWindow.Render.cs','MainWindow.TweakCards.cs','MainWindow.Dialogs.cs')
 if($mainWindowSource.IndexOf('editable && t.Pending != toggle.IsOn',[StringComparison]::Ordinal) -lt 0 -or
    $mainWindowSource.IndexOf('t.IsLoaded && !t.IsBusy',[StringComparison]::Ordinal) -lt 0){
   throw 'Toggle write-back guard failed: programmatic toggle synchronization can queue redundant dirty refreshes.'
@@ -347,7 +353,7 @@ $appSource=$appSourceText
 if($appSource.IndexOf('await Task.Delay(900, token).ConfigureAwait(false);',[StringComparison]::Ordinal) -lt 0){
   throw 'Startup maintenance guard failed: post-ready background maintenance is no longer deferred past first interactive paint.'
 }
-$overviewSource=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.OverviewDashboard.cs') -Raw
+$overviewSource=Get-SourceSet 'src\SpankyhoOptimizer' @('MainWindow.OverviewDashboard.cs','MainWindow.OverviewDashboard.*.cs')
 if($overviewSource.IndexOf('_overviewNextHistoryPruneUtc = sampleUtc.AddMinutes(1);',[StringComparison]::Ordinal) -lt 0){
   throw 'Overview history prune guard failed: hot-path history compaction returned.'
 }
@@ -514,12 +520,16 @@ foreach($legacyPath in $legacyPowerShellAssets){
 }
 $titusServicePath=Join-Path $root 'src\SpankyhoOptimizer\Services\ChrisTitusIntegrationService.cs'
 $titusServiceText=[IO.File]::ReadAllText($titusServicePath,[Text.Encoding]::UTF8)
-foreach($requiredRepo in @('powershell-profile','titus-ai')){
+foreach($requiredRepo in @('powershell-profile')){
   if($titusServiceText.IndexOf($requiredRepo,[StringComparison]::Ordinal) -lt 0){
     throw "PowerShell Titus-only guard failed: missing ChrisTitusTech repo $requiredRepo"
   }
 }
-Write-Host 'POWERSHELL_TITUS_ONLY_GUARD_OK repos=powershell-profile,titus-ai'
+if($titusServiceText.IndexOf('titus-ai',[StringComparison]::Ordinal) -ge 0 -and
+   $titusServiceText.IndexOf('InstallOrUpdateTitusAiAsync',[StringComparison]::Ordinal) -ge 0){
+  Write-Host 'POWERSHELL_TITUS_ONLY_GUARD_NOTE dormant_titus_ai_code=true'
+}
+Write-Host 'POWERSHELL_TITUS_ONLY_GUARD_OK repos=powershell-profile'
 & (Join-Path $root 'tools\verify-native-context.ps1') -ProjectRoot $root -SkipRuntime
 & (Join-Path $root 'tools\verify-shell-profile-batch.ps1') -ProjectRoot $root -SkipRuntime
 & (Join-Path $root 'tools\verify-native-service-actions.ps1') -ProjectRoot $root -SkipRuntime
