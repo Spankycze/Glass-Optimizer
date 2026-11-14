@@ -89,7 +89,7 @@ public sealed class SourceArchitectureTests
                 "if (!waiter.Wait(TimeSpan.FromSeconds(2)) ||",
                 "_ = owner.Wait(TimeSpan.FromSeconds(5));"
             ],
-            ["WindowsDefaultGuardService.cs"] =
+            ["WindowsDefaultGuardService.Policy.cs"] =
             [
                 "if (!starting.Wait(TimeSpan.FromSeconds(2)))",
                 "if (!started.Wait(TimeSpan.FromSeconds(2)))",
@@ -446,7 +446,7 @@ public sealed class SourceArchitectureTests
             "ProcessRunner.cs",
             "SafeModeLauncherService.cs",
             "WindowsActions.cs",
-            "WindowsModernizerService.cs"
+            "WindowsModernizerService.Part03.cs"
         ];
 
         var offenders = new List<string>();
@@ -603,9 +603,10 @@ public sealed class SourceArchitectureTests
             ["DriverInventoryService.cs"] = 1,
             ["DnsProfileService.cs"] = 2,
             ["FaultInjectionService.cs"] = 1,
-            ["HardwareTelemetryBridgeService.cs"] = 10,
+            ["HardwareTelemetryBridgeService.cs"] = 5,
+            ["HardwareTelemetryBridgeService.Snapshot.cs"] = 5,
             ["NativeNicTuningService.cs"] = 6,
-            ["WindowsDefaultGuardService.cs"] = 6
+            ["WindowsDefaultGuardService.Policy.cs"] = 6
         };
         foreach (string file in Directory.EnumerateFiles(services, "*.cs"))
         {
