@@ -28,3 +28,7 @@ function Get-SpankyVisualQaSource([string]$root){
 function Get-SpankyOverviewDashboardSource([string]$root){
   Get-SpankySourceSet $root 'src\SpankyhoOptimizer' @('MainWindow.OverviewDashboard.cs','MainWindow.OverviewDashboard.*.cs')
 }
+
+function Get-SpankyWindowsModernizerSource([string]$root){
+  Get-SpankySourceSet $root 'src\SpankyhoOptimizer\Services' @('WindowsModernizerService.cs','WindowsModernizerService.*.cs')
+}

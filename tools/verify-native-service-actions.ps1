@@ -1,8 +1,9 @@
 param([string]$ProjectRoot=(Split-Path $PSScriptRoot -Parent),[switch]$SkipRuntime)
 $ErrorActionPreference='Stop'
 $repair=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\SystemRepairDiagnosticsService.cs') -Raw
-$modern=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\WindowsModernizerService.cs') -Raw
+
 . (Join-Path $ProjectRoot 'tools\source-set.ps1')
+$modern=Get-SpankyWindowsModernizerSource $ProjectRoot
 $app=Get-SpankyAppSource $ProjectRoot
 if($repair -match 'ProcessRunner\.RunAsync\("sc\.exe"' -or $modern -match 'RunAsync\("sc\.exe"'){
     throw 'Legacy sc.exe service subprocess remains in repair/modernizer source.'
