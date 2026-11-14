@@ -1,0 +1,37 @@
+{
+  "name": "spankyho-optimizer-graphics-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Design-time tooling only; no WinUI runtime dependencies",
+  "scripts": {
+    "graphics:setup": "pwsh -NoProfile -File devtools/graphics/setup-graphics.ps1",
+    "graphics:assets": "node devtools/graphics/generate-assets.mjs",
+    "graphics:verify": "node devtools/graphics/smoke.mjs",
+    "deps:fast": "bun install --no-save --no-progress",
+    "graphics:assets:fast": "node devtools/graphics/generate-assets.mjs",
+    "graphics:verify:fast": "devtools\\run-js.cmd devtools/graphics/smoke.mjs",
+    "graphics:test:fast": "node devtools/graphics/generate-assets.mjs && devtools\\run-js.cmd devtools/graphics/smoke.mjs",
+    "graphics:test": "node devtools/graphics/generate-assets.mjs && node devtools/graphics/smoke.mjs",
+    "graphics:test:node": "node devtools/graphics/generate-assets.mjs && node devtools/graphics/smoke.mjs",
+    "graphics:compare": "node devtools/graphics/compare-screenshots.mjs",
+    "graphics:penpot": "penpot-mcp",
+    "graphics:auto": "node devtools/graphics/auto-pipeline.mjs",
+    "graphics:preview": "node devtools/graphics/render-previews.mjs",
+    "perf:core": "pwsh -NoProfile -File devtools/measure-dev.ps1 -Target CoreBuild -Runs 3",
+    "perf:quality": "pwsh -NoProfile -File devtools/measure-dev.ps1 -Target Quality",
+    "perf:graphics": "pwsh -NoProfile -File devtools/measure-dev.ps1 -Target Graphics -Runs 3",
+    "perf:workflow": "pwsh -NoProfile -File devtools/measure-dev.ps1 -Target DevCycleSelfTest"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@penpot/mcp": "2.15.4",
+    "@resvg/resvg-js": "2.6.2",
+    "jsdom": "30.1.2",
+    "lottie-web": "5.13.0",
+    "lucide-static": "1.58.0",
+    "motion": "14.3.0",
+    "pixelmatch": "8.0.0",
+    "pngjs": "7.0.0",
+    "three": "0.186.1"
+  }
+}

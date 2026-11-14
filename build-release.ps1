@@ -273,7 +273,7 @@ $appProjectText=[IO.File]::ReadAllText($app,[Text.Encoding]::UTF8)
 $coreProjectText=[IO.File]::ReadAllText((Join-Path $root 'src\SpankyhoOptimizer.Core\SpankyhoOptimizer.Core.csproj'),[Text.Encoding]::UTF8)
 $installerProjectText=[IO.File]::ReadAllText($installer,[Text.Encoding]::UTF8)
 $appSourceText=Get-SpankyAppSource $root
-$installerMainText=[IO.File]::ReadAllText((Join-Path $root 'installer\InstallerMain.cs'),[Text.Encoding]::UTF8)
+$installerMainText=Get-SpankySourceText (Join-Path $root 'installer\InstallerMain.cs')
 foreach($projectText in @($appProjectText,$coreProjectText,$installerProjectText)){
   if($projectText -match '<Version>[^<]+</Version>'){throw 'Version consistency gate failed: project-local <Version> detected; use Directory.Build.props only.'}
 }
@@ -621,7 +621,7 @@ foreach($call in $requiredUiBundleCalls){
 Write-Host 'RELEASE_UI_BUNDLE_COVERAGE_GUARD_OK'
 
 $installerSourcePath=Join-Path $root 'installer\InstallerMain.cs'
-$installerSourceText=Get-Content $installerSourcePath -Raw
+$installerSourceText=Get-SpankySourceText $installerSourcePath
 $installerBundleRequired=@(
   '--release-installer-smoke-bundle',
   'OpenResource("payload.tar.zst")',

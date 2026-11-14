@@ -67,7 +67,7 @@ if($Mode -eq 'SelfTest'){
     $devText=[IO.File]::ReadAllText($dev)
     $releaseText=[IO.File]::ReadAllText($release)
     $ownText=[IO.File]::ReadAllText($MyInvocation.MyCommand.Path)
-    $installerText=[IO.File]::ReadAllText((Join-Path $root 'installer\InstallerMain.cs'))
+    $installerText=(Get-SpankySourceText (Join-Path $root 'installer\InstallerMain.cs'))
     $isolationText=[IO.File]::ReadAllText($installerIsolationPolicy)
     if(-not $installerText.Contains('HasNoReparseParents(full)') -or
        -not $installerText.Contains('FileAttributes.ReparsePoint') -or
