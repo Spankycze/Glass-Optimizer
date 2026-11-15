@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "updatedUtc": "2026-11-13T17:34:56.5082940Z",
+  "updatedUtc": "2026-11-15T05:28:51.5094095Z",
   "kind": "release",
   "outcome": "OK",
-  "builtVersion": "17.19.0",
-  "sourceVersion": "17.20.0",
+  "builtVersion": "17.20.0",
+  "sourceVersion": "17.21.0",
   "taskId": null,
   "taskStatus": "none",
   "taskTitle": "",
