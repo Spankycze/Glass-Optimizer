@@ -1,7 +1,7 @@
 # Glass Optimizer — předání, 13. 11. 2026
 
 - Live stav: SOURCE `17.20.0`, VERIFIED `17.19.0`, INSTALLED `17.19.0.0` (vždy ověřit přes `get-live-project-state.ps1 -AsJson`, ne z tohoto souboru).
-- 17.20.0 zdroj: partialy hotové (0 souborů nad 800 ř.), deduplikace 105 → 6 bloků (baseline 52), pracovní strom čistý až na 247 záměrně netrackovaných legacy CoreTests. Větev `publish/17.2.0-production` je stále bez upstreamu a 82 ahead / 51 behind `origin/main`; release 17.20.0 neproběhl.
+- 17.20.0 zdroj: partialy hotové (0 souborů nad 800 ř.), deduplikace 105 → 6 bloků (baseline 52), pracovní strom čistý (246 legacy CoreTests mimo compile allowlist smazáno, 116 testů zůstává). Větev `publish/17.2.0-production` je stále bez upstreamu a 82 ahead / 51 behind `origin/main`; release 17.20.0 neproběhl.
 - Release `17.19.0`: strict `build-release` PASS (142,33 s), Compact 46,63 MB, SHA-256 `89B2E7726737A1D70843913CA6094D20F08EBF1895F9D993E1865DE2A358BA53`; `--silent-install` exit 0, HKLM `17.19.0`, Program Files DLL `17.19.0.0`.
 - GitHub: release `v17.19.0` je latest s installerem, `README.md` a `CHANGELOG.md` (SHA assetů shodné s lokálními); `main` = commit `8d75e25` s README/CHANGELOG, tag `v17.19.0` na něm. URL: https://github.com/Spankycze/Glass-Optimizer/releases/tag/v17.19.0
 - 17.19.0 opravil zastaralou kontrolu v `--visual-capture-smoke`: místo historické „15.4.“ porovnává čtyři viditelné řádky changelogu s bundlem; capture smoke prochází v obou tématech včetně Defender stránky.
