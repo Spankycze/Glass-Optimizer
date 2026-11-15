@@ -1,7 +1,7 @@
 # CURRENT_STATE - BUILD-TIME SNAPSHOT (NOT LIVE INSTALL STATUS)
 
-Updated UTC: 2026-11-15T06:31:47.2106710Z
-Build kind: test-quick
+Updated UTC: 2026-11-15T06:44:47.2117226Z
+Build kind: build
 Build outcome: OK
 Built version: 17.21.0
 Current source version: 17.21.0
@@ -9,7 +9,7 @@ Installed version observed at build checkpoint (may be stale after later install
 Task:  | none
 
 ## Current work
-Latest successful test-quick checkpoint for v17.21.0.
+Latest successful build checkpoint for v17.21.0.
 
 ## Exact next action
 Continue from current source v17.21.0 and the latest user request.
