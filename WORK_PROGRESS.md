@@ -1,6 +1,7 @@
 ## 17.21.0 — po vydání 17.20.0, 15. 11. 2026
 - 17.20.0 vydaná 15. 11.: strict `build-release` PASS (141,27 s), Compact 46,64 MB, SHA-256 `EC88739F424EBC47113E6DD59537791069283363F11F06F966E354A9DC766774`; `--silent-install` exit 0, HKLM `17.20.0`, Program Files DLL `17.20.0+e2db46a`. GitHub release `v17.20.0` má installer, `CHANGELOG.md` i `README.md`.
 - Zdroj po vydání bumpnut na 17.21.0; žádná nová práce zatím nezačala.
+- Měření buildu 15. 11.: cache-hit build 0,8 s OK, ale `build-speed-audit` padá na `BUILD_SPEED_CODE_ONLY_FAIL 18416 ms > 12000 ms`. Rozpad code-only buildu (`-clp:PerformanceSummary`): `Exec` 10 276 ms, `MarkupCompilePass2` 6 967 ms, `Csc` 4 357 ms, `MarkupCompilePass1` 3 403 ms, celkem 16,6 s. Příčina: WinUI `MarkupCompilePass1/Pass2` nemají `Inputs/Outputs`, takže XAML kompilace (10,4 s) běží při každém buildu; `SpankyFastXamlReuse` hook pokrývá jen `XamlPreCompile`. Bez zásahu do cizích WinUI targetů budget 12 s nedosažitelný; čistý no-op build 12,7–19,9 s, touch .cs 17,5 s.
 
 ## 17.20.0 — po vydání 17.19.0, 13. 11. 2026
 - Úklid 14. 11.: všechny soubory nad 800 ř. rozdělené na partialy — `src` má 0 souborů nad limit (710 souborů, 161 184 ř.), `installer/InstallerMain.cs` 1 935 → 5 partialů (104/661/430/424/396). Guardy, audity a testy čtou partialy podle deklarace typu (`tools/source-set.ps1`, `ReadSource`), ne podle ručního seznamu souborů. `package.json` + `package-lock.json` nově v Gitu (lockfile v3, bez driftu) a dva dřív netrackované kompilované soubory doplněny.
