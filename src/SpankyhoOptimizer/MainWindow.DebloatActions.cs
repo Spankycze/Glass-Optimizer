@@ -115,8 +115,8 @@ public sealed partial class MainWindow
         }
         if (token.IsCancellationRequested || operationGeneration != _navigationGeneration ||
             _section != "debloat") return;
-        bool refreshCompleted = await RunDebloatProgressAsync(chosen, token);
-        if (refreshCompleted && !token.IsCancellationRequested &&
+        var outcome = await RunDebloatProgressAsync(chosen, token);
+        if ((outcome.RefreshCompleted || outcome.ReloadRequested) && !token.IsCancellationRequested &&
             operationGeneration == _navigationGeneration && _section == "debloat")
             await ShowSectionAsync("debloat");
     }
@@ -483,8 +483,8 @@ public sealed partial class MainWindow
         }
         if (token.IsCancellationRequested || operationGeneration != _navigationGeneration ||
             _section != "debloat") return;
-        bool refreshCompleted = await RunDebloatProgressAsync(chosen, token, allUsers: removeAllUsers);
-        if (refreshCompleted && !token.IsCancellationRequested &&
+        var outcome = await RunDebloatProgressAsync(chosen, token, allUsers: removeAllUsers);
+        if ((outcome.RefreshCompleted || outcome.ReloadRequested) && !token.IsCancellationRequested &&
             operationGeneration == _navigationGeneration && _section == "debloat")
             await ShowSectionAsync("debloat");
     }

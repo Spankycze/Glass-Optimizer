@@ -4,6 +4,7 @@
 
 - Debloater: the manual app-selection dialog now has the same text search as the Debloater page. It matches name, publisher and reason and ignores diacritics, so "media" finds "Média".
 - `--debloat-dialog-filter-smoke` now also verifies search narrowing, diacritics folding and restoration of every row; removal safety paths, restore points and operation journals are unchanged.
+- When a removal ends unverified, the progress dialog offers "Obnovit seznam" so the app list can be refreshed on the spot instead of closing the dialog and navigating away.
 
 ## 17.20.0
 

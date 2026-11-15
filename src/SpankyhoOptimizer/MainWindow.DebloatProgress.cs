@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -13,7 +13,12 @@ namespace SpankyhoOptimizer;
 
 public sealed partial class MainWindow
 {
-    private async Task<bool> RunDebloatProgressAsync(InstalledAppInfo[] apps, CancellationToken externalToken, bool dryRun = false, bool allUsers = false)
+    // RefreshCompleted maps to the existing automatic navigation. When a
+    // removal stays unverified the page must not navigate away by itself,
+    // so the finished dialog offers an explicit "Obnovit seznam" action.
+    private readonly record struct DebloatRunOutcome(bool RefreshCompleted, bool ReloadRequested);
+
+    private async Task<DebloatRunOutcome> RunDebloatProgressAsync(InstalledAppInfo[] apps, CancellationToken externalToken, bool dryRun = false, bool allUsers = false)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
         var overlay = CreateDialogOverlay(13000, 96);
@@ -45,7 +50,9 @@ public sealed partial class MainWindow
         bool popupClosed = false;
         bool operationFinished = false;
         bool cancelRequested = false;
+        bool reloadRequested = false;
         Button? cancel = null;
+        Button? refresh = null;
         void ClosePopup()
         {
             if (popupClosed) return;
@@ -67,7 +74,16 @@ public sealed partial class MainWindow
 
         var buttons = DialogActions();
         cancel = StyledDialogButton("Zrušit", false, () => { ClosePopup(); return Task.CompletedTask; });
-        buttons.Children.Add(cancel); Grid.SetRow(buttons, 2); root.Children.Add(buttons);
+        buttons.Children.Add(cancel);
+        refresh = StyledDialogButton("Obnovit seznam", false, () =>
+        {
+            reloadRequested = true;
+            ClosePopup();
+            return Task.CompletedTask;
+        });
+        refresh.Visibility = Visibility.Collapsed;
+        buttons.Children.Add(refresh);
+        Grid.SetRow(buttons, 2); root.Children.Add(buttons);
         card.Child = root;
         var topClose = MountDialog(overlay, card, ClosePopup);
 
@@ -113,7 +129,7 @@ public sealed partial class MainWindow
                 // Record an already returned result even if cancellation was
                 // requested while the worker was finishing. The next loop
                 // iteration checks cancellation before starting any new app.
-                if (popupClosed) return false;
+                if (popupClosed) return new DebloatRunOutcome(false, reloadRequested);
                 if (result.Success)
                 {
                     ok++;
@@ -200,16 +216,20 @@ public sealed partial class MainWindow
             if (!popupClosed)
             {
                 cancel!.Visibility = Visibility.Collapsed;
+                // The warning tells the user to refresh the list; give them
+                // that action instead of leaving only the close button.
+                if (!dryRun && (uncertain > 0 || auditWarnings > 0))
+                    refresh!.Visibility = Visibility.Visible;
                 if (topClose != null) topClose.Visibility = Visibility.Visible;
                 if (dryRun) { popupClosed = true; UnmountDialog(overlay); }
             }
         }
-        return allowAutomaticRefresh;
+        return new DebloatRunOutcome(allowAutomaticRefresh, reloadRequested);
     }
 
-    public Task RunDebloatProgressUiSmokeAsync(CancellationToken token = default)
+    public async Task RunDebloatProgressUiSmokeAsync(CancellationToken token = default)
     {
         var demo = new InstalledAppInfo("Smoke.App", "Smoke.App_1.0_x64__test", "Smoke.App_test", "Smoke App", "Spankyho", null, true, DebloatCategory.Tools, DebloatRisk.Safe, false, "Dry-run");
-        return RunDebloatProgressAsync(new[] { demo }, token, true);
+        await RunDebloatProgressAsync(new[] { demo }, token, true);
     }
 }
