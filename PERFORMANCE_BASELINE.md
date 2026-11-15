@@ -67,3 +67,7 @@ Zdroj: `artifacts/perf/latest.json` • 10 opakování • median/P95 • trace 
 - Příčina: synchronní `WindowsModernizerService.ReadSnapshot()` ve vendor panelu.
 - Oprava: vendor snapshot přesunut mimo foreground UI path; UI nejdřív vytvoří shell a stav doplní deferred.
 - Změna byla ponechána pouze po měřeném zlepšení a build/smoke validaci.
+
+## Start 17.20.0 — měření 15. 11. 2026
+
+Nainstalovaná 17.20.0, `--startup-hotpath-smoke`, 14 běhů: aktivace **206–252 ms, medián ~241 ms** (limit v aplikaci 750 ms). Rozpad: framework/WinRT 0–68 ms, LaunchCore 68–85 ms, HWND 85–120 ms, MainWindow ctor 87 ms (téma 7, shell 71, okno 9), Activated 207–213 ms, Ready +20 ms. Uvnitř shellu: backdrop 17 ms a hero 35 ms jsou first-touch náklady WinUI. Značky `MainWindow.CtorEnter`/`HandlersReady` v `StartupDiagnostics` umožňují měření zopakovat.
