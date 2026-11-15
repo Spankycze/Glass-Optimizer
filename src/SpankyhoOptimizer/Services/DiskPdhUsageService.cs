@@ -37,33 +37,15 @@ internal static class DiskPdhUsageService
             System.Diagnostics.Stopwatch.Frequency * RetryAfterSeconds;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PdhFmtCounterValue
-    {
-        public uint CStatus;
-        public double DoubleValue;
-    }
 
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
-    private static extern uint PdhOpenQueryW(string? dataSource, IntPtr userData, out IntPtr query);
-
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
-    private static extern uint PdhAddEnglishCounterW(IntPtr query, string fullCounterPath, IntPtr userData, out IntPtr counter);
-
+    
+    
+    
     [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll")]
-    private static extern uint PdhCollectQueryData(IntPtr query);
+    private static extern uint PdhGetFormattedCounterValue(IntPtr counter, uint format, out uint type, out PdhNative.PdhFmtCounterValue value);
 
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [DllImport("pdh.dll")]
-    private static extern uint PdhGetFormattedCounterValue(IntPtr counter, uint format, out uint type, out PdhFmtCounterValue value);
-
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [DllImport("pdh.dll")]
-    private static extern uint PdhCloseQuery(IntPtr query);
-
+    
     // The live Overview only displays disk busy %. Do not format the
     // additional latency PDH counter on every four-second GUI sample.
     // AI smoothness monitoring still calls TryReadWithLatency(), retaining
@@ -74,7 +56,7 @@ internal static class DiskPdhUsageService
         {
             if (IsTemporarilyUnavailable()) return null;
             if (!_initialized && !TryInitialize()) return null;
-            if (PdhCollectQueryData(_query) != ErrorSuccess) return null;
+            if (PdhNative.PdhCollectQueryData(_query) != ErrorSuccess) return null;
             double? busy = ReadCounter(_counter);
             return busy.HasValue ? Math.Clamp(busy.Value, 0d, 100d) : null;
         }
@@ -88,7 +70,7 @@ internal static class DiskPdhUsageService
         {
             if (IsTemporarilyUnavailable()) return (null, null);
             if (!_initialized && !TryInitialize()) return (null, null);
-            if (PdhCollectQueryData(_query) != ErrorSuccess) return (null, null);
+            if (PdhNative.PdhCollectQueryData(_query) != ErrorSuccess) return (null, null);
             double? busy = ReadCounter(_counter);
             double? seconds = _latencyCounter == IntPtr.Zero ? null : ReadCounter(_latencyCounter);
             // Windows exposes Avg. Disk sec/Transfer in seconds.
@@ -111,16 +93,16 @@ internal static class DiskPdhUsageService
     private static bool TryInitialize()
     {
         if (_initialized) return true;
-        if (PdhOpenQueryW(null, IntPtr.Zero, out _query) != ErrorSuccess)
+        if (PdhNative.PdhOpenQueryW(null, IntPtr.Zero, out _query) != ErrorSuccess)
         {
             _query = IntPtr.Zero;
             MarkUnavailable();
             return false;
         }
-        uint status = PdhAddEnglishCounterW(_query, @"\PhysicalDisk(_Total)\% Disk Time", IntPtr.Zero, out _counter);
+        uint status = PdhNative.PdhAddEnglishCounterW(_query, @"\PhysicalDisk(_Total)\% Disk Time", IntPtr.Zero, out _counter);
         if (status != ErrorSuccess)
         {
-            uint closeStatus = PdhCloseQuery(_query);
+            uint closeStatus = PdhNative.PdhCloseQuery(_query);
             if (closeStatus != ErrorSuccess)
                 LogService.Info("performance", $"PDH_DISK_CLOSE_WARN stage=add-counter status=0x{closeStatus:X8}");
             _query = IntPtr.Zero;
@@ -132,15 +114,15 @@ internal static class DiskPdhUsageService
 
         // Optional, same query/no second polling loop. If this counter is missing,
         // keep the existing disk busy measurement without failing initialization.
-        if (PdhAddEnglishCounterW(_query,
+        if (PdhNative.PdhAddEnglishCounterW(_query,
             @"\PhysicalDisk(_Total)\Avg. Disk sec/Transfer",
             IntPtr.Zero, out _latencyCounter) != ErrorSuccess)
             _latencyCounter = IntPtr.Zero;
 
-        uint collectStatus = PdhCollectQueryData(_query);
+        uint collectStatus = PdhNative.PdhCollectQueryData(_query);
         if (collectStatus != ErrorSuccess)
         {
-            uint closeStatus = PdhCloseQuery(_query);
+            uint closeStatus = PdhNative.PdhCloseQuery(_query);
             if (closeStatus != ErrorSuccess)
                 LogService.Info("performance", $"PDH_DISK_CLOSE_WARN stage=initial-collect status=0x{closeStatus:X8}");
             _query = IntPtr.Zero;
@@ -160,7 +142,7 @@ internal static class DiskPdhUsageService
         {
             if (_query != IntPtr.Zero)
             {
-                uint closeStatus = PdhCloseQuery(_query);
+                uint closeStatus = PdhNative.PdhCloseQuery(_query);
                 if (closeStatus != ErrorSuccess)
                     LogService.Info("performance", $"PDH_DISK_CLOSE_WARN stage=dispose status=0x{closeStatus:X8}");
             }
