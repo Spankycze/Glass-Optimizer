@@ -88,54 +88,18 @@ public static class WallpaperThemeService
         Action applySystem,
         Action restoreSystem)
     {
-        var original = new WallpaperSaved[changes.Count];
-        // Snapshot ALL fields before the first write, including registry kinds
-        // and the fact that a value was absent in the user's original theme.
-        for (int i = 0; i < changes.Count; i++)
-            original[i] = read(changes[i]);
-
-        int attempted = 0;
-        try
-        {
-            for (int i = 0; i < changes.Count; i++)
-            {
-                attempted = i + 1; // a native setter may mutate before throwing
-                write(changes[i]);
-            }
-            applySystem();
-        }
-        catch (Exception primary)
-        {
-            var errors = new List<Exception>();
-            for (int i = attempted - 1; i >= 0; i--)
-            {
-                try
-                {
-                    if (original[i].Exists)
-                        write(changes[i] with
-                        {
-                            Value = original[i].Value!,
-                            Kind = original[i].Kind
-                        });
-                    else
-                        remove(changes[i]);
-                }
-                catch (Exception rollbackError) { errors.Add(rollbackError); }
-            }
-            if (attempted > 0)
-            {
-                try { restoreSystem(); }
-                catch (Exception rollbackError) { errors.Add(rollbackError); }
-            }
-            if (errors.Count != 0)
-            {
-                errors.Insert(0, primary);
-                throw new AggregateException(
-                    "Aplikování tapety selhalo a původní nastavení se nepodařilo plně obnovit.",
-                    errors);
-            }
-            throw;
-        }
+        RegistryBatchCommit.Run(
+            changes,
+            read,
+            saved => saved.Exists,
+            saved => saved.Value,
+            saved => saved.Kind,
+            write,
+            (change, value, kind) => change with { Value = value!, Kind = kind },
+            remove,
+            applySystem,
+            restoreSystem,
+            "Aplikování tapety selhalo a původní nastavení se nepodařilo plně obnovit.");
     }
 
     private static WallpaperSaved ReadOriginalWallpaperValue(RegistryKey key, string name)

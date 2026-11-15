@@ -271,52 +271,18 @@ public static class CursorCommunityPackService
         Action verifyAndRefresh,
         Action restoreRefresh)
     {
-        var original = new CursorSavedValue[changes.Count];
-        for (int i = 0; i < changes.Count; i++)
-            original[i] = readOriginal(changes[i]);
-
-        int attempted = 0;
-        try
-        {
-            for (int i = 0; i < changes.Count; i++)
-            {
-                attempted = i + 1; // a native registry write may mutate then throw
-                write(changes[i]);
-            }
-            verifyAndRefresh();
-        }
-        catch (Exception primary)
-        {
-            var recoveryErrors = new List<Exception>();
-            for (int i = attempted - 1; i >= 0; i--)
-            {
-                try
-                {
-                    if (original[i].Exists)
-                        write(changes[i] with
-                        {
-                            Value = original[i].Value!,
-                            Kind = original[i].Kind
-                        });
-                    else
-                        remove(changes[i]);
-                }
-                catch (Exception recoveryError) { recoveryErrors.Add(recoveryError); }
-            }
-            if (attempted > 0)
-            {
-                try { restoreRefresh(); }
-                catch (Exception recoveryError) { recoveryErrors.Add(recoveryError); }
-            }
-            if (recoveryErrors.Count > 0)
-            {
-                recoveryErrors.Insert(0, primary);
-                throw new AggregateException(
-                    "Community kurzory selhaly a původní schéma se nepodařilo plně obnovit.",
-                    recoveryErrors);
-            }
-            throw;
-        }
+        RegistryBatchCommit.Run(
+            changes,
+            readOriginal,
+            saved => saved.Exists,
+            saved => saved.Value,
+            saved => saved.Kind,
+            write,
+            (change, value, kind) => change with { Value = value!, Kind = kind },
+            remove,
+            verifyAndRefresh,
+            restoreRefresh,
+            "Community kurzory selhaly a původní schéma se nepodařilo plně obnovit.");
     }
 
     private static CursorSavedValue ReadCursorRegistryValue(RegistryKey key, string name)
