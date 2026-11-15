@@ -217,30 +217,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> restore,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!enable)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-        await capture(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-        try
-        {
-            await apply(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try { await restore(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception recoveryError)
-            {
-                throw new AggregateException(
-                    "Nastavení PCHC i obnova původního stavu selhaly.",
-                    mutationError, recoveryError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            enable, capture, apply, restore,
+            "Nastavení PCHC i obnova původního stavu selhaly.", ct).ConfigureAwait(false);
     }
 
     private static async Task SetPcHealthAsync(bool enabled, CancellationToken ct)

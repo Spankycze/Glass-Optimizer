@@ -53,30 +53,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> restore,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!maximum)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-        await capture(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-        try
-        {
-            await apply(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try { await restore(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception recoveryError)
-            {
-                throw new AggregateException(
-                    "Nastavení JPEG kvality a obnova původní hodnoty selhaly.",
-                    mutationError, recoveryError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            maximum, capture, apply, restore,
+            "Nastavení JPEG kvality a obnova původní hodnoty selhaly.", ct).ConfigureAwait(false);
     }
 
     private static async Task CaptureWallpaperQualityOriginalAsync(CancellationToken ct)

@@ -177,30 +177,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> apply,
         Func<CancellationToken, Task> restore, CancellationToken token)
     {
-        token.ThrowIfCancellationRequested();
-        if (!hide)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-        await capture(token).ConfigureAwait(false);
-        token.ThrowIfCancellationRequested();
-        try
-        {
-            await apply(token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try { await restore(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception restoreError)
-            {
-                throw new AggregateException(
-                    "Skrytí Explorer Home i obnovení původního stavu selhaly.",
-                    mutationError, restoreError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            hide, capture, apply, restore,
+            "Skrytí Explorer Home i obnovení původního stavu selhaly.", token).ConfigureAwait(false);
     }
 
     private static async Task SetExplorerHomeAsync(bool hide, CancellationToken ct)

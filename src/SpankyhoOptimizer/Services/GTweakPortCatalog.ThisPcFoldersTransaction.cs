@@ -171,30 +171,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> remove,
         Func<CancellationToken, Task> restore, CancellationToken token)
     {
-        token.ThrowIfCancellationRequested();
-        if (!hide)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-        await capture(token).ConfigureAwait(false);
-        token.ThrowIfCancellationRequested();
-        try
-        {
-            await remove(token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try { await restore(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception recoveryError)
-            {
-                throw new AggregateException(
-                    "Skrytí složky i obnova původní položky selhaly.",
-                    mutationError, recoveryError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            hide, capture, remove, restore,
+            "Skrytí složky i obnova původní položky selhaly.", token).ConfigureAwait(false);
     }
 
     private static async Task SetThisPcFolderAsync(

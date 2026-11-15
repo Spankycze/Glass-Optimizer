@@ -216,31 +216,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> restoreOriginal,
         CancellationToken token)
     {
-        token.ThrowIfCancellationRequested();
-        if (!disableCeip)
-        {
-            await restoreOriginal(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-
-        await captureOriginal(token).ConfigureAwait(false);
-        token.ThrowIfCancellationRequested();
-        try
-        {
-            await applyAndVerify(token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-        }
-        catch (Exception changeFailure)
-        {
-            try { await restoreOriginal(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception restoreFailure)
-            {
-                throw new AggregateException(
-                    "CEIP politika ani obnova původního stavu nebyly dokončeny.",
-                    changeFailure, restoreFailure);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            disableCeip, captureOriginal, applyAndVerify, restoreOriginal,
+            "CEIP politika ani obnova původního stavu nebyly dokončeny.", token).ConfigureAwait(false);
     }
 
     private static async Task SetCeipAsync(bool disable, CancellationToken token)

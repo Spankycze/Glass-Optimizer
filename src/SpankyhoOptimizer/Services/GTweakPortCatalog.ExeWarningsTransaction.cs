@@ -243,30 +243,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> restore,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!disableWarnings)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-        await capture(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-        try
-        {
-            await apply(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try { await restore(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception restoreError)
-            {
-                throw new AggregateException(
-                    "Změna EXE varování i její rollback selhaly.",
-                    mutationError, restoreError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            disableWarnings, capture, apply, restore,
+            "Změna EXE varování i její rollback selhaly.", ct).ConfigureAwait(false);
     }
 
     private static async Task SetExeWarningsAsync(bool disabled, CancellationToken ct)

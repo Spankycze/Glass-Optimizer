@@ -235,30 +235,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> apply,
         Func<CancellationToken, Task> restore, CancellationToken token)
     {
-        token.ThrowIfCancellationRequested();
-        if (!hide)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-        await capture(token).ConfigureAwait(false);
-        token.ThrowIfCancellationRequested();
-        try
-        {
-            await apply(token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try { await restore(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception recoveryError)
-            {
-                throw new AggregateException(
-                    "Skrytí OneDrive i obnova původního nastavení selhaly.",
-                    mutationError, recoveryError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            hide, capture, apply, restore,
+            "Skrytí OneDrive i obnova původního nastavení selhaly.", token).ConfigureAwait(false);
     }
 
     private static async Task SetOneDriveNavAsync(bool hide, CancellationToken token)

@@ -216,30 +216,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> restore,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!hide)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-        await capture(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-        try
-        {
-            await apply(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try { await restore(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception rollbackError)
-            {
-                throw new AggregateException(
-                    "Skrytí Gallery i obnova původního nastavení selhaly.",
-                    mutationError, rollbackError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            hide, capture, apply, restore,
+            "Skrytí Gallery i obnova původního nastavení selhaly.", ct).ConfigureAwait(false);
     }
 
     private static async Task SetGalleryHiddenAsync(bool hide, CancellationToken ct)

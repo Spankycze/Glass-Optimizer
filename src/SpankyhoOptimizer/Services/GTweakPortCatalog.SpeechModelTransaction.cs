@@ -230,30 +230,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> restore,
         CancellationToken token)
     {
-        token.ThrowIfCancellationRequested();
-        if (!disable)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-        await capture(token).ConfigureAwait(false);
-        token.ThrowIfCancellationRequested();
-        try
-        {
-            await apply(token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-        }
-        catch (Exception writeError)
-        {
-            try { await restore(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception restoreError)
-            {
-                throw new AggregateException(
-                    "Změna speech modelu ani obnova původní politiky se nedokončily.",
-                    writeError, restoreError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            disable, capture, apply, restore,
+            "Změna speech modelu ani obnova původní politiky se nedokončily.", token).ConfigureAwait(false);
     }
 
     private static async Task SetSpeechModelOffAsync(bool disable, CancellationToken token)

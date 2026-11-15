@@ -224,31 +224,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> restore,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!disable)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-
-        await capture(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-        try
-        {
-            await apply(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception failure)
-        {
-            try { await restore(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception recovery)
-            {
-                throw new AggregateException(
-                    "DisableUAR a obnova původního nastavení současně selhaly.",
-                    failure, recovery);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            disable, capture, apply, restore,
+            "DisableUAR a obnova původního nastavení současně selhaly.", ct).ConfigureAwait(false);
     }
 
     private static async Task SetUarAsync(bool disable, CancellationToken ct)
