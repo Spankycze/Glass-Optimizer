@@ -44,7 +44,7 @@ internal static class DesktopPopupWindowChrome
     internal static SizeInt32? TryConfigure(
         Window window,
         int width,
-        int stackIndex,
+        int _stackIndex,
         bool visualPreview,
         string logTag,
         string logCategory,
@@ -106,7 +106,7 @@ internal static class DesktopPopupWindowChrome
             int gap = (int)Math.Ceiling(10 * scale);
             appWindow.Move(new PointInt32(
                 work.X + Math.Max(0, work.Width - actualSize.Width - margin),
-                work.Y + Math.Max(0, work.Height - actualSize.Height - margin - stackIndex * (actualSize.Height + gap))));
+                work.Y + Math.Max(0, work.Height - actualSize.Height - margin - _stackIndex * (actualSize.Height + gap))));
             state.Configured = true;
             return clientSize;
         }
