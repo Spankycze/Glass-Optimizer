@@ -146,43 +146,14 @@ public sealed partial class MainWindow
     {
         try
         {
-            TweakDefinition[] immediate;
-            TweakDefinition[] lazy;
-            if (tweaks.Length == 0)
-            {
-                immediate = Array.Empty<TweakDefinition>();
-                lazy = Array.Empty<TweakDefinition>();
-            }
-            else
-            {
-                var immediateList = new List<TweakDefinition>(tweaks.Length);
-                var lazyList = new List<TweakDefinition>();
-                foreach (TweakDefinition tweak in tweaks)
-                {
-                    if (tweak.LazyDetect) lazyList.Add(tweak);
-                    else immediateList.Add(tweak);
-                }
-                immediate = immediateList.ToArray();
-                lazy = lazyList.ToArray();
-            }
-
-            if (detect)
-            {
-                if (immediate.Length > 0)
-                    await _engine.DetectAsync(immediate, token);
-                _tweakCacheTime[cacheKey] = DateTime.UtcNow;
-            }
+            DeferredTweakPlan plan = SplitDeferredTweaks(tweaks);
+            await DetectDeferredTweaksAsync(cacheKey, plan.Immediate, detect, token);
             token.ThrowIfCancellationRequested();
             if (_section != "gpu") return;
             RefreshCards();
             await BuildHardwareRecommendedPanelAsync("gpu", tweaks, token);
             CaptureGpuPageCache();
-
-            if (lazy.Length > 0)
-                SafeTaskService.Forget(
-                    DetectLazyTweaksAfterSettleAsync("gpu", lazy, token, _navigationGeneration),
-                    "tweaks",
-                    "Deferred lazy GPU detect");
+            QueueLazyTweaks("gpu", plan.Lazy, token);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { LogService.Error("gpu", "Deferred GPU state failed", ex); }

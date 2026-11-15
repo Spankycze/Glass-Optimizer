@@ -278,39 +278,15 @@ public sealed partial class AiSystemResourceManagerService
                 throw new InvalidOperationException(
                     "initial Candidate B task readback: " + readbackFailure);
 
-            AiSystemRuntimeItemState completed = intent with
-            {
-                Managed = true,
-                Sleeping = true,
-                OriginalTaskEnabled = true,
-                OriginalTaskNextRunUtc = freshTask.NextRunUtc,
-                ObservationSinceUtc = null,
-                CooldownUntilUtc = DateTime.UtcNow.AddSeconds(config.ActionCooldownSeconds),
-                LastAction = "candidate trial: waiting for measured feedback",
-                LastChangedUtc = DateTime.UtcNow,
-                BaselineLoadPercent = baselineLoad,
-                BaselineAvailableRamMiB = baselineAvailableRam,
-                VerificationMemorySamples = 0,
-                VerificationMemoryTotalMiB = 0,
-                VerificationMemoryMinMiB = null,
-                VerificationMemoryMaxMiB = null,
-                VerificationLastMemorySnapshotUtc = null,
-                CandidateMemorySamples = 0,
-                CandidateAvailableRamMiB = null,
-                CandidateMemoryMinMiB = null,
-                CandidateMemoryMaxMiB = null,
-                VerificationStartedUtc = DateTime.UtcNow,
-                VerificationLastSampleUtc = null,
-                VerificationSamples = 0,
-                VerificationLoadTotal = 0,
-                PerformanceVerified = false,
-                VerificationPhase = "CandidateB",
-                CandidateLoadPercent = null,
-                VerificationLoadMin = null,
-                VerificationLoadMax = null,
-                CandidateLoadMin = null,
-                CandidateLoadMax = null
-            };
+            AiSystemRuntimeItemState completed = MarkTrialStarted(
+                intent with
+                {
+                    Managed = true,
+                    Sleeping = true,
+                    OriginalTaskEnabled = true,
+                    OriginalTaskNextRunUtc = freshTask.NextRunUtc
+                },
+                config.ActionCooldownSeconds, baselineLoad, baselineAvailableRam);
             CommitWriteAheadMutation(intent, completed);
             _quietLoadSamples.Clear();
             _maintenanceMutationCommitted = true;

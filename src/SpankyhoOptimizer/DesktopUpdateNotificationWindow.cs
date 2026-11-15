@@ -34,25 +34,13 @@ internal sealed class DesktopUpdateNotificationWindow : Window
 
     private const int WindowWidth = 480;
     private const int SwShowNoActivate = 4;
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern uint GetDpiForWindow(IntPtr hwnd);
-    private const int GwlExStyle = -20;
-    private const long WsExNoActivate = 0x08000000L;
-    private const long WsExToolWindow = 0x00000080L;
 
     [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
-    private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
-    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
     private readonly Func<IProgress<DesktopUpdateProgress>, CancellationToken, Task<DesktopUpdateCompletion>> _downloadAction;
     private readonly CancellationTokenSource _cts = new();
@@ -66,9 +54,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
     private readonly Button _secondary;
     private Func<Task>? _completionAction;
     private Func<IProgress<DesktopUpdateProgress>, CancellationToken, Task>? _completionProgressAction;
-    private bool _configured;
-    private int _windowHeight;
-    private int _configureFailures;
+    private readonly PopupChromeState _chrome = new();
     private bool _busy;
     private bool _automaticUpdate;
     private long _downloadGeneration;
@@ -494,72 +480,9 @@ internal sealed class DesktopUpdateNotificationWindow : Window
     private void ConfigureWindow()
     {
         if (_closed) return;
-        try
-        {
-            var root = (FrameworkElement)Content;
-            root.Measure(new Windows.Foundation.Size(WindowWidth, double.PositiveInfinity));
-            int height = (int)Math.Ceiling(root.DesiredSize.Height);
-            if (_configured && height == _windowHeight) return;
-            _windowHeight = height;
-            var hwnd = WindowNative.GetWindowHandle(this);
-            long exStyle = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
-            exStyle |= WsExNoActivate | WsExToolWindow;
-            SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(exStyle));
-
-            WindowId id = Win32Interop.GetWindowIdFromWindow(hwnd);
-            AppWindow appWindow = AppWindow.GetFromWindowId(id);
-            // Size the client after removing native chrome; XAML dimensions are DIPs.
-            appWindow.IsShownInSwitchers = false;
-
-            if (appWindow.Presenter is OverlappedPresenter presenter)
-            {
-                presenter.IsResizable = false;
-                presenter.IsMaximizable = false;
-                presenter.IsMinimizable = false;
-                presenter.IsAlwaysOnTop = true;
-                presenter.SetBorderAndTitleBar(false, false);
-            }
-
-            // The presenter leaves WS_DLGFRAME on this runtime even with HasBorder=false.
-            // Clear only this popup's native frame before calculating client size.
-            if (!NativeTitleBarService.TryRemovePopupNativeFrame(hwnd, out int chromeError))
-                LogService.Info("window", "POPUP_NATIVE_FRAME_DEGRADED error=" + chromeError);
-            double scale = Math.Max(96u, GetDpiForWindow(hwnd)) / 96d;
-            appWindow.ResizeClient(new SizeInt32(
-                (int)Math.Ceiling(WindowWidth * scale), (int)Math.Ceiling(_windowHeight * scale)));
-
-            // Same native silhouette as the main shell, without a bright OS frame.
-            if (!NativeTitleBarService.TryApplyGlassBorder(hwnd, true, out int borderError))
-                LogService.Info("window", "POPUP_GLASS_BORDER_DEGRADED error=" + borderError);
-            NativeTitleBarService.TryRoundCorners(hwnd, out _);
-            if (!NativeTitleBarService.TrySetRoundedGlassRegion(hwnd, true, 22 * scale, out int regionError, resizeEdges: false))
-                LogService.Info("window", "POPUP_GLASS_REGION_DEGRADED error=" + regionError);
-
-            if (App.IsSmokeUi && !_visualPreview)
-            {
-                if (appWindow.Presenter is OverlappedPresenter smokePresenter)
-                    smokePresenter.IsAlwaysOnTop = false;
-                appWindow.IsShownInSwitchers = false;
-                appWindow.Move(new PointInt32(-32000, -32000));
-                _configured = true;
-                return;
-            }
-
-            DisplayArea area = DisplayArea.GetFromWindowId(id, DisplayAreaFallback.Primary);
-            RectInt32 work = area.WorkArea;
-            SizeInt32 actualSize = appWindow.Size;
-            int margin = (int)Math.Ceiling(18 * scale);
-            int gap = (int)Math.Ceiling(10 * scale);
-            appWindow.Move(new PointInt32(
-                work.X + Math.Max(0, work.Width - actualSize.Width - margin),
-                work.Y + Math.Max(0, work.Height - actualSize.Height - margin - _stackIndex * (actualSize.Height + gap))));
-            _configured = true;
-        }
-        catch (Exception ex)
-        {
-            // Do not permanently mark the window as configured after transient native failure.
-            if (++_configureFailures <= 3)
-                LogService.Error("update", "Desktop update popup positioning failed; later activation may retry", ex);
-        }
+        _ = DesktopPopupWindowChrome.TryConfigure(
+            this, WindowWidth, _stackIndex, _visualPreview,
+            "POPUP", "update",
+            "Desktop update popup positioning failed; later activation may retry", _chrome);
     }
 }

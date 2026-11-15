@@ -202,34 +202,9 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task> restore,
         CancellationToken token)
     {
-        token.ThrowIfCancellationRequested();
-        if (!enable)
-        {
-            await restore(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
-
-        await capture(token).ConfigureAwait(false);
-        token.ThrowIfCancellationRequested();
-        try
-        {
-            await apply(token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try
-            {
-                await restore(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception rollbackError)
-            {
-                throw new AggregateException(
-                    "Změna klasického menu i její obnova selhaly.",
-                    mutationError, rollbackError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            enable, capture, apply, restore,
+            "Změna klasického menu i její obnova selhaly.", token).ConfigureAwait(false);
     }
 
     private static async Task SetClassicMenuAsync(bool enable, CancellationToken token)

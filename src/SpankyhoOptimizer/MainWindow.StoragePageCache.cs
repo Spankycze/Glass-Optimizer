@@ -580,32 +580,8 @@ public sealed partial class MainWindow
         long detectMs = 0, refreshMs = 0, recommendedMs = 0, captureMs = 0;
         try
         {
-            TweakDefinition[] immediate;
-            TweakDefinition[] lazy;
-            if (tweaks.Length == 0)
-            {
-                immediate = Array.Empty<TweakDefinition>();
-                lazy = Array.Empty<TweakDefinition>();
-            }
-            else
-            {
-                var immediateList = new List<TweakDefinition>(tweaks.Length);
-                var lazyList = new List<TweakDefinition>();
-                foreach (TweakDefinition tweak in tweaks)
-                {
-                    if (tweak.LazyDetect) lazyList.Add(tweak);
-                    else immediateList.Add(tweak);
-                }
-                immediate = immediateList.ToArray();
-                lazy = lazyList.ToArray();
-            }
-
-            if (detect)
-            {
-                if (immediate.Length > 0)
-                    await _engine.DetectAsync(immediate, token);
-                _tweakCacheTime[cacheKey] = DateTime.UtcNow;
-            }
+            DeferredTweakPlan plan = SplitDeferredTweaks(tweaks);
+            await DetectDeferredTweaksAsync(cacheKey, plan.Immediate, detect, token);
             detectMs = perf.ElapsedMilliseconds;
             token.ThrowIfCancellationRequested();
             if (_section != "storage") return;
@@ -621,11 +597,7 @@ public sealed partial class MainWindow
             if (!token.IsCancellationRequested && _section == "storage") CaptureStoragePageCache();
             captureMs = perf.ElapsedMilliseconds - captureStart;
 
-            if (lazy.Length > 0)
-                SafeTaskService.Forget(
-                    DetectLazyTweaksAfterSettleAsync("storage", lazy, token, _navigationGeneration),
-                    "tweaks",
-                    "Deferred lazy Storage detect");
+            QueueLazyTweaks("storage", plan.Lazy, token);
 
             LogService.Info("performance",
                 $"STORAGE_DEFERRED_PHASE detectMs={detectMs} refreshMs={refreshMs} recommendedMs={recommendedMs} captureMs={captureMs} totalMs={perf.ElapsedMilliseconds} detect={detect}");

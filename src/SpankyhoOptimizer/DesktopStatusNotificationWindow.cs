@@ -18,14 +18,6 @@ internal sealed class DesktopStatusNotificationWindow : Window
     private const int WindowWidth = 420;
     private const int SwShowNoActivate = 4;
     private const int AutoHideMs = 7000;
-    private const int GwlExStyle = -20;
-    private const long WsExNoActivate = 0x08000000L;
-    private const long WsExToolWindow = 0x00000080L;
-
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern uint GetDpiForWindow(IntPtr hwnd);
-
     [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
@@ -40,20 +32,10 @@ internal sealed class DesktopStatusNotificationWindow : Window
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
-    private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
-
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
-    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
-    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
-
     private readonly DispatcherTimer _autoHide;
     private readonly int _stackIndex;
     private readonly bool _visualPreview;
-    private int _windowHeight;
-    private bool _configured;
-    private int _configureFailures;
+    private readonly PopupChromeState _chrome = new();
     private bool _closed;
 
     internal int PopupWidth { get; private set; }
@@ -225,8 +207,8 @@ internal sealed class DesktopStatusNotificationWindow : Window
         try
         {
             var hwnd = WindowNative.GetWindowHandle(this);
-            long exStyle = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
-            return (exStyle & WsExNoActivate) != 0 && IsWindowVisible(hwnd) && _windowHeight > 0;
+            return DesktopPopupWindowChrome.HasNoActivateStyle(hwnd) &&
+                   IsWindowVisible(hwnd) && _chrome.Height > 0;
         }
         catch (Exception ex)
         {
@@ -253,70 +235,13 @@ internal sealed class DesktopStatusNotificationWindow : Window
     private void ConfigureWindow()
     {
         if (_closed) return;
-        try
+        if (DesktopPopupWindowChrome.TryConfigure(
+                this, WindowWidth, _stackIndex, _visualPreview,
+                "STATUS_POPUP", "ui",
+                "Status popup positioning failed; later activation may retry", _chrome) is { } size)
         {
-            var root = (FrameworkElement)Content;
-            root.Measure(new Windows.Foundation.Size(WindowWidth, double.PositiveInfinity));
-            int height = (int)Math.Ceiling(root.DesiredSize.Height);
-            if (_configured && height == _windowHeight) return;
-            _windowHeight = height;
-            var hwnd = WindowNative.GetWindowHandle(this);
-            long exStyle = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
-            exStyle |= WsExNoActivate | WsExToolWindow;
-            SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(exStyle));
-
-            WindowId id = Win32Interop.GetWindowIdFromWindow(hwnd);
-            AppWindow appWindow = AppWindow.GetFromWindowId(id);
-            appWindow.IsShownInSwitchers = false;
-
-            if (appWindow.Presenter is OverlappedPresenter presenter)
-            {
-                presenter.IsResizable = false;
-                presenter.IsMaximizable = false;
-                presenter.IsMinimizable = false;
-                presenter.IsAlwaysOnTop = true;
-                presenter.SetBorderAndTitleBar(false, false);
-            }
-
-            if (!NativeTitleBarService.TryRemovePopupNativeFrame(hwnd, out int chromeError))
-                LogService.Info("window", "STATUS_POPUP_NATIVE_FRAME_DEGRADED error=" + chromeError);
-            double scale = Math.Max(96u, GetDpiForWindow(hwnd)) / 96d;
-            int clientWidth = (int)Math.Ceiling(WindowWidth * scale);
-            int clientHeight = (int)Math.Ceiling(height * scale);
-            appWindow.ResizeClient(new SizeInt32(clientWidth, clientHeight));
-            PopupWidth = clientWidth;
-            PopupHeight = clientHeight;
-
-            if (!NativeTitleBarService.TryApplyGlassBorder(hwnd, true, out int borderError))
-                LogService.Info("window", "STATUS_POPUP_GLASS_BORDER_DEGRADED error=" + borderError);
-            NativeTitleBarService.TryRoundCorners(hwnd, out _);
-            if (!NativeTitleBarService.TrySetRoundedGlassRegion(hwnd, true, 22 * scale, out int regionError, resizeEdges: false))
-                LogService.Info("window", "STATUS_POPUP_GLASS_REGION_DEGRADED error=" + regionError);
-
-            if (App.IsSmokeUi && !_visualPreview)
-            {
-                if (appWindow.Presenter is OverlappedPresenter smokePresenter)
-                    smokePresenter.IsAlwaysOnTop = false;
-                appWindow.Move(new PointInt32(-32000, -32000));
-                _configured = true;
-                return;
-            }
-
-            DisplayArea area = DisplayArea.GetFromWindowId(id, DisplayAreaFallback.Primary);
-            RectInt32 work = area.WorkArea;
-            SizeInt32 actualSize = appWindow.Size;
-            int margin = (int)Math.Ceiling(18 * scale);
-            int gap = (int)Math.Ceiling(10 * scale);
-            appWindow.Move(new PointInt32(
-                work.X + Math.Max(0, work.Width - actualSize.Width - margin),
-                work.Y + Math.Max(0, work.Height - actualSize.Height - margin - _stackIndex * (actualSize.Height + gap))));
-            _configured = true;
-        }
-        catch (Exception ex)
-        {
-            // Do not permanently mark the window as configured after transient native failure.
-            if (++_configureFailures <= 3)
-                LogService.Error("ui", "Status popup positioning failed; later activation may retry", ex);
+            PopupWidth = size.Width;
+            PopupHeight = size.Height;
         }
     }
 }
