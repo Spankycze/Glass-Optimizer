@@ -114,34 +114,14 @@ internal static partial class TaskSchedulerComService
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(validateTaskXml);
         token.ThrowIfCancellationRequested();
-        object? serviceObj = null;
-        object? folderObj = null;
-        try
-        {
-            int split = path.LastIndexOf('\\');
-            string folderPath = split <= 0 ? "\\" : path[..split];
-            string taskName = path[(split + 1)..];
-            var type = Type.GetTypeFromProgID("Schedule.Service", throwOnError: false)
-                ?? throw new PlatformNotSupportedException("Task Scheduler COM není dostupný.");
-            serviceObj = Activator.CreateInstance(type)
-                ?? throw new InvalidOperationException("Task Scheduler COM nelze vytvořit.");
-            dynamic service = serviceObj;
-            service.Connect();
-            folderObj = service.GetFolder(folderPath);
-            dynamic folder = folderObj;
-            RunRegisteredTaskIfAuthorized(
-                () => (object)folder.GetTask(taskName),
-                registered => ((dynamic)registered).Xml?.ToString(),
-                validateTaskXml,
-                registered => (object?)((dynamic)registered).Run(null),
-                Release,
-                token);
-        }
-        finally
-        {
-            Release(folderObj);
-            Release(serviceObj);
-        }
+        using var session = TaskComSession.Open(path, out dynamic folder);
+        RunRegisteredTaskIfAuthorized(
+            () => (object)folder.GetTask(session.TaskName),
+            registered => ((dynamic)registered).Xml?.ToString(),
+            validateTaskXml,
+            registered => (object?)((dynamic)registered).Run(null),
+            Release,
+            token);
     }
 
     // No Schedule.Service connections: compiled safe policy regression.
@@ -264,25 +244,12 @@ internal static partial class TaskSchedulerComService
     public static TaskRuntimeState GetRuntimeState(string path, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        int split = path.LastIndexOf('\\');
-        string folderPath = split <= 0 ? "\\" : path[..split];
-        string taskName = path[(split + 1)..];
-        object? serviceObj = null;
-        object? folderObj = null;
+        using var session = TaskComSession.Open(path, out dynamic folder);
         object? taskObj = null;
         try
         {
-            var type = Type.GetTypeFromProgID("Schedule.Service", throwOnError: false)
-                ?? throw new PlatformNotSupportedException("Task Scheduler COM není dostupný.");
-            serviceObj = Activator.CreateInstance(type)
-                ?? throw new InvalidOperationException("Task Scheduler COM nelze vytvořit.");
-            dynamic service = serviceObj;
-            service.Connect();
-            folderObj = service.GetFolder(folderPath);
-            dynamic folder = folderObj;
-            taskObj = folder.GetTask(taskName);
+            taskObj = folder.GetTask(session.TaskName);
             dynamic task = taskObj;
-
             DateTime next = task.NextRunTime;
             DateTime last = task.LastRunTime;
             DateTime? nextUtc = next <= DateTime.MinValue.AddDays(1) ? null : next.ToUniversalTime();
@@ -293,96 +260,45 @@ internal static partial class TaskSchedulerComService
                 nextUtc,
                 lastUtc);
         }
-        finally
-        {
-            Release(taskObj);
-            Release(folderObj);
-            Release(serviceObj);
-        }
+        finally { Release(taskObj); }
     }
 
     public static bool GetEnabled(string path, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        int split = path.LastIndexOf('\\');
-        string folderPath = split <= 0 ? "\\" : path[..split];
-        string taskName = path[(split + 1)..];
-        object? serviceObj = null;
-        object? folderObj = null;
+        using var session = TaskComSession.Open(path, out dynamic folder);
         object? taskObj = null;
         try
         {
-            var type = Type.GetTypeFromProgID("Schedule.Service", throwOnError: false)
-                ?? throw new PlatformNotSupportedException("Task Scheduler COM není dostupný.");
-            serviceObj = Activator.CreateInstance(type)
-                ?? throw new InvalidOperationException("Task Scheduler COM nelze vytvořit.");
-            dynamic service = serviceObj;
-            service.Connect();
-            folderObj = service.GetFolder(folderPath);
-            dynamic folder = folderObj;
-            taskObj = folder.GetTask(taskName);
+            taskObj = folder.GetTask(session.TaskName);
             dynamic task = taskObj;
-            return task.Enabled;
+            return (bool)task.Enabled;
         }
-        finally
-        {
-            Release(taskObj);
-            Release(folderObj);
-            Release(serviceObj);
-        }
+        finally { Release(taskObj); }
     }
 
     public static bool IsRunning(string path, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        int split = path.LastIndexOf('\\');
-        string folderPath = split <= 0 ? "\\" : path[..split];
-        string taskName = path[(split + 1)..];
-        object? serviceObj = null;
-        object? folderObj = null;
+        using var session = TaskComSession.Open(path, out dynamic folder);
         object? taskObj = null;
         try
         {
-            var type = Type.GetTypeFromProgID("Schedule.Service", throwOnError: false)
-                ?? throw new PlatformNotSupportedException("Task Scheduler COM není dostupný.");
-            serviceObj = Activator.CreateInstance(type)
-                ?? throw new InvalidOperationException("Task Scheduler COM nelze vytvořit.");
-            dynamic service = serviceObj;
-            service.Connect();
-            folderObj = service.GetFolder(folderPath);
-            dynamic folder = folderObj;
-            taskObj = folder.GetTask(taskName);
+            taskObj = folder.GetTask(session.TaskName);
             dynamic task = taskObj;
             return Convert.ToInt32(task.State) == 4;
         }
-        finally
-        {
-            Release(taskObj);
-            Release(folderObj);
-            Release(serviceObj);
-        }
+        finally { Release(taskObj); }
     }
 
     public static DateTime? TryGetNextRunTimeUtc(string path, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        int split = path.LastIndexOf('\\');
-        string folderPath = split <= 0 ? "\\" : path[..split];
-        string taskName = path[(split + 1)..];
-        object? serviceObj = null;
-        object? folderObj = null;
+        using var session = TaskComSession.Open(path, out dynamic folder);
         object? taskObj = null;
         try
         {
-            var type = Type.GetTypeFromProgID("Schedule.Service", throwOnError: false)
-                ?? throw new PlatformNotSupportedException("Task Scheduler COM není dostupný.");
-            serviceObj = Activator.CreateInstance(type)
-                ?? throw new InvalidOperationException("Task Scheduler COM nelze vytvořit.");
-            dynamic service = serviceObj;
-            service.Connect();
-            folderObj = service.GetFolder(folderPath);
-            dynamic folder = folderObj;
-            taskObj = folder.GetTask(taskName);
+            taskObj = folder.GetTask(session.TaskName);
             dynamic task = taskObj;
             DateTime next = task.NextRunTime;
             return next <= DateTime.MinValue.AddDays(1) ? null : next.ToUniversalTime();
@@ -391,11 +307,6 @@ internal static partial class TaskSchedulerComService
         {
             return null;
         }
-        finally
-        {
-            Release(taskObj);
-            Release(folderObj);
-            Release(serviceObj);
-        }
+        finally { Release(taskObj); }
     }
 }

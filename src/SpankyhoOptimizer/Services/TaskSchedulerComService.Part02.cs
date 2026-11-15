@@ -77,23 +77,11 @@ internal static partial class TaskSchedulerComService
         // Final boundary: privileged callers must not bypass the same task
         // safety policy enforced by the GUI / inventory.
         TaskSchedulerService.EnsureTaskMutationAllowed(path, enabled);
-        int split = path.LastIndexOf('\\');
-        string folderPath = split <= 0 ? "\\" : path[..split];
-        string taskName = path[(split + 1)..];
-        object? serviceObj = null;
-        object? folderObj = null;
+        using var session = TaskComSession.Open(path, out dynamic folder);
         object? taskObj = null;
         try
         {
-            var type = Type.GetTypeFromProgID("Schedule.Service", throwOnError: false)
-                ?? throw new PlatformNotSupportedException("Task Scheduler COM není dostupný.");
-            serviceObj = Activator.CreateInstance(type)
-                ?? throw new InvalidOperationException("Task Scheduler COM nelze vytvořit.");
-            dynamic service = serviceObj;
-            service.Connect();
-            folderObj = service.GetFolder(folderPath);
-            dynamic folder = folderObj;
-            taskObj = folder.GetTask(taskName);
+            taskObj = folder.GetTask(session.TaskName);
             dynamic task = taskObj;
             bool original = task.Enabled;
             if (original == enabled) return;
@@ -114,33 +102,17 @@ internal static partial class TaskSchedulerComService
                 throw;
             }
         }
-        finally
-        {
-            Release(taskObj);
-            Release(folderObj);
-            Release(serviceObj);
-        }
+        finally { Release(taskObj); }
     }
 
     public static string? TryGetTaskXml(string path)
     {
-        object? serviceObj = null;
-        object? folderObj = null;
+        TaskComSession? session = null;
         object? taskObj = null;
         try
         {
-            int split = path.LastIndexOf('\\');
-            string folderPath = split <= 0 ? "\\" : path[..split];
-            string taskName = path[(split + 1)..];
-            var type = Type.GetTypeFromProgID("Schedule.Service", throwOnError: false)
-                ?? throw new PlatformNotSupportedException("Task Scheduler COM není dostupný.");
-            serviceObj = Activator.CreateInstance(type)
-                ?? throw new InvalidOperationException("Task Scheduler COM nelze vytvořit.");
-            dynamic service = serviceObj;
-            service.Connect();
-            folderObj = service.GetFolder(folderPath);
-            dynamic folder = folderObj;
-            taskObj = folder.GetTask(taskName);
+            session = TaskComSession.Open(path, out dynamic folder);
+            taskObj = folder.GetTask(session.TaskName);
             dynamic task = taskObj;
             return task.Xml?.ToString();
         }
@@ -148,42 +120,26 @@ internal static partial class TaskSchedulerComService
         finally
         {
             Release(taskObj);
-            Release(folderObj);
-            Release(serviceObj);
+            session?.Dispose();
         }
     }
 
     public static bool DeleteIfExists(string path, Func<string?, bool>? authorizeXml = null)
     {
-        object? serviceObj = null;
-        object? folderObj = null;
+        TaskComSession? session = null;
         try
         {
-            int split = path.LastIndexOf('\\');
-            string folderPath = split <= 0 ? "\\" : path[..split];
-            string taskName = path[(split + 1)..];
-            var type = Type.GetTypeFromProgID("Schedule.Service", throwOnError: false)
-                ?? throw new PlatformNotSupportedException("Task Scheduler COM není dostupný.");
-            serviceObj = Activator.CreateInstance(type)
-                ?? throw new InvalidOperationException("Task Scheduler COM nelze vytvořit.");
-            dynamic service = serviceObj;
-            service.Connect();
-            folderObj = service.GetFolder(folderPath);
-            dynamic folder = folderObj;
+            session = TaskComSession.Open(path, out dynamic folder);
             return DeleteRegisteredTaskIfPresent(
-                () => (object)folder.GetTask(taskName),
-                () => { folder.DeleteTask(taskName, 0); },
+                () => (object)folder.GetTask(session!.TaskName),
+                () => { folder.DeleteTask(session!.TaskName, 0); },
                 Release,
                 authorizeXml is null ? null :
                     registered => authorizeXml(
                         ((dynamic)registered).Xml?.ToString()));
         }
         catch (Exception ex) when (IsKnownAbsentTaskException(ex)) { return false; }
-        finally
-        {
-            Release(folderObj);
-            Release(serviceObj);
-        }
+        finally { session?.Dispose(); }
     }
 
     public static string[] SetEnabledBatch(IReadOnlyList<(string Path, bool Enabled)> changes, CancellationToken token)

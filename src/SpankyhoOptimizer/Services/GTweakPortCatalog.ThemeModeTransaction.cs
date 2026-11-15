@@ -71,39 +71,11 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task<bool>> restoreOriginal,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!dark)
-        {
-            if (!await restoreOriginal(CancellationToken.None).ConfigureAwait(false))
-                throw new InvalidOperationException(
-                    "Původní nastavení motivu Windows nemá uloženou zálohu.");
-            return;
-        }
-
-        // Always persist exact original kind/presence BEFORE changing a DWORD.
-        await captureOriginal(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-        try
-        {
-            await applyAndVerify(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try
-            {
-                if (!await restoreOriginal(CancellationToken.None).ConfigureAwait(false))
-                    throw new InvalidOperationException(
-                        "Nelze obnovit původní motiv Windows: původní záloha chybí.");
-            }
-            catch (Exception restoreError)
-            {
-                throw new AggregateException(
-                    "Změna motivu Windows i rollback původního stavu selhaly.",
-                    mutationError, restoreError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationWithBackupGuardAsync(
+            dark, captureOriginal, applyAndVerify, restoreOriginal,
+            "Původní nastavení motivu Windows nemá uloženou zálohu.",
+            "Změna motivu Windows i rollback původního stavu selhaly.",
+            ct).ConfigureAwait(false);
     }
 
     private static async Task SetThemeModeAsync(

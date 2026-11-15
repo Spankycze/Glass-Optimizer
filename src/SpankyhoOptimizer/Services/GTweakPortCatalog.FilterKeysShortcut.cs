@@ -69,40 +69,11 @@ internal static partial class GTweakPortCatalog
         Func<CancellationToken, Task<bool>> restoreOriginal,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!disableHotkey)
-        {
-            if (!await restoreOriginal(CancellationToken.None).ConfigureAwait(false))
-                throw new InvalidOperationException(
-                    "Původní nastavení zkratky Filter Keys není zálohované.");
-            return;
-        }
-
-        // Backup must be persisted before the first mutation, and cancellation
-        // after the registry write must not prevent restoration.
-        await captureOriginal(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-        try
-        {
-            await applyAndVerify(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try
-            {
-                if (!await restoreOriginal(CancellationToken.None).ConfigureAwait(false))
-                    throw new InvalidOperationException(
-                        "Chybí záloha původní hodnoty Filter Keys.");
-            }
-            catch (Exception restoreError)
-            {
-                throw new AggregateException(
-                    "Změna Filter Keys i obnovení původní hodnoty selhaly.",
-                    mutationError, restoreError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationWithBackupGuardAsync(
+            disableHotkey, captureOriginal, applyAndVerify, restoreOriginal,
+            "Původní nastavení zkratky Filter Keys není zálohované.",
+            "Změna Filter Keys i obnovení původní hodnoty selhaly.",
+            ct).ConfigureAwait(false);
     }
 
     private static Task SetFilterKeysShortcutAsync(bool disableHotkey, CancellationToken ct) =>

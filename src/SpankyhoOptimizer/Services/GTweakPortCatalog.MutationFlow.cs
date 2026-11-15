@@ -41,4 +41,46 @@ internal static partial class GTweakPortCatalog
             throw;
         }
     }
+
+    // Variant for tweaks whose restore reports whether the original backup
+    // really existed; a silent false must fail closed instead of pretending success.
+    internal static async Task ExecuteRollbackMutationWithBackupGuardAsync(
+        bool enable,
+        Func<CancellationToken, Task> capture,
+        Func<CancellationToken, Task> apply,
+        Func<CancellationToken, Task<bool>> restore,
+        string missingBackupMessage,
+        string compoundFailureMessage,
+        CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!enable)
+        {
+            if (!await restore(CancellationToken.None).ConfigureAwait(false))
+                throw new InvalidOperationException(missingBackupMessage);
+            return;
+        }
+
+        await capture(token).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        try
+        {
+            await apply(token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+        }
+        catch (Exception operationError)
+        {
+            try
+            {
+                if (!await restore(CancellationToken.None).ConfigureAwait(false))
+                    throw new InvalidOperationException(missingBackupMessage);
+            }
+            catch (Exception rollbackError)
+            {
+                throw new AggregateException(
+                    compoundFailureMessage, operationError, rollbackError);
+            }
+            throw;
+        }
+    }
 }
