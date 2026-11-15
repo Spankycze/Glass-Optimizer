@@ -494,7 +494,7 @@ public sealed partial class AiSystemResourceManagerService
                     state, completedAt, "trial rolled back: " + reason,
                     recoveryCooldown),
                 measuredNoBenefit);
-        _items[Key(state.Kind, state.Id)] = released with
+        _items[Key(state.Kind, state.Id)] = ClearVerifiedTrial(released with
         {
             Managed = false,
             Sleeping = false,
@@ -510,20 +510,8 @@ public sealed partial class AiSystemResourceManagerService
                 : "trial rolled back: " + reason,
             CooldownUntilUtc = DateTime.UtcNow.Add(recoveryCooldown),
             LastAction = "trial rolled back: " + reason,
-            LastChangedUtc = DateTime.UtcNow,
-            BaselineLoadPercent = null,
-            VerificationStartedUtc = null,
-            VerificationLastSampleUtc = null,
-            VerificationSamples = 0,
-            VerificationLoadTotal = 0,
-            PerformanceVerified = false,
-            VerificationPhase = string.Empty,
-            CandidateLoadPercent = null,
-            VerificationLoadMin = null,
-            VerificationLoadMax = null,
-            CandidateLoadMin = null,
-            CandidateLoadMax = null
-        };
+            LastChangedUtc = DateTime.UtcNow
+        });
         _restoredCount++;
         _lastAction = $"{state.Kind} {state.Id}: no measured benefit -> restored";
         AppendAction(state.Kind, state.Id, "trial rollback", reason);

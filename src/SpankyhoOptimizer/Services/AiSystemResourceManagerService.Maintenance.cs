@@ -459,7 +459,7 @@ public sealed partial class AiSystemResourceManagerService
             phase, liveStatus == ServiceControllerStatus.Running);
         int learnedRollbacks = AiMaintenanceCandidatePolicy.RollbacksAfterRestore(
             state.Rollbacks, osNeeded);
-        _items[Key(state.Kind, state.Id)] =
+        _items[Key(state.Kind, state.Id)] = ClearVerifiedTrial(
             AiMaintenanceCandidatePolicy.AfterRestoreEvidence(
                 AiMaintenanceOwnershipPolicy.Relinquish(
                     state, nowUtc,
@@ -471,20 +471,8 @@ public sealed partial class AiSystemResourceManagerService
             BlockedReason = "external service change during A/B/A; AI yielded",
             CooldownUntilUtc = nowUtc.AddHours(12),
             LastAction = reason,
-            LastChangedUtc = nowUtc,
-            BaselineLoadPercent = null,
-            VerificationStartedUtc = null,
-            VerificationLastSampleUtc = null,
-            VerificationSamples = 0,
-            VerificationLoadTotal = 0,
-            PerformanceVerified = false,
-            VerificationPhase = string.Empty,
-            CandidateLoadPercent = null,
-            VerificationLoadMin = null,
-            VerificationLoadMax = null,
-            CandidateLoadMin = null,
-            CandidateLoadMax = null
-        };
+            LastChangedUtc = nowUtc
+        });
         _lastAction = $"Service {state.Id}: AI yielded to external change";
         AppendAction("service", state.Id, "external override", reason);
         LogService.Info("ai-system",
@@ -500,7 +488,7 @@ public sealed partial class AiSystemResourceManagerService
         // The AI must stop claiming ownership or verified performance.
         bool externallyNeeded = AiMaintenanceTrialConsistencyPolicy.IsExternalNeed(
             phase, active);
-        _items[Key(state.Kind, state.Id)] =
+        _items[Key(state.Kind, state.Id)] = ClearVerifiedTrial(
             AiMaintenanceCandidatePolicy.AfterRestoreEvidence(
                 AiMaintenanceOwnershipPolicy.Relinquish(
                     state, nowUtc,
@@ -513,20 +501,8 @@ public sealed partial class AiSystemResourceManagerService
             BlockedReason = "external override during A/B/A; AI will not reapply",
             CooldownUntilUtc = nowUtc.AddHours(12),
             LastAction = reason,
-            LastChangedUtc = nowUtc,
-            BaselineLoadPercent = null,
-            VerificationStartedUtc = null,
-            VerificationLastSampleUtc = null,
-            VerificationSamples = 0,
-            VerificationLoadTotal = 0,
-            PerformanceVerified = false,
-            VerificationPhase = string.Empty,
-            CandidateLoadPercent = null,
-            VerificationLoadMin = null,
-            VerificationLoadMax = null,
-            CandidateLoadMin = null,
-            CandidateLoadMax = null
-        };
+            LastChangedUtc = nowUtc
+        });
         _lastAction = $"Task {ShortTask(state.Id)}: AI yielded to external override";
         AppendAction("task", state.Id, "external override", reason);
         LogService.Info("ai-system", $"AI_SYSTEM_TRIAL_EXTERNAL_OVERRIDE id={state.Id} reason={reason}");
