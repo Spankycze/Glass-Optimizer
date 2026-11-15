@@ -1,9 +1,10 @@
 param([string]$ProjectRoot=(Split-Path $PSScriptRoot -Parent), [switch]$SkipRuntime)
 $ErrorActionPreference='Stop'
-$spicetify=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\SpicetifyService.cs') -Raw
-$titus=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\ChrisTitusIntegrationService.cs') -Raw
-$app=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\App.cs') -Raw
-$ui=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\MainWindow.PowerShellCenter.cs') -Raw
+. (Join-Path $PSScriptRoot 'source-set.ps1')
+$spicetify=Get-SpankySourceText (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\SpicetifyService.cs')
+$titus=Get-SpankySourceText (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\ChrisTitusIntegrationService.cs')
+$app=Get-SpankyAppSource $ProjectRoot
+$ui=Get-SpankySourceText (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\MainWindow.PowerShellCenter.cs')
 foreach($needle in @('DownloadPinnedMarketplaceInstallerAsync','api.github.com/repos/spicetify/marketplace/commits/main','raw.githubusercontent.com/spicetify/marketplace/','IsValidMarketplaceInstaller(script)','SHA256.HashData(script)','File.WriteAllBytesAsync(source, bytes','-ExecutionPolicy Bypass -File','Directory.Delete(stage, true)')){
     if(!$spicetify.Contains($needle)){throw "Marketplace pinned stage contract missing $needle"}
 }
