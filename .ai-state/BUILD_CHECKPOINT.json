@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "updatedUtc": "2026-11-15T06:44:47.2117226Z",
-  "kind": "build",
+  "updatedUtc": "2026-11-15T06:48:30.0850894Z",
+  "kind": "test-quick",
   "outcome": "OK",
   "builtVersion": "17.21.0",
   "sourceVersion": "17.21.0",
