@@ -1,2 +1,4 @@
 ﻿{"utc":"2026-10-29T17:05:48.0049649Z","mode":"Quick","result":"PASS","elapsedMs":1513}
 {"utc":"2026-10-29T17:24:16.9879850Z","mode":"Release","result":"FAIL","elapsedMs":144700}
+{"utc":"2026-11-15T06:49:41.3616491Z","mode":"Verify","result":"FAIL","elapsedMs":149.0}
+{"utc":"2026-11-15T06:50:27.4469344Z","mode":"Verify","result":"PASS","elapsedMs":33170.0}
