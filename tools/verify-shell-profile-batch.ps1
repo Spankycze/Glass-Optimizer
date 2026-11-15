@@ -1,7 +1,8 @@
 param([string]$ProjectRoot=(Split-Path $PSScriptRoot -Parent),[switch]$SkipRuntime)
 $ErrorActionPreference='Stop'
 $service=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\ShellHealthService.cs') -Raw
-$app=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\App.cs') -Raw
+. (Join-Path $ProjectRoot 'tools\source-set.ps1')
+$app=Get-SpankyAppSource $ProjectRoot
 if(!$service.Contains('private const string BatchedProfileProbeScript') -or
    !$service.Contains('SPANKY_PROFILE_PROBE|') -or
    !$service.Contains('TimeSpan.FromSeconds(45)') -or
