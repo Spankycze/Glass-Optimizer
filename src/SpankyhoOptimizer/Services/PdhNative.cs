@@ -16,19 +16,19 @@ internal static class PdhNative
         public double DoubleValue;
     }
 
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
     internal static extern uint PdhOpenQueryW(string? dataSource, IntPtr userData, out IntPtr query);
 
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
     internal static extern uint PdhAddEnglishCounterW(IntPtr query, string fullCounterPath, IntPtr userData, out IntPtr counter);
 
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll")]
     internal static extern uint PdhCollectQueryData(IntPtr query);
 
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
     [DllImport("pdh.dll")]
     internal static extern uint PdhCloseQuery(IntPtr query);
 }
