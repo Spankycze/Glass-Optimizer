@@ -2,7 +2,11 @@
 
 ## 17.20.0
 
-- Opened the next development cycle after the 17.19.0 release; no user-facing changes are included yet and this section tracks the upcoming work.
+- Internal code-quality release: every source file above 800 lines was split into partials (including the installer) without changing behaviour.
+- Duplicated popup chrome, AI trial bookkeeping, task-scheduler COM sessions, PDH interop, dialog close handling and tweak rollback flows now have one shared implementation; the duplication audit dropped from 105 to 6 blocks.
+- Removed obsolete one-off release scripts, unused bundled voice/benchmark leftovers and 246 legacy test sources outside the compiled allowlist; the compiled test suite is unchanged.
+- Project audit tooling, test projects and the graphics tooling lockfile are now tracked, so a fresh clone can run the same guards and builds.
+- No changes to tray feedback, Defender behaviour, restore-point rules, the four AC `Never` power-plan values or any release gate; 116/116 CoreTests and 43/43 QualityTests pass.
 
 ## 17.19.0
 
