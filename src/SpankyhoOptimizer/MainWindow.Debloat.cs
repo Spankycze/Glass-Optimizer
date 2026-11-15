@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -301,10 +301,9 @@ public sealed partial class MainWindow
         {
             if (filterMode == 0 && !row.Source.Recommended) return false;
             if (filterMode == 2 && !row.Remove) return false;
-            if (query.Length == 0) return true;
-            return row.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                   row.Source.Publisher.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                   row.Source.Reason.Contains(query, StringComparison.OrdinalIgnoreCase);
+            return DebloatSearch.Contains(row.DisplayName, query) ||
+                   DebloatSearch.Contains(row.Source.Publisher, query) ||
+                   DebloatSearch.Contains(row.Source.Reason, query);
         }
 
         void UpdateFilterButtons()
@@ -357,7 +356,7 @@ public sealed partial class MainWindow
         filterStrip.Children.Add(MakeFilterButton(2));
         search.TextChanged += (_, _) =>
         {
-            query = search.Text?.Trim() ?? string.Empty;
+            query = DebloatSearch.Normalize(search.Text);
             RefreshList();
         };
 

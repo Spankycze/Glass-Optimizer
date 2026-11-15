@@ -179,7 +179,7 @@ public sealed partial class MainWindow
         // ever displaying the destructive confirmation or uninstalling apps.
         InstalledAppInfo[] sample =
         [
-            new("Smoke.Safe", "Smoke.Safe_1_test", "Smoke.Safe_family", "Smoke Safe",
+            new("Smoke.Safe", "Smoke.Safe_1_test", "Smoke.Safe_family", "Smoke Bezpečná",
                 "Test", null, true, DebloatCategory.ThirdParty, DebloatRisk.Safe, false, "safe"),
             new("Smoke.Optional", "Smoke.Optional_1_test", "Smoke.Optional_family", "Smoke Optional",
                 "Test", null, false, DebloatCategory.ThirdParty, DebloatRisk.Optional, false, "optional"),
@@ -268,10 +268,10 @@ public sealed partial class MainWindow
             4 => a.Protected || a.Risk == DebloatRisk.Protected,
             _ => true
         };
-        bool QueryMatches(InstalledAppInfo a) => query.Length == 0 ||
-            a.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-            a.Publisher.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-            a.Reason.Contains(query, StringComparison.OrdinalIgnoreCase);
+        bool QueryMatches(InstalledAppInfo a) =>
+            DebloatSearch.Contains(a.DisplayName, query) ||
+            DebloatSearch.Contains(a.Publisher, query) ||
+            DebloatSearch.Contains(a.Reason, query);
         void Render()
         {
             // Keep one ListViewItem per package for the entire dialog lifetime.
@@ -346,7 +346,7 @@ public sealed partial class MainWindow
         }
         category.SelectionChanged += (_, _) => Render();
         risk.SelectionChanged += (_, _) => Render();
-        void ApplyQuery(string? value) { query = value?.Trim() ?? string.Empty; Render(); }
+        void ApplyQuery(string? value) { query = DebloatSearch.Normalize(value); Render(); }
         search.TextChanged += (_, _) => ApplyQuery(search.Text);
 
         var root = new StackPanel { Spacing = 10 };
@@ -441,11 +441,15 @@ public sealed partial class MainWindow
             ApplyQuery("   ");
             if (cachedRows.Values.Any(row => row.Visibility != Visibility.Visible))
                 throw new InvalidOperationException("Clearing the debloat search did not restore every row.");
+            ApplyQuery("bezpecna");
+            if (cachedRows.Count(x => x.Value.Visibility == Visibility.Visible) != 1 ||
+                cachedRows[apps[0].PackageFullName].Visibility != Visibility.Visible)
+                throw new InvalidOperationException("Debloat search is not diacritics-insensitive.");
             ApplyQuery(null);
             if (!string.Equals(count.Text.Split('•')[0].Trim(), "Zobrazeno: 4/4", StringComparison.Ordinal))
                 throw new InvalidOperationException($"Debloat search count is wrong: {count.Text}");
             LogService.Info("debloat",
-                $"DEBLOAT_DIALOG_FILTER_SMOKE_OK rows={apps.Count} risk=4 category=true combined=true additive=true protected=true clearAll=true reused=true search=true");
+                $"DEBLOAT_DIALOG_FILTER_SMOKE_OK rows={apps.Count} risk=4 category=true combined=true additive=true protected=true clearAll=true reused=true search=true folding=true");
             return;
         }
 

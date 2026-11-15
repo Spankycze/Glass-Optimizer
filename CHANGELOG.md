@@ -1,5 +1,10 @@
 # Changelog
 
+## 17.21.0
+
+- Debloater: the manual app-selection dialog now has the same text search as the Debloater page. It matches name, publisher and reason and ignores diacritics, so "media" finds "Média".
+- `--debloat-dialog-filter-smoke` now also verifies search narrowing, diacritics folding and restoration of every row; removal safety paths, restore points and operation journals are unchanged.
+
 ## 17.20.0
 
 - Internal code-quality release: every source file above 800 lines was split into partials (including the installer) without changing behaviour.
