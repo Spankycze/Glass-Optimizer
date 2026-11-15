@@ -7,7 +7,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="PayloadFixture.cs" />
-    <Compile Include="../../installer/InstallerMain.cs" Link="InstallerMain.cs" />
+    <Compile Include="../../installer/InstallerMain*.cs" Link="%(Filename)%(Extension)" />
     <Compile Include="../../installer/InstallerPrerequisites.cs" Link="InstallerPrerequisites.cs" />
     <Compile Include="../../installer/PayloadArchive.cs" Link="PayloadArchive.cs" />
     <Compile Include="../../installer/InstallerWindow*.cs" Link="%(Filename)%(Extension)" />
