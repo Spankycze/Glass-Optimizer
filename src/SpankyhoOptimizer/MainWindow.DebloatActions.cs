@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -225,6 +225,18 @@ public sealed partial class MainWindow
         foreach (var v in new[] { "Všechna rizika", "Bezpečné", "Volitelné", "Pokročilé", "Chráněné" }) risk.Items.Add(v);
         risk.SelectedIndex = 0;
         var scope = new ComboBox { MinWidth = 150, ItemsSource = new[] { "Aktuální uživatel", "Všichni uživatelé" }, SelectedIndex = 0 };
+        var search = new TextBox
+        {
+            PlaceholderText = "Hledat aplikaci, vydavatele…",
+            MinWidth = 190,
+            MaxWidth = 240,
+            Height = 32,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 2, 10, 2),
+            Background = SectionCardBackgroundBrush(),
+            BorderBrush = SectionBorderBrush()
+        };
+        string query = string.Empty;
         var count = new TextBlock { Foreground = TextSecondaryBrush(), FontSize = 12.5 };
         var listHost = new ListView
         {
@@ -256,12 +268,16 @@ public sealed partial class MainWindow
             4 => a.Protected || a.Risk == DebloatRisk.Protected,
             _ => true
         };
+        bool QueryMatches(InstalledAppInfo a) => query.Length == 0 ||
+            a.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+            a.Publisher.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+            a.Reason.Contains(query, StringComparison.OrdinalIgnoreCase);
         void Render()
         {
             // Keep one ListViewItem per package for the entire dialog lifetime.
             // Filtering only collapses existing items: clearing/re-adding live
             // WinUI children can reparent visuals and repeatedly trigger Loaded.
-            filtered = apps.Where(a => CategoryMatches(a) && RiskMatches(a)).ToList();
+            filtered = apps.Where(a => CategoryMatches(a) && RiskMatches(a) && QueryMatches(a)).ToList();
             var visible = new HashSet<string>(
                 filtered.Select(app => app.PackageFullName), StringComparer.OrdinalIgnoreCase);
             foreach (var app in filtered)
@@ -330,10 +346,12 @@ public sealed partial class MainWindow
         }
         category.SelectionChanged += (_, _) => Render();
         risk.SelectionChanged += (_, _) => Render();
+        void ApplyQuery(string? value) { query = value?.Trim() ?? string.Empty; Render(); }
+        search.TextChanged += (_, _) => ApplyQuery(search.Text);
 
         var root = new StackPanel { Spacing = 10 };
         var filters = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        filters.Children.Add(category); filters.Children.Add(risk); filters.Children.Add(scope);
+        filters.Children.Add(category); filters.Children.Add(risk); filters.Children.Add(scope); filters.Children.Add(search);
         root.Children.Add(filters); root.Children.Add(count);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actions.Children.Add(QuickButton("Doporučené", () =>
@@ -416,8 +434,18 @@ public sealed partial class MainWindow
                 listHost.Items.Count != apps.Count ||
                 originals.Any(entry => !ReferenceEquals(entry.Value, cachedRows[entry.Key])))
                 throw new InvalidOperationException("Debloat filters did not restore stable original rows.");
+            ApplyQuery("optional");
+            if (cachedRows.Count(x => x.Value.Visibility == Visibility.Visible) != 1 ||
+                cachedRows[apps[1].PackageFullName].Visibility != Visibility.Visible)
+                throw new InvalidOperationException("Debloat search filter did not narrow visible rows.");
+            ApplyQuery("   ");
+            if (cachedRows.Values.Any(row => row.Visibility != Visibility.Visible))
+                throw new InvalidOperationException("Clearing the debloat search did not restore every row.");
+            ApplyQuery(null);
+            if (!string.Equals(count.Text.Split('•')[0].Trim(), "Zobrazeno: 4/4", StringComparison.Ordinal))
+                throw new InvalidOperationException($"Debloat search count is wrong: {count.Text}");
             LogService.Info("debloat",
-                $"DEBLOAT_DIALOG_FILTER_SMOKE_OK rows={apps.Count} risk=4 category=true combined=true additive=true protected=true clearAll=true reused=true");
+                $"DEBLOAT_DIALOG_FILTER_SMOKE_OK rows={apps.Count} risk=4 category=true combined=true additive=true protected=true clearAll=true reused=true search=true");
             return;
         }
 
