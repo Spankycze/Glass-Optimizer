@@ -1,3 +1,8 @@
+﻿# Known, measured gap (15. 11. 2026): a code-only build takes ~17.5 s because WinUI's
+# MarkupCompilePass1/Pass2 in Microsoft.UI.Xaml.Markup.Compiler.interop.targets declare no
+# Inputs/Outputs and therefore re-run the XAML compiler (~10.4 s) on every build. The
+# SpankyFastXamlReuse hook only covers XamlPreCompile. Do NOT raise the budget or skip the
+# audit; the fix would have to reuse XAML output behind a hash stamp and is unimplemented.
 param([double]$CacheHitBudgetMs=800,[double]$CodeOnlyBudgetMs=12000)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot

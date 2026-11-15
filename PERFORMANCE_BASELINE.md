@@ -71,3 +71,12 @@ Zdroj: `artifacts/perf/latest.json` • 10 opakování • median/P95 • trace 
 ## Start 17.20.0 — měření 15. 11. 2026
 
 Nainstalovaná 17.20.0, `--startup-hotpath-smoke`, 14 běhů: aktivace **206–252 ms, medián ~241 ms** (limit v aplikaci 750 ms). Rozpad: framework/WinRT 0–68 ms, LaunchCore 68–85 ms, HWND 85–120 ms, MainWindow ctor 87 ms (téma 7, shell 71, okno 9), Activated 207–213 ms, Ready +20 ms. Uvnitř shellu: backdrop 17 ms a hero 35 ms jsou first-touch náklady WinUI. Značky `MainWindow.CtorEnter`/`HandlersReady` v `StartupDiagnostics` umožňují měření zopakovat.
+## Build 17.20.0 — měření 15. 11. 2026
+
+| Metrika | Naměřeno | Budget |
+|---|---:|---:|
+| cache-hit build (`build-fast`) | ~0,8 s | 800 ms |
+| code-only build (`build-speed-audit`) | **17,5–18,4 s** | 12 000 ms |
+| strict release (`build-release`) | 141 s | — |
+
+Rozpad code-only buildu: `Exec` 10 276 ms, `MarkupCompilePass2` 6 967 ms, `Csc` 4 357 ms, `MarkupCompilePass1` 3 403 ms (celkem 16,6 s). XAML kompilace běží vždy, protože WinUI targety `MarkupCompilePass1/Pass2` nemají `Inputs/Outputs`; známý dluh, viz komentář v `build-speed-audit.ps1`.
