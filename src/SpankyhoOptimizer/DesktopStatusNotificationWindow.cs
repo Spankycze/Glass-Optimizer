@@ -207,7 +207,7 @@ internal sealed class DesktopStatusNotificationWindow : Window
         try
         {
             var hwnd = WindowNative.GetWindowHandle(this);
-            return DesktopPopupWindowChrome.HasNoActivateStyle(hwnd) &&
+            return DesktopPopupWindowFrame.HasNoActivateStyle(hwnd) &&
                    IsWindowVisible(hwnd) && _chrome.Height > 0;
         }
         catch (Exception ex)
@@ -235,7 +235,7 @@ internal sealed class DesktopStatusNotificationWindow : Window
     private void ConfigureWindow()
     {
         if (_closed) return;
-        if (DesktopPopupWindowChrome.TryConfigure(
+        if (DesktopPopupWindowFrame.TryConfigure(
                 this, WindowWidth, _stackIndex, _visualPreview,
                 "STATUS_POPUP", "ui",
                 "Status popup positioning failed; later activation may retry", _chrome) is { } size)

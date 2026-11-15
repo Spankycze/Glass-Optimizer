@@ -39,7 +39,7 @@ $shell=Get-SpankySourceText (Join-Path $src 'MainWindow.Shell.cs')
 $neutral=[IO.File]::ReadAllText((Join-Path $src 'MainWindow.NeutralUi.cs'))
 $dialogs=Get-SpankySourceText (Join-Path $src 'MainWindow.StyledDialogs.cs')
 $motion=[IO.File]::ReadAllText((Join-Path $src 'MainWindow.Motion.cs'))
-$popup=[IO.File]::ReadAllText((Join-Path $src 'DesktopUpdateNotificationWindow.cs')) + [IO.File]::ReadAllText((Join-Path $src 'DesktopPopupWindowChrome.cs'))
+$popup=[IO.File]::ReadAllText((Join-Path $src 'DesktopUpdateNotificationWindow.cs')) + [IO.File]::ReadAllText((Join-Path $src 'DesktopPopupWindowFrame.cs'))
 
 foreach($token in @(
   'RootGrid.Background = glass ? ThemeColor(0,0,0,0)',

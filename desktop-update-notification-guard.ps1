@@ -1,8 +1,8 @@
-﻿$ErrorActionPreference='Stop'
+$ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $root 'tools\source-set.ps1')
 $main=Get-SpankyMainWindowSource $root
-$notify=(Get-Content (Join-Path $root 'src\SpankyhoOptimizer\DesktopUpdateNotificationWindow.cs') -Raw) + (Get-Content (Join-Path $root 'src\SpankyhoOptimizer\DesktopPopupWindowChrome.cs') -Raw)
+$notify=(Get-Content (Join-Path $root 'src\SpankyhoOptimizer\DesktopUpdateNotificationWindow.cs') -Raw) + (Get-Content (Join-Path $root 'src\SpankyhoOptimizer\DesktopPopupWindowFrame.cs') -Raw)
 $notifyMain=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\MainWindow.UpdateNotifications.cs') -Raw
 $appUpdate=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\Services\AppUpdateService.cs') -Raw
 $background=Get-Content (Join-Path $root 'src\SpankyhoOptimizer\Services\BackgroundUpdateService.cs') -Raw

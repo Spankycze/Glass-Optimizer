@@ -480,7 +480,7 @@ internal sealed class DesktopUpdateNotificationWindow : Window
     private void ConfigureWindow()
     {
         if (_closed) return;
-        _ = DesktopPopupWindowChrome.TryConfigure(
+        _ = DesktopPopupWindowFrame.TryConfigure(
             this, WindowWidth, _stackIndex, _visualPreview,
             "POPUP", "update",
             "Desktop update popup positioning failed; later activation may retry", _chrome);

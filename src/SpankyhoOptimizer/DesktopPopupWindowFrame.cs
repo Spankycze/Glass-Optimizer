@@ -18,7 +18,7 @@ internal sealed class PopupChromeState
 
 // Native silhouette shared by both desktop notification popups: no activation or
 // Alt+Tab entry, glass border, rounded region and the same bottom-right stack slot.
-internal static class DesktopPopupWindowChrome
+internal static class DesktopPopupWindowFrame
 {
     private const int GwlExStyle = -20;
     private const long WsExNoActivate = 0x08000000L;
