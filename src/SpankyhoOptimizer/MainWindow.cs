@@ -132,6 +132,7 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
+        StartupDiagnostics.Mark("MainWindow.CtorEnter");
         var ctorPhase = Stopwatch.StartNew();
         Title = "Glass Optimizer";
         // Do not instantiate UISettings on the constructor hot path. The first Activated event
@@ -201,6 +202,7 @@ Closed += (_, _) =>
                 QueueGlassActivationRepair();
             }
         };
+        StartupDiagnostics.Mark("MainWindow.HandlersReady");
         RootGrid.Loaded += (_, _) =>
         {
             // Finalize rowless geometry with the real loaded size. The first SizeChanged can
