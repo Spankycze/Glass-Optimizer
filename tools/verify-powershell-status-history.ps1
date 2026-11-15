@@ -1,10 +1,11 @@
-param(
+﻿param(
     [string]$ProjectRoot = (Split-Path $PSScriptRoot -Parent),
     [switch]$SkipRuntime
 )
 $ErrorActionPreference = 'Stop'
-$source = Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\PowerShellCenterService.cs') -Raw
-$app = Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\App.cs') -Raw
+. (Join-Path $PSScriptRoot 'source-set.ps1')
+$source = Get-SpankySourceText (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\PowerShellCenterService.cs')
+$app = Get-SpankySourceText (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\App.cs')
 foreach ($rule in @(
     'StatusCacheTtl = TimeSpan.FromSeconds(45)',
     'StatusRefreshGate.WaitAsync(token)',

@@ -1,7 +1,8 @@
-param([string]$ProjectRoot=(Split-Path $PSScriptRoot -Parent),[switch]$SkipRuntime)
+﻿param([string]$ProjectRoot=(Split-Path $PSScriptRoot -Parent),[switch]$SkipRuntime)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'source-set.ps1')
 $service=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\Services\SystemRepairDiagnosticsService.cs') -Raw
-$app=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\App.cs') -Raw
+$app=Get-SpankySourceText (Join-Path $ProjectRoot 'src\SpankyhoOptimizer\App.cs')
 foreach($needle in @(
   'Task<RepairDiagnostic> service = Task.Run(',
   'Task<RepairDiagnostic> store = Task.Run(CheckStore, token)',
