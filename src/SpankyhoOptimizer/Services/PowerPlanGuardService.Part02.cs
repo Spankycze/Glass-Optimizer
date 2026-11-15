@@ -65,18 +65,23 @@ public static partial class PowerPlanGuardService
     // command. Accept the schtasks outer-quote form too, but never a second
     // shell command, redirection, expansion, or arbitrary argument text.
     // Return the GUID from this verified action only (never Description/XML).
+
+    // Task XML is parsed only with DTD and external resolvers disabled and a
+    // bounded document size; both guard readers share that exact policy.
+    private static XmlReaderSettings CreateTaskXmlReaderSettings() => new()
+    {
+        DtdProcessing = DtdProcessing.Prohibit,
+        XmlResolver = null,
+        MaxCharactersInDocument = 256 * 1024
+    };
+
     internal static bool TryReadOwnedGuardTaskGuid(string? xml, out string guid)
     {
         guid = string.Empty;
         if (string.IsNullOrWhiteSpace(xml)) return false;
         try
         {
-            var settings = new XmlReaderSettings
-            {
-                DtdProcessing = DtdProcessing.Prohibit,
-                XmlResolver = null,
-                MaxCharactersInDocument = 256 * 1024
-            };
+            var settings = CreateTaskXmlReaderSettings();
             using var reader = XmlReader.Create(new StringReader(xml), settings);
             var doc = XDocument.Load(reader);
             if (doc.Root is not { } root || root.Name.LocalName != "Task")

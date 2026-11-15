@@ -471,25 +471,17 @@ public sealed partial class MainWindow
         var logScroll = new ScrollViewer { Content = logText, Height = 300, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Background = _darkTheme ? DialogInnerSurfaceBrush() : SurfaceAltBrush(), Padding = new Thickness(12) };
         middle.Children.Add(logScroll);
         var middleScroll = DialogScroll(middle); Grid.SetRow(middleScroll, 1); root.Children.Add(middleScroll);
-        bool popupClosed = false;
         bool finished = false;
-        void ClosePopup()
-        {
-            if (popupClosed) return;
-            popupClosed = true;
-            if (!finished) cts.Cancel();
-            UnmountDialog(overlay);
-            tcs.TrySetResult(true);
-        }
+        var closeGate = new DialogCloseGate(overlay, cts, tcs, UnmountDialog, () => finished);
 
         card.Child = root;
-        var topClose = MountDialog(overlay, card, ClosePopup);
+        var topClose = MountDialog(overlay, card, closeGate.Close);
         var lines = new Queue<string>(128);
         string? lastProgressLogEntry = null;
         int exitCode = -1;
         var progress = new Progress<PerformanceProfilesService.PowerProfileProgress>(p =>
         {
-            if (popupClosed) return;
+            if (closeGate.Closed) return;
             double width = track.ActualWidth > 0 ? track.ActualWidth : 520;
             double targetWidth = width * Math.Clamp(p.Percent, 0, 100) / 100d;
             if (Math.Abs(fill.Width - targetWidth) >= 0.5) fill.Width = targetWidth;
@@ -509,7 +501,7 @@ public sealed partial class MainWindow
                     if (!string.Equals(logText.Text, logValue, StringComparison.Ordinal)) logText.Text = logValue;
                     DispatcherQueue.TryEnqueue(() =>
                     {
-                        if (popupClosed) return;
+                        if (closeGate.Closed) return;
                         try { if (logScroll.XamlRoot != null) logScroll.ChangeView(null, logScroll.ScrollableHeight, null, true); } catch { }
                     });
                 }
@@ -519,14 +511,14 @@ public sealed partial class MainWindow
         {
             LogService.Info("POWER_PROGRESS_POPUP_START");
             string result = await PerformanceProfilesService.ApplyPerformancePowerProfileAsync(progress, cts.Token);
-            if (popupClosed || cts.IsCancellationRequested)
+            if (closeGate.Closed || cts.IsCancellationRequested)
             {
                 exitCode = -2;
                 return exitCode;
             }
             PowerPlanStateService.InvalidateCache();
             var snap = await PowerPlanStateService.ReadAsync(forceRefresh: true);
-            if (popupClosed || cts.IsCancellationRequested)
+            if (closeGate.Closed || cts.IsCancellationRequested)
             {
                 exitCode = -2;
                 return exitCode;
@@ -556,7 +548,7 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             exitCode = -1;
-            if (!popupClosed)
+            if (!closeGate.Closed)
             {
                 current.Text = "Chyba při aplikaci Recommended profilu";
                 detail.Text = ex.Message;
@@ -581,6 +573,26 @@ public sealed partial class MainWindow
 
         await tcs.Task;
         return exitCode;
+    }
+
+    // Both progress dialogs close through the same idempotent gate: the first
+    // close cancels the running work, unmounts the overlay and completes once.
+    private sealed class DialogCloseGate(
+        Grid overlay, CancellationTokenSource cts,
+        TaskCompletionSource<bool> tcs, Action<Grid> unmount, Func<bool> finished)
+    {
+        private bool _closed;
+
+        internal bool Closed => _closed;
+
+        internal void Close()
+        {
+            if (_closed) return;
+            _closed = true;
+            if (!finished()) cts.Cancel();
+            unmount(overlay);
+            tcs.TrySetResult(true);
+        }
     }
 
 }

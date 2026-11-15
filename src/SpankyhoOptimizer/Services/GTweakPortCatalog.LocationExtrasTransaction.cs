@@ -51,38 +51,11 @@ internal static partial class GTweakPortCatalog
         Func<int, CancellationToken, Task<bool>> restoreOriginal,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!turnOffProvider)
-        {
-            // OFF restores original state without taking a new backup or opening
-            // registry keys for writing before the restore.
-            await RestoreLocationExtrasAsync(restoreOriginal).ConfigureAwait(false);
-            return;
-        }
-
-        // Never apply the first policy unless both originals are durable.
-        await captureOriginals(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-
-        try
-        {
-            await applyAndVerify(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try
-            {
-                await RestoreLocationExtrasAsync(restoreOriginal).ConfigureAwait(false);
-            }
-            catch (Exception rollbackError)
-            {
-                throw new AggregateException(
-                    "Vypnutí Location Provider i obnova původních hodnot selhaly.",
-                    mutationError, rollbackError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            turnOffProvider, captureOriginals, applyAndVerify,
+            _ => RestoreLocationExtrasAsync(restoreOriginal),
+            "Vypnutí Location Provider i obnova původních hodnot selhaly.",
+            ct).ConfigureAwait(false);
     }
 
     private static Task SetLocationExtrasAsync(bool turnOffProvider, CancellationToken ct) =>

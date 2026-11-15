@@ -28,19 +28,11 @@ public sealed partial class MainWindow
         var segments = new Grid { ColumnSpacing = 6, Height = 6 }; for (int x = 0; x < 4; x++) segments.ColumnDefinitions.Add(new ColumnDefinition());
         var bars = new Border[4]; for (int x = 0; x < 4; x++) { bars[x] = new Border { CornerRadius = new CornerRadius(3), Background = _darkTheme ? GlassTrackBrush() : SurfaceAltBrush() }; Grid.SetColumn(bars[x], x); segments.Children.Add(bars[x]); }
         root.Children.Add(segments);
-        bool popupClosed = false;
         bool finished = false;
-        void ClosePopup()
-        {
-            if (popupClosed) return;
-            popupClosed = true;
-            if (!finished) cts.Cancel();
-            UnmountDialog(overlay);
-            tcs.TrySetResult(true);
-        }
+        var closeGate = new DialogCloseGate(overlay, cts, tcs, UnmountDialog, () => finished);
 
         card.Child = root;
-        MountDialog(overlay, card, ClosePopup);
+        MountDialog(overlay, card, closeGate.Close);
         int exitCode = -1;
         try
         {
@@ -50,7 +42,7 @@ public sealed partial class MainWindow
             while (!applyTask.IsCompleted)
             {
                 cts.Token.ThrowIfCancellationRequested();
-                if (popupClosed)
+                if (closeGate.Closed)
                 {
                     exitCode = -2;
                     return exitCode;
@@ -67,7 +59,7 @@ public sealed partial class MainWindow
 
             string backendResult = await applyTask;
             cts.Token.ThrowIfCancellationRequested();
-            if (popupClosed)
+            if (closeGate.Closed)
             {
                 exitCode = -2;
                 return exitCode;
@@ -99,7 +91,7 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             exitCode = -1;
-            if (!popupClosed)
+            if (!closeGate.Closed)
             {
                 LogService.Error("NIC progress popup failed", ex);
                 status.Text = "Chyba: " + ex.Message;
@@ -113,7 +105,7 @@ public sealed partial class MainWindow
         if (autoClose || exitCode == 0)
         {
             if (!autoClose) await Task.Delay(700);
-            if (!popupClosed) UnmountDialog(overlay);
+            if (!closeGate.Closed) UnmountDialog(overlay);
 
             // UnmountDialog now performs the iOS 27 exit animation asynchronously.
             // Progress operations must not report completion until their modal is actually gone.
@@ -126,7 +118,7 @@ public sealed partial class MainWindow
             return exitCode;
         }
 
-        if (!popupClosed) await tcs.Task;
+        if (!closeGate.Closed) await tcs.Task;
         return exitCode;
     }
 }

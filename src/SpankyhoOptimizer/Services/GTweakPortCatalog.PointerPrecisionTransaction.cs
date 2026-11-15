@@ -52,38 +52,11 @@ internal static partial class GTweakPortCatalog
         Func<int, CancellationToken, Task<bool>> restore,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!disableAcceleration)
-        {
-            // OFF means return to the original mouse settings, not hard-coded
-            // default values. Do not re-capture after the change.
-            await RestorePointerPrecisionAsync(restore).ConfigureAwait(false);
-            return;
-        }
-
-        // No registry writes happen unless all originals have been persisted.
-        await captureOriginals(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-
-        try
-        {
-            await applyAndVerify(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception applyError)
-        {
-            try
-            {
-                await RestorePointerPrecisionAsync(restore).ConfigureAwait(false);
-            }
-            catch (Exception rollbackError)
-            {
-                throw new AggregateException(
-                    "Změna akcelerace myši i její obnovení selhaly.",
-                    applyError, rollbackError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            disableAcceleration, captureOriginals, applyAndVerify,
+            _ => RestorePointerPrecisionAsync(restore),
+            "Změna akcelerace myši i její obnovení selhaly.",
+            ct).ConfigureAwait(false);
     }
 
     private static Task SetPointerPrecisionAsync(bool disableAcceleration, CancellationToken token) =>

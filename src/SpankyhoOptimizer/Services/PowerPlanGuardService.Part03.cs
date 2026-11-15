@@ -220,12 +220,7 @@ public static partial class PowerPlanGuardService
         if (!TaskXmlMatches(xml, expectedGuid)) return false;
         try
         {
-            var settings = new XmlReaderSettings
-            {
-                DtdProcessing = DtdProcessing.Prohibit,
-                XmlResolver = null,
-                MaxCharactersInDocument = 256 * 1024
-            };
+            var settings = CreateTaskXmlReaderSettings();
             using var reader = XmlReader.Create(new StringReader(xml!), settings);
             var doc = XDocument.Load(reader);
             if (doc.Root is not { } root || root.Name.LocalName != "Task")

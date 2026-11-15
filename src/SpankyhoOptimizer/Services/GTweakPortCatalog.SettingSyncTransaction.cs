@@ -52,34 +52,11 @@ internal static partial class GTweakPortCatalog
         Func<int, CancellationToken, Task<bool>> restoreOriginal,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        if (!disableSync)
-        {
-            await RestoreSettingSyncAsync(restoreOriginal).ConfigureAwait(false);
-            return;
-        }
-
-        await captureOriginals(ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-        try
-        {
-            await applyAndVerify(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (Exception mutationError)
-        {
-            try
-            {
-                await RestoreSettingSyncAsync(restoreOriginal).ConfigureAwait(false);
-            }
-            catch (Exception recoveryError)
-            {
-                throw new AggregateException(
-                    "Vypnutí synchronizace i obnovení původních hodnot selhaly.",
-                    mutationError, recoveryError);
-            }
-            throw;
-        }
+        await ExecuteRollbackMutationAsync(
+            disableSync, captureOriginals, applyAndVerify,
+            _ => RestoreSettingSyncAsync(restoreOriginal),
+            "Vypnutí synchronizace i obnovení původních hodnot selhaly.",
+            ct).ConfigureAwait(false);
     }
 
     private static Task SetSettingSyncAsync(bool disableSync, CancellationToken ct) =>
